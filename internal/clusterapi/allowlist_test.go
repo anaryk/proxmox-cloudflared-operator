@@ -38,7 +38,7 @@ func (f *sourceFeed) count() int {
 	return f.calls
 }
 
-func TestTheAllowlistRefreshesOnAMissAtMostEveryTenSeconds(t *testing.T) {
+func TestTheAllowlistRefreshesOnAMissAtMostEveryTenSecondsPerSource(t *testing.T) {
 	c := &clock{t: t0}
 	feed := &sourceFeed{src: Sources{Nodes: map[string][]netip.Addr{testNode: {addr2}}}}
 	l := NewAllowlist(feed.refresh, c.now, zerolog.Nop())
@@ -48,14 +48,19 @@ func TestTheAllowlistRefreshesOnAMissAtMostEveryTenSeconds(t *testing.T) {
 	require.False(t, l.Allowed(addr2, true), "a node is no join source")
 	require.Equal(t, 1, feed.count(), "a hit does not")
 
-	feed.set(Sources{Nodes: map[string][]netip.Addr{testNode: {addr2}, "pve3": {addr3}}, Join: []netip.Addr{loopback}})
-	require.False(t, l.Allowed(addr3, false), "a miss within ten seconds of the last is a miss")
+	require.False(t, l.Allowed(addr3, false), "a miss of another source within a second of the last refresh")
 	require.Equal(t, 1, feed.count())
+	c.advance(missFloor)
+	require.False(t, l.Allowed(addr3, false), "another source reads the sources again")
+	require.Equal(t, 2, feed.count())
+
+	feed.set(Sources{Nodes: map[string][]netip.Addr{testNode: {addr2}, "pve3": {addr3}}, Join: []netip.Addr{loopback}})
 	c.advance(missGap - time.Millisecond)
-	require.False(t, l.Allowed(addr3, false))
+	require.False(t, l.Allowed(addr3, false), "a miss of a source within ten seconds of its last is a miss")
+	require.Equal(t, 2, feed.count())
 	c.advance(time.Millisecond)
 	require.True(t, l.Allowed(addr3, false))
-	require.Equal(t, 2, feed.count())
+	require.Equal(t, 3, feed.count())
 	require.True(t, l.Allowed(loopback, true))
 	require.False(t, l.Allowed(loopback, false), "a join source is no node")
 

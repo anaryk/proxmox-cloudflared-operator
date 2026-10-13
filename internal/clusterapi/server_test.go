@@ -431,11 +431,11 @@ func TestTheRefusalOfTheCheckIsAnswered(t *testing.T) {
 	h := newHarness(t)
 	for _, code := range []string{agentproto.RefusalRemoved, agentproto.RefusalContested, agentproto.RefusalNotEnrolled, agentproto.RefusalOtherInstall, agentproto.RefusalOtherSource} {
 		t.Run(code, func(t *testing.T) {
-			h.auth.refuseWith(&agentproto.Refusal{Code: code, Message: "because"})
+			h.auth.refuseWith(&agentproto.Refusal{Code: code, Message: "node pve2 (serial 1f) came from 10.9.9.9"})
 			resp := h.get(h.client(h.ca, hostID(testNode)), "/v1/agent/desired")
 			r := refusalOf(t, resp)
 			require.Equal(t, code, r.Code)
-			require.Equal(t, "because", r.Message)
+			require.Equal(t, refusalMessages[code], r.Message, "the detail stays in the controller's log")
 		})
 	}
 	require.Equal(t, loopback, h.auth.firstSource(), "the check is told the source")
@@ -444,6 +444,9 @@ func TestTheRefusalOfTheCheckIsAnswered(t *testing.T) {
 		h.auth.refuseWith(&agentproto.Refusal{Message: "the registry could not be read"})
 		resp := h.get(h.client(h.ca, hostID(testNode)), "/v1/agent/desired")
 		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.NotContains(t, string(body), "registry")
 	})
 }
 
@@ -516,7 +519,9 @@ func TestTheConnectionsOfANodeAreClosedAndItsLongPollCancelled(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 	t.Run("closing an unknown node is nothing", func(t *testing.T) {
+		require.Zero(t, h.srv.connections("nobody"))
 		h.srv.Close("nobody")
+		require.Equal(t, 1, h.srv.connections(testNode), "the connection of another node stays")
 	})
 }
 
@@ -550,4 +555,19 @@ func snapshotOf(seq uint64) agentproto.Snapshot {
 		}},
 		Nodes: []agentproto.Node{}, Targets: []agentproto.Target{}, Blocks: []agentproto.Block{}, Actions: []agentproto.Action{}, Endpoints: []string{},
 	}
+}
+
+// connections is how many open connections a node has.
+func (s *Server) connections(node string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, info := range s.conns {
+		info.mu.Lock()
+		if info.node == node {
+			n++
+		}
+		info.mu.Unlock()
+	}
+	return n
 }

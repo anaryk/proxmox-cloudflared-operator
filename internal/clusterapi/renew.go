@@ -2,6 +2,7 @@ package clusterapi
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.readDeadline(w)
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRenewBody))
 	var tooBig *http.MaxBytesError
 	switch {
@@ -31,17 +33,16 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the renewal is too large", http.StatusRequestEntityTooLarge)
 		return
 	case err != nil:
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.badRequest(w, p.node, "the renewal could not be read", err)
 		return
 	}
 	var req RenewRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		http.Error(w, "the request is no renewal: "+err.Error(), http.StatusBadRequest)
+		s.badRequest(w, p.node, "the request is no renewal", err)
 		return
 	}
 	if err := checkRenewal(p, req.CSR); err != nil {
-		s.log.Warn().Str("node", p.node).Err(err).Msg("refused a renewal")
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.badRequest(w, p.node, "refused a renewal: it must be for this certificate's identity and a new P-256 key", err)
 		return
 	}
 	certPEM, err := s.c.Renew(r.Context(), p.node, req.CSR)
@@ -59,6 +60,9 @@ func checkRenewal(p peer, der []byte) error {
 	}
 	if err := csr.CheckSignature(); err != nil {
 		return fmt.Errorf("the certificate request is not signed by its key: %w", err)
+	}
+	if key, ok := csr.PublicKey.(*ecdsa.PublicKey); !ok || key.Curve != elliptic.P256() {
+		return errors.New("the certificate request is not for a P-256 key")
 	}
 	if len(csr.URIs) != 1 || csr.URIs[0].String() != p.id.String() {
 		return fmt.Errorf("the certificate request is not for %s", p.id)

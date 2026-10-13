@@ -76,6 +76,7 @@ func (s *Server) AcceptJoins(j Joins) { s.joinCfg = &j }
 func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 	src := sourceOf(r)
 	if !s.joins.allow(src, s.now()) {
+		s.log.Warn().Str("source", src.String()).Str("code", "rate-limited").Msg("refused a join: more than ten from this source within a minute")
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "too many joins from this address; try again in a minute", http.StatusTooManyRequests)
 		return
@@ -89,6 +90,7 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		s.refuseJoin(w, r, "the source may not join")
 		return
 	}
+	s.readDeadline(w)
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJoinBody))
 	var tooBig *http.MaxBytesError
 	switch {

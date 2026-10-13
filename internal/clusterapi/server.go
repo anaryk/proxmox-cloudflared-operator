@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +48,19 @@ const (
 	writeSlack        = 30 * time.Second
 	idleTimeout       = 2 * time.Minute
 	maxHeaderBytes    = 64 << 10
+	// bodyTimeout bounds the reading of a request body, so that a peer that
+	// sends its headers and then dribbles holds no handler.
+	bodyTimeout = 15 * time.Second
+	// maxStreams is how many requests one connection may have open at once:
+	// an agent needs a long-poll, a status and now and then a renewal.
+	maxStreams = 8
+	// maxPollsPerNode is how many long-polls of one node wait at once; a
+	// newer one answers the oldest with 409.
+	maxPollsPerNode = 2
+	// sweepEvery is how often the certificates of the open connections are
+	// verified again, so that one that expired, or whose CA left the pool
+	// at the end of a rotation, does not keep its connection.
+	sweepEvery = 10 * time.Second
 )
 
 // JoinFacts is what an appliance agent says of itself when it joins. The
@@ -100,6 +114,9 @@ type Server struct {
 	now  func() time.Time
 
 	longPoll    time.Duration
+	bodyTimeout time.Duration
+	sweepEvery  time.Duration
+	perSource   int
 	joinCfg     *Joins
 	joinMu      sync.Mutex // one use of a join token at a time
 	joins       *rateLimiter
@@ -107,8 +124,9 @@ type Server struct {
 	onListening func(netip.AddrPort)
 	event       func(node, msg string)
 
-	mu    sync.Mutex
-	conns map[net.Conn]*connInfo
+	mu        sync.Mutex
+	conns     map[net.Conn]*connInfo
+	nodePolls map[string][]*poll // oldest first
 }
 
 // New returns the endpoint of a controller. cert is its server certificate
@@ -117,9 +135,11 @@ type Server struct {
 func New(c Controller, a Auth, cert tls.Certificate, pool func() *x509.CertPool, log zerolog.Logger) *Server {
 	s := &Server{
 		c: c, a: a, pool: pool, log: log, now: time.Now, longPoll: LongPoll,
-		joins:  newRateLimiter(joinPerMinute, time.Minute),
-		resend: newResendCounter(),
-		conns:  map[net.Conn]*connInfo{},
+		bodyTimeout: bodyTimeout, sweepEvery: sweepEvery, perSource: maxPerSource,
+		joins:     newRateLimiter(joinPerMinute, time.Minute),
+		resend:    newResendCounter(),
+		conns:     map[net.Conn]*connInfo{},
+		nodePolls: map[string][]*poll{},
 	}
 	s.cert.Store(&cert)
 	return s
@@ -148,16 +168,7 @@ func (s *Server) Serve(ctx context.Context, addr netip.AddrPort) error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)
 	}
-	srv := &http.Server{
-		Handler:           s.routes(),
-		ConnContext:       s.connContext,
-		ConnState:         s.connState,
-		ReadHeaderTimeout: readHeaderTimeout,
-		WriteTimeout:      s.longPoll + writeSlack,
-		IdleTimeout:       idleTimeout,
-		MaxHeaderBytes:    maxHeaderBytes,
-		ErrorLog:          stdlog.New(httpErrorLog{s.log}, "", 0),
-	}
+	srv := s.httpServer()
 	if s.onListening != nil {
 		if ap, err := netip.ParseAddrPort(ln.Addr().String()); err == nil {
 			s.onListening(ap)
@@ -165,10 +176,17 @@ func (s *Server) Serve(ctx context.Context, addr netip.AddrPort) error {
 	}
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(tls.NewListener(newAllowListener(ln, s), s.tlsConfig())) }()
-	select {
-	case err := <-done:
-		return fmt.Errorf("serving the agents on %s: %w", addr, err)
-	case <-ctx.Done():
+	sweep := time.NewTicker(s.sweepEvery)
+	defer sweep.Stop()
+	for running := true; running; {
+		select {
+		case err := <-done:
+			return fmt.Errorf("serving the agents on %s: %w", addr, err)
+		case <-ctx.Done():
+			running = false
+		case <-sweep.C:
+			s.sweep()
+		}
 	}
 	stop, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -177,6 +195,21 @@ func (s *Server) Serve(ctx context.Context, addr netip.AddrPort) error {
 	}
 	<-done
 	return nil
+}
+
+// httpServer is the server of the endpoint, without its listener.
+func (s *Server) httpServer() *http.Server {
+	return &http.Server{
+		Handler:           s.routes(),
+		ConnContext:       s.connContext,
+		ConnState:         s.connState,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      s.longPoll + writeSlack,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+		HTTP2:             &http.HTTP2Config{MaxConcurrentStreams: maxStreams},
+		ErrorLog:          stdlog.New(httpErrorLog{s.log}, "", 0),
+	}
 }
 
 // tlsConfig is the listener's: the configuration of the connection is made
@@ -206,7 +239,8 @@ func (s *Server) routes() http.Handler {
 // allowListener closes a connection whose source the allowlist does not
 // hold, before anything of it is read: no TLS handshake begins for it. Each
 // source is checked beside the accepting, since a miss may make the
-// allowlist read its sources again, and at most maxChecks at once.
+// allowlist read its sources again, and at most maxChecks at once. One
+// source holds at most perSource connections open.
 type allowListener struct {
 	net.Listener
 	s      *Server
@@ -215,12 +249,16 @@ type allowListener struct {
 	done   chan struct{}
 	once   sync.Once
 	checks chan struct{}
+
+	mu   sync.Mutex
+	open map[netip.Addr]int
 }
 
 func newAllowListener(ln net.Listener, s *Server) *allowListener {
 	l := &allowListener{
 		Listener: ln, s: s, conns: make(chan net.Conn), errs: make(chan error),
 		done: make(chan struct{}), checks: make(chan struct{}, maxChecks),
+		open: map[netip.Addr]int{},
 	}
 	go l.run()
 	return l
@@ -240,6 +278,13 @@ func (l *allowListener) run() {
 			}
 			continue
 		}
+		src := addrOf(c.RemoteAddr())
+		if !l.take(src) {
+			_ = c.Close()
+			l.s.log.Debug().Str("source", src.String()).Msg("dropped a connection from a source that holds too many")
+			continue
+		}
+		c = &countedConn{Conn: c, release: func() { l.give(src) }}
 		select {
 		case l.checks <- struct{}{}:
 			go l.check(c)
@@ -247,6 +292,37 @@ func (l *allowListener) run() {
 			_ = c.Close()
 		}
 	}
+}
+
+// take counts a connection of src, unless it holds perSource already.
+func (l *allowListener) take(src netip.Addr) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.open[src] >= l.s.perSource {
+		return false
+	}
+	l.open[src]++
+	return true
+}
+
+func (l *allowListener) give(src netip.Addr) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.open[src]--; l.open[src] <= 0 {
+		delete(l.open, src)
+	}
+}
+
+// countedConn gives its place back once, when it is closed.
+type countedConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *countedConn) Close() error {
+	c.once.Do(c.release)
+	return c.Conn.Close()
 }
 
 func (l *allowListener) check(c net.Conn) {
@@ -294,10 +370,16 @@ type connInfo struct {
 	conn  net.Conn
 	mu    sync.Mutex
 	node  string
+	cert  *x509.Certificate
 	polls map[*poll]struct{}
 }
 
-type poll struct{ cancel context.CancelFunc }
+// poll is a waiting long-poll. superseded says that a newer poll of its
+// node cancelled it.
+type poll struct {
+	cancel     context.CancelFunc
+	superseded atomic.Bool
+}
 
 type connKey struct{}
 
@@ -323,18 +405,16 @@ func connInfoOf(ctx context.Context) *connInfo {
 	return info
 }
 
-func (i *connInfo) bind(node string) {
+func (i *connInfo) bind(node string, cert *x509.Certificate) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.node = node
+	i.node, i.cert = node, cert
 }
 
-func (i *connInfo) addPoll(cancel context.CancelFunc) *poll {
-	p := &poll{cancel: cancel}
+func (i *connInfo) addPoll(p *poll) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.polls[p] = struct{}{}
-	return p
 }
 
 func (i *connInfo) removePoll(p *poll) {
@@ -343,15 +423,64 @@ func (i *connInfo) removePoll(p *poll) {
 	delete(i.polls, p)
 }
 
+// startPoll counts a long-poll of node, and supersedes the oldest of the
+// node's when more than maxPollsPerNode would wait. The returned func ends
+// it.
+func (s *Server) startPoll(node string, p *poll) func() {
+	s.mu.Lock()
+	s.nodePolls[node] = append(s.nodePolls[node], p)
+	polls := s.nodePolls[node]
+	for len(polls) > maxPollsPerNode {
+		polls[0].superseded.Store(true)
+		polls[0].cancel()
+		polls = polls[1:]
+	}
+	s.nodePolls[node] = polls
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		polls := slices.DeleteFunc(s.nodePolls[node], func(q *poll) bool { return q == p })
+		if len(polls) == 0 {
+			delete(s.nodePolls, node)
+		} else {
+			s.nodePolls[node] = polls
+		}
+	}
+}
+
 // Close closes the connections of a node and cancels its long-polls. A node
 // that was forgotten is refused from its next request; this ends the ones
 // that are open, before anything is rotated.
 func (s *Server) Close(node string) {
+	s.closeWhere(func(info *connInfo) bool { return info.node == node })
+}
+
+// sweep closes the connections whose certificate no longer verifies under
+// the pool of now: it expired, or its CA left the pool when a rotation's
+// window ended.
+func (s *Server) sweep() {
+	pool, now := s.pool(), s.now()
+	s.closeWhere(func(info *connInfo) bool {
+		if info.cert == nil {
+			return false
+		}
+		if err := verifyClient(info.cert, pool, now); err != nil {
+			s.log.Info().Str("node", info.node).Err(err).Msg("closed a connection whose certificate no longer verifies")
+			return true
+		}
+		return false
+	})
+}
+
+// closeWhere closes the connections that match, with their long-polls.
+// match runs under the connection's lock.
+func (s *Server) closeWhere(match func(*connInfo) bool) {
 	s.mu.Lock()
 	var infos []*connInfo
 	for c, info := range s.conns {
 		info.mu.Lock()
-		if info.node == node {
+		if match(info) {
 			infos = append(infos, info)
 			delete(s.conns, c)
 		}
@@ -368,21 +497,6 @@ func (s *Server) Close(node string) {
 	}
 }
 
-// connections is how many open connections a node has.
-func (s *Server) connections(node string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, info := range s.conns {
-		info.mu.Lock()
-		if info.node == node {
-			n++
-		}
-		info.mu.Unlock()
-	}
-	return n
-}
-
 // peer is the authenticated agent of a request.
 type peer struct {
 	cert *x509.Certificate
@@ -396,10 +510,19 @@ type peer struct {
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (peer, bool) {
 	src := sourceOf(r)
 	if _, err := pki.PeerIdentity(r.TLS); err != nil {
-		s.refuse(w, r, "", agentproto.Refusal{Code: agentproto.RefusalNotEnrolled, Message: "no client certificate was verified under the install's CA"})
+		s.log.Warn().Str("source", src.String()).Str("path", r.URL.Path).Msg("refused a request without a client certificate")
+		writeJSON(w, http.StatusForbidden, agentproto.Refusal{Code: agentproto.RefusalNotEnrolled, Message: "no client certificate was verified under the install's CA"})
 		return peer{}, false
 	}
 	cert := r.TLS.VerifiedChains[0][0]
+	// The handshake verified the certificate when the connection began;
+	// the connection may be days old, and the CA it was verified under may
+	// have left the pool since.
+	if err := verifyClient(cert, s.pool(), s.now()); err != nil {
+		s.log.Warn().Str("source", src.String()).Err(err).Msg("a client certificate no longer verifies")
+		http.Error(w, "the client certificate does not verify under the install's CA now", http.StatusUnauthorized)
+		return peer{}, false
+	}
 	node, ref := s.a.Check(cert, src)
 	if ref != nil {
 		s.refuse(w, r, node, *ref)
@@ -411,13 +534,29 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (peer, boo
 		return peer{}, false
 	}
 	if info := connInfoOf(r.Context()); info != nil {
-		info.bind(node)
+		info.bind(node, cert)
 	}
 	if ref := protocolRefusal(r.Header.Get(ProtocolHeader)); ref != nil {
 		s.refuse(w, r, node, *ref)
 		return peer{}, false
 	}
 	return peer{cert: cert, id: id, node: node, src: src}, true
+}
+
+// verifyClient verifies a client certificate under pool at now, for client
+// authentication.
+func verifyClient(cert *x509.Certificate, pool *x509.CertPool, now time.Time) error {
+	_, err := cert.Verify(x509.VerifyOptions{
+		Roots: pool, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	return err
+}
+
+// readDeadline bounds the reading of the request's body from now.
+func (s *Server) readDeadline(w http.ResponseWriter) {
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(s.bodyTimeout)); err != nil {
+		s.log.Debug().Err(err).Msg("no read deadline for a request body")
+	}
 }
 
 // protocolRefusal reads the range of the header and refuses one this build
@@ -454,17 +593,41 @@ func sourceOf(r *http.Request) netip.Addr {
 	return ap.Addr().Unmap()
 }
 
+// refusalMessages are what an agent is told of each refusal. The reason in
+// detail, which names nodes, addresses and serials of the registry, goes to
+// the controller's log only.
+var refusalMessages = map[string]string{
+	agentproto.RefusalRemoved:      "this node was removed from the install",
+	agentproto.RefusalContested:    "this node is contested; an admin decides with pco node admit or pco node forget",
+	agentproto.RefusalNotEnrolled:  "this certificate is not the one the install enrolled for this node",
+	agentproto.RefusalOtherInstall: "this certificate is of another install",
+	agentproto.RefusalOtherSource:  "this request came from an address that is not one of this node's",
+}
+
 // refuse answers a request the controller will not serve. A refusal without
 // a code is a check that could not be made.
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, node string, ref agentproto.Refusal) {
 	src := sourceOf(r)
 	if ref.Code == "" {
 		s.log.Error().Str("node", node).Str("source", src.String()).Msg(ref.Message)
-		http.Error(w, "the request could not be checked: "+ref.Message, http.StatusServiceUnavailable)
+		http.Error(w, "the request could not be checked; try again", http.StatusServiceUnavailable)
 		return
 	}
 	s.log.Warn().Str("node", node).Str("source", src.String()).Str("code", ref.Code).Str("path", r.URL.Path).Msg(ref.Message)
+	// The protocol ranges are no secret, and the agent's admin needs both.
+	if msg, ok := refusalMessages[ref.Code]; ok {
+		ref.Message = msg
+	} else if ref.Code != agentproto.RefusalOutOfRange {
+		ref.Message = "refused"
+	}
 	writeJSON(w, http.StatusForbidden, ref)
+}
+
+// badRequest answers a request that is not what it should be, with the
+// detail in the log only.
+func (s *Server) badRequest(w http.ResponseWriter, node, what string, err error) {
+	s.log.Warn().Str("node", node).Err(err).Msg(what)
+	http.Error(w, what, http.StatusBadRequest)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -476,7 +639,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // fail answers a request the controller could not serve.
 func (s *Server) fail(w http.ResponseWriter, node, what string, err error) {
 	s.log.Error().Err(err).Str("node", node).Msg(what)
-	http.Error(w, what+": "+err.Error(), http.StatusServiceUnavailable)
+	http.Error(w, what, http.StatusServiceUnavailable)
 }
 
 // record tells of a request refused for its size, so that the event log

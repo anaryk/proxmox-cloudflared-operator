@@ -19,13 +19,14 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.readDeadline(w)
 	body := io.Reader(http.MaxBytesReader(w, r.Body, agentproto.MaxStatusBytes+1))
 	switch enc := r.Header.Get("Content-Encoding"); enc {
 	case "", "identity":
 	case "gzip":
 		zr, err := gzip.NewReader(body)
 		if err != nil {
-			http.Error(w, "the status is no gzip stream: "+err.Error(), http.StatusBadRequest)
+			s.badRequest(w, p.node, "the status is no gzip stream", err)
 			return
 		}
 		defer func() { _ = zr.Close() }()
@@ -39,15 +40,14 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, agentproto.ErrTooLarge) || errors.As(err, &tooBig):
 		s.record(p.node, fmt.Sprintf("a status of node %s was refused: %v", p.node, err))
-		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		http.Error(w, "the status is too large", http.StatusRequestEntityTooLarge)
 		return
 	case err != nil:
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.badRequest(w, p.node, "the status could not be read", err)
 		return
 	}
 	if err := matches(p, st); err != nil {
-		s.log.Warn().Str("node", p.node).Err(err).Msg("refused a status")
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.badRequest(w, p.node, "the status does not speak for the node of its certificate", err)
 		return
 	}
 	if ref := rangeRefusal(st.Protocol); ref != nil {
@@ -58,7 +58,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		n := s.resend.count(p.node)
 		s.record(p.node, fmt.Sprintf("node %s sent %d events again to epoch %s, past the bound of %d; the rest is refused",
 			p.node, n, st.EpochSeen, agentproto.MaxResend))
-		http.Error(w, fmt.Sprintf("the resend holds %d events, at most %d go", n, agentproto.MaxResend), http.StatusRequestEntityTooLarge)
+		http.Error(w, fmt.Sprintf("a resend holds at most %d events", agentproto.MaxResend), http.StatusRequestEntityTooLarge)
 		return
 	}
 	hb, err := s.c.Report(r.Context(), p.node, st)

@@ -21,7 +21,7 @@ func (s *Server) desired(w http.ResponseWriter, r *http.Request) {
 	}
 	epoch, after, err := pollQuery(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.badRequest(w, p.node, "the long-poll names no epoch and seq this controller reads", err)
 		return
 	}
 	if epoch.Generation != 0 {
@@ -29,12 +29,18 @@ func (s *Server) desired(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.longPoll)
 	defer cancel()
+	wait := &poll{cancel: cancel}
+	defer s.startPoll(p.node, wait)()
 	if info := connInfoOf(r.Context()); info != nil {
-		defer info.removePoll(info.addPoll(cancel))
+		info.addPoll(wait)
+		defer info.removePoll(wait)
 	}
 	snap, err := s.c.Snapshot(ctx, p.node, epoch, after)
 	switch {
 	case err == nil:
+	case wait.superseded.Load():
+		http.Error(w, "a newer long-poll of this node took this one's place", http.StatusConflict)
+		return
 	case errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil:
 		w.WriteHeader(http.StatusNoContent)
 		return

@@ -12,8 +12,11 @@ import (
 
 const (
 	// missGap is the least time between two refreshes of the allowlist
-	// made for a source it does not hold.
-	missGap = 10 * time.Second
+	// made for one source it does not hold, and missFloor between two made
+	// for any, so that many sources cannot make it read the inventory again
+	// and again.
+	missGap   = 10 * time.Second
+	missFloor = time.Second
 	// missTimeout bounds a refresh made for a miss, which runs while a
 	// connection waits.
 	missTimeout = 5 * time.Second
@@ -29,10 +32,11 @@ type Sources struct {
 }
 
 // Allowlist is the set of sources a connection is taken from, decided before
-// any TLS handshake. It is refreshed from the inventory every cycle, and at
-// most every ten seconds when a source it does not hold connects, so that a
-// node just registered gets in without waiting for a cycle while an unknown
-// source cannot make it read the inventory again and again.
+// any TLS handshake. It is refreshed from the inventory every cycle, and
+// when a source it does not hold connects, at most every ten seconds for
+// that source and every second for all, so that a node just registered gets
+// in without waiting for a cycle while unknown sources cannot make it read
+// the inventory again and again.
 type Allowlist struct {
 	refresh func(context.Context) (Sources, error)
 	now     func() time.Time
@@ -42,14 +46,14 @@ type Allowlist struct {
 	nodes    map[string][]netip.Addr
 	byAddr   map[netip.Addr]string
 	join     map[netip.Addr]bool
+	missed   map[netip.Addr]time.Time // the last refresh made for each source's miss
 	lastMiss time.Time
-	ever     bool
 }
 
 // NewAllowlist returns an allowlist that reads its sources with refresh.
 // Nothing is allowed before the first refresh.
 func NewAllowlist(refresh func(context.Context) (Sources, error), now func() time.Time, log zerolog.Logger) *Allowlist {
-	return &Allowlist{refresh: refresh, now: now, log: log, nodes: map[string][]netip.Addr{}, byAddr: map[netip.Addr]string{}, join: map[netip.Addr]bool{}}
+	return &Allowlist{refresh: refresh, now: now, log: log, nodes: map[string][]netip.Addr{}, byAddr: map[netip.Addr]string{}, join: map[netip.Addr]bool{}, missed: map[netip.Addr]time.Time{}}
 }
 
 // Refresh reads the sources again. What was known stays when the read fails.
@@ -102,8 +106,8 @@ func (l *Allowlist) Belongs(node string, src netip.Addr) bool {
 }
 
 // lookup answers holds on what is known, and on a miss reads the sources
-// again, unless that was done for a miss within missGap. holds runs under
-// the lock.
+// again, unless that was done for a miss of src within missGap or for any
+// miss within missFloor. holds runs under the lock.
 func (l *Allowlist) lookup(src netip.Addr, holds func() bool) bool {
 	l.mu.Lock()
 	if holds() {
@@ -111,11 +115,18 @@ func (l *Allowlist) lookup(src netip.Addr, holds func() bool) bool {
 		return true
 	}
 	now := l.now()
-	if l.ever && now.Sub(l.lastMiss) < missGap {
+	last, seen := l.missed[src]
+	if (seen && now.Sub(last) < missGap) || (len(l.missed) > 0 && now.Sub(l.lastMiss) < missFloor) {
 		l.mu.Unlock()
 		return false
 	}
-	l.lastMiss, l.ever = now, true
+	// The floor keeps this map to about missGap/missFloor sources.
+	for a, t := range l.missed {
+		if now.Sub(t) >= missGap {
+			delete(l.missed, a)
+		}
+	}
+	l.missed[src], l.lastMiss = now, now
 	l.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), missTimeout)

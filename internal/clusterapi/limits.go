@@ -18,6 +18,9 @@ const (
 	// maxChecks bounds the connections whose source is being checked at
 	// once; more are closed.
 	maxChecks = 256
+	// maxPerSource bounds the connections one source holds open: an agent
+	// needs one or two.
+	maxPerSource = 16
 )
 
 // rateLimiter lets each source try a thing at most limit times within a
