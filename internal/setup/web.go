@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -88,6 +89,8 @@ func (r *run) planWeb(ctx context.Context) (webPlan, error) {
 	if err != nil {
 		return p, err
 	}
+	// The daemon reads the address as IPv4 only.
+	addrs = slices.DeleteFunc(addrs, func(a netip.Addr) bool { return !a.Is4() })
 	switch {
 	case r.o.WebListen != "":
 		if p.listen, err = listenAddress(r.o.WebListen); err != nil {
@@ -130,8 +133,7 @@ type clusterRow struct {
 	Local pveBool `json:"local"`
 }
 
-// nodeAddrs returns the address the cluster status lists for this node, read
-// as the daemon reads it: IPv4 only.
+// nodeAddrs returns the addresses the cluster status lists for this node.
 func (r *run) nodeAddrs(ctx context.Context) ([]netip.Addr, error) {
 	var rows []clusterRow
 	if err := r.query(ctx, &rows, "pvesh", "get", "/cluster/status", "--output-format", "json"); err != nil {
@@ -142,7 +144,7 @@ func (r *run) nodeAddrs(ctx context.Context) ([]netip.Addr, error) {
 		if row.Type != "node" || !bool(row.Local) && row.Name != r.o.Node {
 			continue
 		}
-		if a, err := netip.ParseAddr(row.IP); err == nil && a.Is4() {
+		if a, err := netip.ParseAddr(row.IP); err == nil {
 			out = append(out, a)
 		}
 	}

@@ -163,7 +163,7 @@ func TestNewInstallGoesOnBesideTheConnectors(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)
 	e.connectorOf(testInstall, tunnelID)
-	e.script(freshInstallAfter(preflight("9.0.10"))...)
+	e.script(freshInstallAfter(append(preflight("9.0.10"), addressRead()...))...)
 
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, NewInstall: true, Node: testNode}))
 	e.done()
@@ -193,7 +193,7 @@ func TestSetupKeepsItsInstallBesideTheConnectorsOfAnother(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(Manifest{})
 	e.connectorOf(otherInstall, tunnelID2)
-	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), cloudflaredKept(), serviceStarted())
+	e.script(preflight("9.0.10"), addressRead(), roleKept(), userKept(), tokenKept(), tagsKept(), cloudflaredKept(), serviceStarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
 	e.done()

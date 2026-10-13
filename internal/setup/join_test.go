@@ -187,7 +187,7 @@ func TestARemovedNodeDoesNotCountAsAnotherNodeOfTheInstall(t *testing.T) {
 	e.installUnit(serviceUnit)
 	e.installed(Manifest{})
 	require.NoError(t, e.st.SaveNode(store.NodeEntry{Name: "pve9", Since: t0, State: string(agentproto.Removed), StateSince: t0}))
-	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), cloudflaredKept(), serviceStarted())
+	e.script(preflight("9.0.10"), addressRead(), roleKept(), userKept(), tokenKept(), tagsKept(), cloudflaredKept(), serviceStarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
 	e.done()
@@ -511,8 +511,8 @@ func TestTheAgentAddressFallsBackToTheClusterStatus(t *testing.T) {
 	e.installUnit(serviceUnit)
 	// A node that stands alone, before corosync ever listed it.
 	e.writeFile(e.s.host.members, []byte(`{"nodename":"`+testNode+`","version":0}`+"\n"), 0o644)
-	e.script(preflightNew("9.0.10"), []call{{line: "pvesh get /cluster/status --output-format json", out: clusterStatus("192.0.2.11")}},
-		roleCreated(privs9), userCreated(), tokenCreated(), tagsAdded("", "cf-tunnel;cf-tunnel-managed"),
+	e.script(preflight("9.0.10"), noConnectorsSeen(),
+		[]call{{line: "pvesh get /cluster/status --output-format json", out: clusterStatus("192.0.2.11")}}, roleCreated(privs9), userCreated(), tokenCreated(), tagsAdded("", "cf-tunnel;cf-tunnel-managed"),
 		cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))

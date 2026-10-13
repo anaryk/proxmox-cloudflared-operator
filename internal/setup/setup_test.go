@@ -185,7 +185,7 @@ func TestSetupTwiceConverges(t *testing.T) {
 
 	// The second run finds everything in place and creates nothing: the
 	// script has no command that would.
-	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(),
+	e.script(preflight("9.0.10"), addressRead(), roleKept(), userKept(), tokenKept(),
 		tagsKept(), cloudflaredKept(), serviceStarted())
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
 	e.done()
@@ -209,7 +209,7 @@ func TestSetupContinuesAHalfFinishedRun(t *testing.T) {
 	inst := e.install()
 
 	// The role is there and the user is not: the second run goes on from there.
-	e.script(preflight("9.0.10"), roleKept(), userCreated(), tokenCreated(),
+	e.script(preflight("9.0.10"), addressRead(), roleKept(), userCreated(), tokenCreated(),
 		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), cloudflaredKept(), serviceRestarted())
 	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
 	e.done()
@@ -626,7 +626,7 @@ func startedAgain() []call { return []call{{line: "systemctl start pco.service"}
 // stopped first, so the token is stored without asking systemd again.
 func recovered() [][]call {
 	return [][]call{
-		roleCreated(privs9), userCreated(), tokenCreated(),
+		addressRead(), roleCreated(privs9), userCreated(), tokenCreated(),
 		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), cloudflaredKept(), serviceStarted(),
 	}
 }
@@ -735,7 +735,7 @@ func TestRepairTouchesOnlyProxmoxAndTheService(t *testing.T) {
 	// A restore of the node took the token file with it.
 	require.NoError(t, os.Remove(filepath.Join(e.paths.Private, "meta", "pve-token.json")))
 
-	e.script(preflight("9.0.10"), roleKept(), userKept(),
+	e.script(preflight("9.0.10"), addressRead(), roleKept(), userKept(),
 		[]call{
 			{line: "pveum user token list pco@pve --output-format json", out: tokensWith},
 			{line: "pveum user token remove pco@pve pco"},

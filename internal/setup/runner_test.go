@@ -89,7 +89,7 @@ func TestSetupMakesAPrivilegeSeparatedTokenAnew(t *testing.T) {
 	e.script(freshInstall()...)
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
 
-	e.script(preflight("9.0.10"), roleKept(),
+	e.script(preflight("9.0.10"), addressRead(), roleKept(),
 		[]call{
 			{line: "pveum user list --output-format json", out: usersWith},
 			// The grant does not propagate, so it does not reach the guests.

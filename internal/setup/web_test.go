@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -361,10 +362,14 @@ func TestNoWebLeavesTheWebInterfaceOut(t *testing.T) {
 
 	require.NoError(t, e.setup(o))
 
+	statusReads := 0
 	for _, line := range h.ran {
 		require.NotContains(t, line, webUnit)
-		require.NotContains(t, line, "/cluster/status")
+		if strings.Contains(line, "/cluster/status") {
+			statusReads++
+		}
 	}
+	require.Equal(t, 1, statusReads, "the address of the agent is read; the web interface adds no read of its own")
 	require.NoFileExists(t, e.s.host.webEnv)
 	require.NoDirExists(t, e.s.host.webDir)
 	m := e.manifest()

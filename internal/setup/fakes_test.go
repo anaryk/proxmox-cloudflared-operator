@@ -314,12 +314,11 @@ func (e *testEnv) writePVECA() *x509.Certificate {
 	return ca
 }
 
-// standalone makes the node one that stands alone, as pmxcfs lists it: no
-// cluster, and itself with its address.
+// standalone makes the node one that stands alone, as pmxcfs prints it: its
+// name and no cluster, no list of nodes and no address.
 func (e *testEnv) standalone() {
 	e.t.Helper()
-	e.writeFile(e.s.host.members, []byte(`{"nodename":"`+testNode+`","version":0,`+
-		`"nodelist":{"`+testNode+`":{"id":0,"online":1,"ip":"`+testAddr+`"}}}`+"\n"), 0o644)
+	e.writeFile(e.s.host.members, []byte(`{"nodename":"`+testNode+`","version":0}`+"\n"), 0o644)
 }
 
 // clusterOf makes the node one of the cluster lab with the others, every one
@@ -489,10 +488,17 @@ func preflight(version string) []call {
 	}
 }
 
-// preflightNew is the preflight of a setup that creates the install, which
-// looks for the connectors of another install before it creates anything.
+// preflightNew is the preflight of a setup that creates the install on a
+// node that stands alone: it looks for the connectors of another install
+// before it creates anything, then for the address of its agent.
 func preflightNew(version string) []call {
-	return slices.Concat(preflight(version), noConnectorsSeen())
+	return slices.Concat(preflight(version), noConnectorsSeen(), addressRead())
+}
+
+// addressRead is the cluster status a node that stands alone is asked for
+// the address of its agent, as pmxcfs lists no address for such a node.
+func addressRead() []call {
+	return []call{{line: "pvesh get /cluster/status --output-format json", out: clusterStatus(testAddr)}}
 }
 
 func roleCreated(privs string) []call {
