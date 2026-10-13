@@ -72,9 +72,11 @@ async function atMap(page: Page): Promise<void> {
 }
 
 // openMap opens the overview at path with the map drawn and fitted to its
-// width, and then lets its dots move for 1.6 s: the motion is paused while
-// the map is drawn, so that they start from the same frame every time.
-async function openMap(page: Page, pco: Pco, path: string, { icons = false } = {}): Promise<void> {
+// width, zoomed out a given number of steps when the whole map is taller
+// than the window, and then lets its dots move for 1.6 s: the motion is
+// paused while the map is drawn, so that they start from the same frame
+// every time.
+async function openMap(page: Page, pco: Pco, path: string, { icons = false, zoomOut = 0 } = {}): Promise<void> {
   await withTicket(page.context(), pco, admin)
   const read = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v1/state' && r.ok())
   await page.goto(path)
@@ -86,6 +88,10 @@ async function openMap(page: Page, pco: Pco, path: string, { icons = false } = {
   await expect(map.locator('.fm-lines .fm-edge-trunk .fm-figure').first()).toBeVisible()
   await page.getByRole('button', { name: 'Fit' }).click()
   await settle(page)
+  for (let i = 0; i < zoomOut; i++) {
+    await page.getByRole('button', { name: 'Zoom out' }).click()
+    await settle(page)
+  }
   await page.getByRole('button', { name: 'Resume motion' }).click()
   await page.clock.runFor(1600)
 }
@@ -103,9 +109,10 @@ test('overview', async ({ page, pco }) => {
 })
 
 // The whole map takes more width than the navigation leaves at 1280 px: it
-// shows its icons only.
+// shows its icons only. Fitted to the width it is taller than the window,
+// so it is zoomed out a step to show the network a route is reached through.
 test('the flow map at rest', async ({ page, pco }) => {
-  await openMap(page, pco, '/', { icons: true })
+  await openMap(page, pco, '/', { icons: true, zoomOut: 1 })
   await atMap(page)
   await shoot(page, 'overview-map')
 })
@@ -119,6 +126,18 @@ test('the flow map drilled into a hostname', async ({ page, pco }) => {
 test('routes', async ({ page, pco }) => {
   await open(page, pco, '/routes')
   await shoot(page, 'routes')
+})
+
+// The route reached through the leg of an attached network is the last row
+// of the table, below the window: the table is scrolled to it.
+test('the routes, at a route reached through a leg', async ({ page, pco }) => {
+  await open(page, pco, '/routes')
+  const table = page.getByRole('table', { name: 'Routes' })
+  const row = table.getByRole('row').filter({ hasText: 'zabbix.example.com' })
+  await row.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+  await settle(page)
+  await expect(row).toContainText('198.18.1.5')
+  await shoot(page, 'routes-leg')
 })
 
 test('a route', async ({ page, pco }) => {

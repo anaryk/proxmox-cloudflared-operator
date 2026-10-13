@@ -355,6 +355,8 @@ is not active says why under its hostname. Over the table a line says when these
 of an earlier cycle: before the first cycle, after a cycle that held, and when the inventory was
 incomplete.
 
+![The routes scrolled to zabbix.example.com, reached through the leg of the attached network vmbr2: its service is the service address 198.18.1.5, which the gateway forwards to the guest](images/ui-routes-leg-light.png)
+
 A row opens the route in a drawer, or as a page of its own on a phone. Its address,
 `/routes/<hostname>?owner=<owner>`, can be shared.
 
@@ -482,7 +484,7 @@ claims. The claims are read when the page opens; Read again reads them anew.
 
 ## Networks
 
-![The networks: the bridges and VLANs the routes were proven on, with their routes, levels and guests, and the segments of routes at observed](images/ui-networks-light.png)
+![The networks: the bridges and VLANs the routes were proven on, with their routes, levels and guests, the line that counts the routes reached through a leg, and the segments of routes at observed](images/ui-networks-light.png)
 
 Where the routes were proven directly, as the node itself: a row for each bridge and VLAN, with
 the number of routes, their identity levels and their guests, and a row for the routes proven on
