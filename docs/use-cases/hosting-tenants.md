@@ -94,6 +94,12 @@ whole bridge; then the attach, inside the appliance. For the two networks of the
     pct exec 120 -- pco network attach vmbr1:20 --address 10.0.20.250/24
     pct exec 120 -- pco network attach vmbr1:30 --address 10.0.30.250/24
 
+The appliance has no card on a VLAN before the attach adds one, so it cannot probe the
+address first: the attach says `is not probed` and asks all the same. The leg checks the
+address when it is raised and keeps it off if anyone answers, which `pco network list` shows
+as `address in use by <mac>`; detach the network then and attach it with an address the
+tenant has really set aside.
+
 The tenants' guests are then served through the legs, under service addresses of pco's that
 the connectors dial, and nothing of a tenant's is touched; [Attach a network](../guides/attach-a-network.md)
 is the guide. Its segment is the one each leg is on, `vmbr1:20` for the first, and each

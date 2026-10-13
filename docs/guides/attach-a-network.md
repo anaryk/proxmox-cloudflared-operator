@@ -68,6 +68,13 @@ network is the better answer.
    pco's own on the bridge while the network is not attached; on a bridge with a physical
    port its MAC is seen on that LAN for the moment it probes, and the output says so first.
 
+   The appliance has no port of a bridge before its card is there, so it cannot probe the
+   address yet. It says so, and the command exits 1:
+
+   ```text
+   10.77.0.250 on vmbr1, in 10.77.0.0/24, is not probed: the appliance has no network card on vmbr1 before the network is attached; the leg checks 10.77.0.250 when it is raised and keeps it off if anyone answers.
+   ```
+
 3. Attach the network. The command probes the address again, shows the result and what it
    found of the bridge, and asks:
 
@@ -92,7 +99,9 @@ network is the better answer.
      a copy of the LAN's addresses, as a lab does; the node's own traffic stays where it is.
 
    A script passes `--yes`. The first network of a host enables `pco-netns.service`, the unit
-   that brings the gateway namespace back at boot.
+   that brings the gateway namespace back at boot. In the appliance the attach shows the
+   `is not probed` line above in place of the probe's result and asks all the same; the leg
+   checks the address when it is raised, as step 4 shows.
 
 4. Wait for the next cycle, and look at the network:
 
@@ -106,8 +115,8 @@ network is the better answer.
    ```
 
    `STATE` is how the gateway last found the leg: `up`, or why not, as `address in use by
-   52:54:00:12:34:56` when another station took the address meanwhile, or the bridge being
-   absent. A leg that is not up is a problem line of `pco status` and a failed check `leg
+   52:54:00:12:34:56` when another station took the address meanwhile (in the appliance, also
+   when it held it before the attach, which could not probe), or the bridge being absent. A leg that is not up is a problem line of `pco status` and a failed check `leg
    vmbr1` of `pco doctor`.
 
 5. Publish a guest of the network as any other: the gate tag and the Notes, as in

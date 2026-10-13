@@ -130,7 +130,10 @@ admin-added cards count against the nine.
 
 The appliance attaches a VLAN only on a bridge that filters VLANs (a VLAN-aware bridge), never
 a `vmbr<X>v<Y>` bridge, and never a bridge it has no grant for. It probes an address only
-through a leg it has: `pco network probe` on a bridge it is not attached to says `attach first`.
+through a leg it has: before the attach it has no card on the bridge, so `pco network probe`
+and `pco network attach` say `is not probed` and why, and the attach goes on. The leg checks
+its address when the next cycle raises it, on every bridge, and keeps it off if anyone
+answers: `pco network list` then shows `address in use by <mac>`.
 
 ### Service addresses
 

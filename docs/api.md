@@ -584,7 +584,9 @@ leg exists, `guests` lists the addresses seen there by guest, `prefixes` the pre
 suggest, most common first, and `refused` why this profile cannot attach it. `POST
 /v1/networks/probe {"bridge", "vlan", "prefix", "address"}` asks who answers for an address,
 `prefix` and `address` optional, and answers `{"bridge", "vlan", "prefix", "address", "free",
-"answeredBy", "uplink", "warning", "note", "overlap"}`. `POST /v1/networks` attaches:
+"answeredBy", "uplink", "warning", "note", "overlap", "notProbed"}`. `notProbed` says why the
+address was not probed, in the appliance before the network is attached; `free` is `false`
+then, and an attach is not refused for it. `POST /v1/networks` attaches:
 
 ```json
 { "bridge": "vmbr1", "vlan": 0, "prefix": "10.77.0.0/24", "address": "10.77.0.250", "confirmUplink": false, "overlapOK": false }
