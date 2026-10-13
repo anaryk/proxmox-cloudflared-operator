@@ -23,6 +23,7 @@ cannot make again is what an admin decided, and the secrets.
 | The approvals of guests | `/etc/pve/pco/approvals/` | `pco guest approve`. |
 | The manual routes | `/etc/pve/pco/routes/` | `pco route manual add`. |
 | The acknowledged segments | `/etc/pve/pco/segments/` | `pco segment acknowledge`. |
+| The attached networks and the consents of the managed network | `/etc/pve/pco/networks/`, `/etc/pve/pco/consents/` | `pco network attach`, `pco managed approve`. |
 | The records `pco adopt` replaced | `/etc/pve/pco/adopted.jsonl` | Nothing: the only copy. |
 | The Cloudflare credentials | `/etc/pve/priv/pco/credentials/` | `pco credential add`, with the tokens. |
 | What setup created | `/var/lib/pco/manifest.json` | Nothing; `pco uninstall` needs it to remove the role, user and token. |
@@ -131,7 +132,10 @@ says what it checks and when it refuses.
    pco route manual add status.example.com --address 10.0.5.20 --port 9000 --id status
    ```
 
-   An approval is of the identity a guest has now, and pco shows it before it records it.
+   An approval is of the identity a guest has now, and pco shows it before it records it,
+   with the soft-denied addresses the guest is at now. An address that was allowed with
+   `--allow-address` and that the guest is not at now is under `addresses` in
+   `approvals.json`: give it again, `pco guest approve <owner> --allow-address <address>`.
    `manual-routes.json` has the hostname, target and options of each manual route.
 
 5. Read `pco plan` and `pco status`, and when they are what you expect:

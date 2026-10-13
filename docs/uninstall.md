@@ -63,13 +63,13 @@ A script that removes everything looks like this:
    a tunnel that still has a connection. The tunnel of another install stays at Cloudflare.
 4. **Tunnels at Cloudflare** (with purge): the tunnel `pco-<install id>`, and any test tunnel
    that a credential check left behind.
-5. **The egress filter.** It stops and disables `pco-egress.service` and deletes the
-   nftables table `inet pco_egress`.
-   **The gateway**, where a network was attached: it disables `pco-netns.service` and runs
+5. **The gateway**, where a network was attached: it disables `pco-netns.service` and runs
    `pco netns down --uninstall`, which removes the legs from the bridges, the namespace `pco`
    with its tables, the guard on `pconet` and the routes of the service prefix on the node;
    it refuses while the connectors still run and the namespace holds service addresses, which
    is why the connectors go first. The networks themselves go with the store.
+   **The egress filter** next: it stops and disables `pco-egress.service` and deletes the
+   nftables table `inet pco_egress`.
 6. **The web interface.** It stops and disables `pco-web.service`, which ends every session of
    it, and removes what setup made for it, as far as the manifest lists it:
    `/etc/default/pco-web`, which goes whole with the lines you added to it, and in
@@ -88,9 +88,10 @@ A script that removes everything looks like this:
    - the registered tags that setup added, `cf-tunnel` and `cf-tunnel-managed`. Tags that
      were registered before stay in their order;
    - the SDN zone `pco` and the vnet `pconet` of the managed network, where `pco setup
-     --managed` or `pco network managed enable` made them, last of all and only once no guest
-     of the cluster has a card on `pconet`: the apply that removes the vnet takes the bridge
-     away from every node, and a guest with a card on it would lose it under its feet. Every
+     --managed` or `pco network managed enable` made them, after `cloudflared` below and just
+     before the store, and only once no guest of the cluster has a card on `pconet`: the
+     apply that removes the vnet takes the bridge away from every node, and a guest with a
+     card on it would lose it under its feet. Every
      guest configuration of the cluster is read first, and while any has one the zone is kept
      with the line `the SDN zone pco is kept: guests <list> still have a card on pconet; detach
      them first or pass --detach-managed`. `--detach-managed` removes the cards pco attached,

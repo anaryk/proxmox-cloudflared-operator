@@ -381,7 +381,8 @@ they find and exit 0. `pco doctor` exits 1 for a failure and not for a warning, 
 
 With `--json`, the commands that print an answer of the daemon (`status`, `routes`, `plan`,
 `events`, `claims list`, `guest list`, `diagnose`, `doctor`, `credential list`, `add` and
-`check`) print it as the daemon sent it, re-indented, with control and bidirectional
+`check`, `settings show` and `apply`, `route manual list` and `add`, `network list`,
+`candidates`, `probe` and `show`) print it as the daemon sent it, re-indented, with control and bidirectional
 characters escaped. On a command that has no answer to print, such as `setup` or `apply`,
 `--json` is an error.
 
@@ -614,7 +615,7 @@ This is the host profile; the appliance upgrades with `pco upgrade`, as
 
 To upgrade, install the new package, with the installer or with `apt install` of the new
 `.deb`; see [Quickstart](quickstart.md). On an upgrade the package reloads systemd and
-restarts `pco.service` if it was running. The connectors are not touched, because
+restarts `pco.service` and `pco-web.service` if they were running. The connectors are not touched, because
 restarting them would drop the tunnels they serve; they run on with the binary they started
 with, and the files of a connector are rewritten and the connector is restarted only when
 the daemon finds them different from what it wants. A change that cloudflared does not read

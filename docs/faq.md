@@ -28,11 +28,12 @@ side by side.
 
 ## What does pco change on the node and in Proxmox?
 
-The package installs `/usr/bin/pco`, five systemd units in `/usr/lib/systemd/system`, the man
+The package installs `/usr/bin/pco`, six systemd units in `/usr/lib/systemd/system`, the man
 pages, the completion scripts and these pages, the release key and the list of vetted
 `cloudflared` versions in `/usr/share/pco`, and a `sysusers.d` file for the users
 `pco-connector` and `pco-web`. The units are `pco.service`, the daemon; `pco-egress.service`,
-which loads the egress filter; `pco-cloudflared@.service`, the connector of one tunnel;
+which loads the egress filter; `pco-netns.service`, which brings back the gateway namespace
+of an attached network at boot and does nothing until one is attached; `pco-cloudflared@.service`, the connector of one tunnel;
 `pco-web.service`, the web interface; and `pco-net.service`, which only the appliance uses and
 nothing starts on a host. The package depends on `nftables` and enables nothing.
 

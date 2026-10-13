@@ -4,6 +4,8 @@ This page lists every path that pco writes or reads on a node: the state and its
 roots, the socket, the units, the files of the web interface and what the package installs.
 For each it says what writes it, who may read it, and whether to back it up. It describes
 the host profile; the [last section](#the-appliance) lists what differs in the appliance.
+What a row says of a cluster is for pco on more than one node, which this release does not
+do yet ([Operations](operations.md#one-node)).
 
 Do not edit the state files by hand, except the settings (see [Settings](settings.md)). The
 modes in the tables are those pco gives a file it makes. The cluster filesystem sets the
@@ -70,7 +72,7 @@ mounted.
 | `svcaddrs/<network>-<address>.json` | A service address, with the guest address behind the leg it stands for and the owner, guest and identity it was made for; only the live ones. | The daemon | as the cluster filesystem sets | No; the daemon makes them again. |
 | `meta/svcpool.json` | The next service address to give out, which only moves forward: an address is never given twice. | The daemon | as the cluster filesystem sets | Yes, with the mappings: without it the daemon starts after the highest in use. |
 | `ipam/<mac>.json` | A lease of the managed network: the address, its card's MAC (the file is named by it, with dashes), the owner and its identity, and when DHCP last asked. | The daemon | as the cluster filesystem sets | No; a card keeps its address through its MAC, and a lease is made again with the card. |
-| `consents/<owner>.json` | An approval for a card on the managed network, with the identity it was given in, who gave it and whether the firewall impact was accepted. | `pco managed approve` and `revoke`, the web interface | as the cluster filesystem sets | Yes: a decision of an admin. |
+| `consents/<owner>.json` | An approval for a card on the managed network, with the identity it was given in, who gave it and whether the firewall impact was accepted. | `pco managed approve` and `revoke` | as the cluster filesystem sets | Yes: a decision of an admin. |
 | `attachments/<owner>.json` | The card pco gave a guest on the managed network: its index, MAC and address, the consent it rests on, when it was attached, a detach under way, and in the appliance what the guest's firewall was before pco changed it. | The daemon | as the cluster filesystem sets | No; the daemon finds the cards in the guests' configurations and makes the attachment again. |
 | `adopted.jsonl` | One line for each DNS record that `pco adopt` replaced, as it was; at most 256 KiB, oldest lines first out. | The daemon, for `pco adopt` | as the cluster filesystem sets | Yes: it is the only copy of those records. |
 
@@ -238,10 +240,10 @@ file.
 
 The state that cannot be made again is what an admin decided: the settings, the approvals,
 the manual routes, the acknowledged segments, the networks attached and the consents of the
-managed network, the snapshots in `adopted.jsonl`, the credentials and the manifest. On a host the settings, approvals, manual routes, segments and
-snapshots are in `/etc/pve/pco`, which a backup of the cluster filesystem has, and the
-credentials are in `/etc/pve/priv/pco`: a backup that holds them is a secret too. The
-manifest is in `/var/lib/pco`. Everything else is made again by the daemon: bindings are
+managed network, the snapshots in `adopted.jsonl`, the credentials and the manifest. On a host
+the settings, approvals, manual routes, segments and snapshots are in `/etc/pve/pco`, which a
+backup of the cluster filesystem has, and the credentials are in `/etc/pve/priv/pco`: a backup
+that holds them is a secret too. The manifest is in `/var/lib/pco`. Everything else is made again by the daemon: bindings are
 verified again, claims settled again from the Notes, tunnel tokens read again from
 Cloudflare.
 

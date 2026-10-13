@@ -154,7 +154,7 @@ checks are:
 
 | Check | Fails or warns when |
 |---|---|
-| `cycle` | The last cycle is more than three poll intervals old (warning) or six (failure): the daemon is stuck. `journalctl -u pco` says why. |
+| `cycle` | No cycle has run yet, or the last one is more than three poll intervals old (warning) or six (failure), counted in its own duration when it took longer than a poll interval: the daemon is stuck. `journalctl -u pco` says why. |
 | `cloudflared` | It does not run, did not answer in time, or is more than ten months old; the age counts from the first day of the month in its version number. |
 | `outbound` | TCP to `region1.v2.argotunnel.com:7844` cannot be made. A warning when every connector is connected anyway, because they may be on UDP. Allow outbound TCP and UDP to port 7844. |
 | `proxmox` | The Proxmox API does not answer with the token of pco, or the version is older than 8.4. |
@@ -622,9 +622,10 @@ A connector from before pco wrote the install into its env file gets this instea
     connector for tunnel <tunnel id> names no install; pco setup --recover adopts the
     install it was made for, pco uninstall on this node removes it
 
-`pco setup --recover` adopts the earlier install, and `pco uninstall` removes every connector
-on the node; see [Uninstall](uninstall.md), which also says what a plain `pco setup` does
-beside such connectors. It refuses, and tells you to use one of those two.
+`pco setup --recover` adopts the earlier install, `pco uninstall` removes every connector on
+the node, and `pco setup --new-install` starts a new install beside them; see
+[Uninstall](uninstall.md). A plain `pco setup` refuses beside such connectors and names all
+three.
 
 A unit that is loaded and has neither an env file nor a token file cannot serve anything, and
 the daemon stops it and clears its failed state when it prunes connectors, which it does

@@ -2,7 +2,7 @@
 
 Each guide is one task, from start to end: when you need it, what to have ready, the steps with
 the commands and the Notes to write, how to check the result, and how to undo it. The guides
-under the first three headings are for a node of the host profile, set up as in
+under the first four headings are for a node of the host profile, set up as in
 [Quickstart](../quickstart.md); the last four are for the appliance. They link the concept pages
 and the reference where those say more.
 

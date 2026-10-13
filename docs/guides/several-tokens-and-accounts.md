@@ -78,6 +78,8 @@ as it is until it is pinned.
    pco credential check e5f6a7b8 --deep
    ```
 
+   It asks before it writes; a script passes `--yes`.
+
 3. Publish a hostname of the new zone, as in [Publish a container](publish-a-container.md).
    The first route in the account Second makes its tunnel, and `pco status` shows both:
 

@@ -260,7 +260,9 @@ page alike.
 
 ## Cluster
 
-The settings of a cluster of nodes are the keys of one object, `cluster`:
+The settings of a cluster of nodes are the keys of one object, `cluster`. They are for pco
+on more than one node, which this release does not do yet
+([Operations](operations.md#one-node)).
 
 ```json
 "cluster": {
