@@ -38,7 +38,7 @@ func (c *Client) Resources(ctx context.Context) ([]Resource, error) {
 			Node:     row.Node,
 			Status:   row.Status,
 			Template: bool(row.Template),
-			Tags:     SplitTags(row.Tags),
+			Tags:     row.Tags,
 			Pool:     row.Pool,
 		})
 	}
@@ -92,7 +92,7 @@ func (c *Client) guestConfig(ctx context.Context, node string, ref model.GuestRe
 	}
 	cfg := GuestConfig{Values: make(map[string]string, len(raw))}
 	for key, value := range raw {
-		text, ok := stringify(value)
+		text, ok := configText(value)
 		if !ok {
 			continue
 		}

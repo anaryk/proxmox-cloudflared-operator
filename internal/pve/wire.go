@@ -67,7 +67,7 @@ type resourceWire struct {
 	Node     string   `json:"node"`
 	Status   string   `json:"status"`
 	Template flexBool `json:"template"`
-	Tags     string   `json:"tags"`
+	Tags     List     `json:"tags"`
 	Pool     string   `json:"pool"`
 	Uptime   *int64   `json:"uptime"` // seconds; absent while pvestatd does not report
 }
@@ -179,6 +179,18 @@ func stringify(raw json.RawMessage) (string, bool) {
 	default:
 		return string(raw), true
 	}
+}
+
+// configText is stringify for a value of a guest's config, where a list of
+// strings, which Proxmox can give for the tags in place of the string it
+// stores, is read back as that string, separated by ';'.
+func configText(raw json.RawMessage) (string, bool) {
+	var list []string
+	if t := bytes.TrimSpace(raw); len(t) > 0 && t[0] == '[' && json.Unmarshal(t, &list) == nil {
+		list = slices.DeleteFunc(list, func(p string) bool { return strings.TrimSpace(p) == "" })
+		return strings.Join(list, ";"), true
+	}
+	return stringify(raw)
 }
 
 // lenientMAC normalises a hardware address. Some interfaces report none, or

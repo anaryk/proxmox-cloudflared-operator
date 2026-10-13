@@ -167,3 +167,24 @@ func TestNextConfigReadsTheValuesOfTheNextStart(t *testing.T) {
 	_, err = c.NextConfig(context.Background(), "pco-test-2", model.GuestRef{Kind: model.KindLXC, VMID: 9202})
 	require.Error(t, err)
 }
+
+// Tags have come as a JSON list where older versions give a string; the
+// config keeps them in the form Proxmox stores them, separated by ';'.
+func TestConfigTagsGivenAsAList(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{
+		"/nodes/pve1/lxc/200/config?current=1": {http.StatusOK, `{"data":{"hostname":"db-1","tags":["cf-tunnel","Prod"],"digest":"d"}}`},
+		"/nodes/pve1/lxc/200/pending": {http.StatusOK, `{"data":[
+			{"key":"hostname","value":"db-1"},
+			{"key":"tags","value":["cf-tunnel"],"pending":["cf-tunnel","Prod"]}
+		]}`},
+	})
+	ref := model.GuestRef{Kind: model.KindLXC, VMID: 200}
+
+	cfg, err := c.GuestConfig(context.Background(), "pve1", ref)
+	require.NoError(t, err)
+	require.Equal(t, "cf-tunnel;Prod", cfg.Values["tags"])
+
+	pending, err := c.PendingConfig(context.Background(), "pve1", ref)
+	require.NoError(t, err)
+	require.Equal(t, "cf-tunnel;Prod", pending["tags"])
+}

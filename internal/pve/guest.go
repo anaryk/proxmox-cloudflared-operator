@@ -65,9 +65,9 @@ func (c *Client) PendingConfig(ctx context.Context, node string, ref model.Guest
 		if row.Key == "digest" || deleted(row.Delete) {
 			continue
 		}
-		text, ok := stringify(row.Pending)
+		text, ok := configText(row.Pending)
 		if !ok {
-			text, ok = stringify(row.Value)
+			text, ok = configText(row.Value)
 		}
 		if ok {
 			out[row.Key] = text

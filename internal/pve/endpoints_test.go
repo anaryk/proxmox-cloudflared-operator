@@ -653,3 +653,16 @@ func TestWrongShapeIsAnError(t *testing.T) {
 		}
 	}
 }
+
+func TestResourceTagsGivenAsAList(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{
+		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[
+			{"type":"lxc","vmid":3,"node":"pve1","tags":["cf-tunnel","Prod",""]},
+			{"type":"lxc","vmid":4,"node":"pve1","tags":[]}
+		]}`},
+	})
+	got, err := c.Resources(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []string{"cf-tunnel", "Prod"}, got[0].Tags)
+	require.Nil(t, got[1].Tags)
+}
