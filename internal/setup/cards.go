@@ -234,7 +234,14 @@ func (d Detacher) detach(ctx context.Context, node string, ref model.GuestRef, a
 		d.Ask.Warn("managed card of %s: net%d on %s has the MAC %s, not pco's %s; left as it is", a.Owner, a.NIC, ManagedVnet, cards[i].MAC, a.MAC)
 		return nil, nil
 	}
-	if _, err := d.Run.Run(ctx, "pvesh", "set", guestPath(node, ref)+"/config", "--delete", "net"+strconv.Itoa(a.NIC)); err != nil {
+	// Under the digest of the configuration the card was found in: one
+	// changed since, as by an admin who put another card there, is not
+	// written over.
+	digest := cfg["digest"]
+	if digest == "" {
+		return nil, fmt.Errorf("removing net%d of %s: its configuration has no digest", a.NIC, ref)
+	}
+	if _, err := d.Run.Run(ctx, "pvesh", "set", guestPath(node, ref)+"/config", "--delete", "net"+strconv.Itoa(a.NIC), "--digest", digest); err != nil {
 		return nil, fmt.Errorf("removing net%d of %s: %w", a.NIC, ref, err)
 	}
 	d.Ask.Info("managed card of %s: removed net%d", a.Owner, a.NIC)
@@ -265,11 +272,13 @@ func (d Detacher) goneCard(node string, ref model.GuestRef, a store.Attachment) 
 	}
 }
 
-// firewallRule is a rule of a guest's firewall as pvesh lists it.
+// firewallRule is a rule of a guest's firewall as pvesh lists it, with the
+// digest of the list it is in.
 type firewallRule struct {
 	Pos     pveInt `json:"pos"`
 	Iface   string `json:"iface"`
 	Comment string `json:"comment"`
+	Digest  string `json:"digest"`
 }
 
 // ipset is an ipset of a guest's firewall as pvesh lists it.
@@ -284,19 +293,8 @@ type ipset struct {
 func (d Detacher) restoreFirewall(ctx context.Context, node string, ref model.GuestRef, a store.Attachment) error {
 	fw := guestPath(node, ref) + "/firewall"
 	iface := "net" + strconv.Itoa(a.NIC)
-	var rules []firewallRule
-	if err := query(ctx, d.Run, &rules, "pvesh", "get", fw+"/rules", "--output-format", "json"); err != nil {
-		return fmt.Errorf("reading the firewall rules of %s: %w", ref, err)
-	}
-	// From the last, as a rule removed moves those after it up.
-	slices.SortFunc(rules, func(x, y firewallRule) int { return int(y.Pos - x.Pos) })
-	for _, rule := range rules {
-		if rule.Iface != iface || !strings.HasPrefix(rule.Comment, FirewallComment) {
-			continue
-		}
-		if _, err := d.Run.Run(ctx, "pvesh", "delete", fmt.Sprintf("%s/rules/%d", fw, rule.Pos)); err != nil {
-			return fmt.Errorf("removing the firewall rule %d of %s: %w", rule.Pos, ref, err)
-		}
+	if err := d.removeRules(ctx, fw, iface, ref); err != nil {
+		return err
 	}
 	var sets []ipset
 	if err := query(ctx, d.Run, &sets, "pvesh", "get", fw+"/ipset", "--output-format", "json"); err != nil {
@@ -315,6 +313,41 @@ func (d Detacher) restoreFirewall(ctx context.Context, node string, ref model.Gu
 	}
 	d.Ask.Info("managed card of %s: the firewall is as it was before pco attached the card", a.Owner)
 	return nil
+}
+
+// removeRules removes pco's rules on iface, told by their comment, one at a
+// time: the last of them under the digest of the list it was read in, and
+// the list read again, as a rule removed moves those after it up and the
+// list may have changed meanwhile. It stops after as many rounds as the
+// first read had rules.
+func (d Detacher) removeRules(ctx context.Context, fw, iface string, ref model.GuestRef) error {
+	ours := func(r firewallRule) bool { return r.Iface == iface && strings.HasPrefix(r.Comment, FirewallComment) }
+	for round, limit := 0, -1; limit < 0 || round <= limit; round++ {
+		var rules []firewallRule
+		if err := query(ctx, d.Run, &rules, "pvesh", "get", fw+"/rules", "--output-format", "json"); err != nil {
+			return fmt.Errorf("reading the firewall rules of %s: %w", ref, err)
+		}
+		if limit < 0 {
+			limit = len(rules)
+		}
+		last := -1
+		for i, r := range rules {
+			if ours(r) && (last < 0 || r.Pos > rules[last].Pos) {
+				last = i
+			}
+		}
+		if last < 0 {
+			return nil
+		}
+		rule := rules[last]
+		if rule.Digest == "" {
+			return fmt.Errorf("removing the firewall rule %d of %s: the list of its rules has no digest", rule.Pos, ref)
+		}
+		if _, err := d.Run.Run(ctx, "pvesh", "delete", fmt.Sprintf("%s/rules/%d", fw, rule.Pos), "--digest", rule.Digest); err != nil {
+			return fmt.Errorf("removing the firewall rule %d of %s: %w", rule.Pos, ref, err)
+		}
+	}
+	return fmt.Errorf("removing the firewall rules of %s: pco's rules on %s are still listed", ref, iface)
 }
 
 // wait reads the configurations of the guests whose cards were removed until

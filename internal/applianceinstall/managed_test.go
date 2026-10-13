@@ -325,7 +325,9 @@ func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 		"the firewall as it was, but for the admin's rule")
 	require.Empty(t, e.node.sdn.zones)
 	stopped := slices.Index(e.node.ran, "pct exec 100 --keep-env 0 -- systemctl stop pco.service")
-	removed := slices.Index(e.node.ran, "pvesh set /nodes/pve1/lxc/105/config --delete net1")
+	removed := slices.IndexFunc(e.node.ran, func(line string) bool {
+		return strings.HasPrefix(line, "pvesh set /nodes/pve1/lxc/105/config --delete net1 --digest ")
+	})
 	require.Greater(t, stopped, slices.Index(e.node.ran, "pct exec 100 --keep-env 0 -- pco appliance attachments"), "the daemon stops after the attachments are read")
 	require.Less(t, stopped, removed, "the daemon stops before a card goes")
 	require.Less(t, removed, slices.Index(e.node.ran, "pct destroy 100 --purge 1"))

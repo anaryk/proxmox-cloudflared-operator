@@ -23,13 +23,13 @@ const (
 )
 
 func ctOnPconet() guestCfg {
-	return guestCfg{"lxc/105", testNode, "{" + cardOnVmbr0 + "," + cardOnPconet + "}"}
+	return guestCfg{"lxc/105", testNode, `{"digest":"cfg1",` + cardOnVmbr0 + "," + cardOnPconet + "}"}
 }
 
 func ctOffPconet() guestCfg { return guestCfg{"lxc/105", testNode, "{" + cardOnVmbr0 + "}"} }
 
 func vmOnPconet() guestCfg {
-	return guestCfg{"qemu/120", "pve2", `{"net0":"virtio=BC:24:11:00:00:02,bridge=vmbr0","net2":"virtio=06:50:43:4f:76:07,bridge=pconet,firewall=0"}`}
+	return guestCfg{"qemu/120", "pve2", `{"digest":"cfg2","net0":"virtio=BC:24:11:00:00:02,bridge=vmbr0","net2":"virtio=06:50:43:4f:76:07,bridge=pconet,firewall=0"}`}
 }
 
 func resources(guests ...guestCfg) call {
@@ -107,7 +107,7 @@ func TestUninstallDetachesTheManagedCardsFirst(t *testing.T) {
 	e.installed(setupsManaged)
 	require.NoError(t, e.st.SaveAttachment(attached("lxc/105", 1, "10.203.118.5", nil)))
 	e.script(connectorsSeen(), egressSeen(), cardsRead(ctOnPconet()), serviceStopped(),
-		[]call{resources(ctOnPconet()), configRead(ctOnPconet()), {line: "pvesh set /nodes/pve1/lxc/105/config --delete net1"},
+		[]call{resources(ctOnPconet()), configRead(ctOnPconet()), {line: "pvesh set /nodes/pve1/lxc/105/config --delete net1 --digest cfg1"},
 			configRead(ctOffPconet())},
 		connectorsPruned(), egressDeleted(), cardsRead(ctOffPconet()), sdnRemoved())
 
@@ -140,7 +140,7 @@ func TestUninstallWaitsBoundedForTheCards(t *testing.T) {
 	require.NoError(t, e.st.SaveAttachment(attached("qemu/120", 2, "10.203.118.7", nil)))
 	var slept []time.Duration
 	e.s.host.sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
-	waits := []call{resources(vmOnPconet()), configRead(vmOnPconet()), {line: "pvesh set /nodes/pve2/qemu/120/config --delete net2"}}
+	waits := []call{resources(vmOnPconet()), configRead(vmOnPconet()), {line: "pvesh set /nodes/pve2/qemu/120/config --delete net2 --digest cfg2"}}
 	for range detachPolls {
 		waits = append(waits, configRead(vmOnPconet()))
 	}
@@ -164,18 +164,31 @@ func TestDetachPutsBackTheFirewall(t *testing.T) {
 	e := newTestEnv(t)
 	ct := ctOnPconet()
 	fw := "/nodes/pve1/lxc/105/firewall"
+	rules := func(digest string, pos ...int) string {
+		all := map[int]string{
+			0: `{"pos":0,"type":"in","action":"ACCEPT","iface":"net0","dport":"22","digest":"` + digest + `"}`,
+			1: `{"pos":1,"type":"in","action":"ACCEPT","iface":"net1","proto":"udp","comment":"pco:0123456789ab","digest":"` + digest + `"}`,
+			2: `{"pos":2,"type":"in","action":"ACCEPT","iface":"net1","dport":"8080","comment":"backup agent","digest":"` + digest + `"}`,
+			3: `{"pos":3,"type":"in","action":"DROP","iface":"net1","comment":"pco:0123456789ab","digest":"` + digest + `"}`,
+			4: `{"pos":4,"type":"out","action":"DROP","iface":"net1","comment":"pco:0123456789ab","digest":"` + digest + `"}`,
+		}
+		var out []string
+		for _, p := range pos {
+			out = append(out, all[p])
+		}
+		return "[" + strings.Join(out, ",") + "]"
+	}
+	readRules := "pvesh get " + fw + "/rules --output-format json"
 	e.script([]call{
 		resources(ct), configRead(ct),
-		{line: "pvesh set /nodes/pve1/lxc/105/config --delete net1"},
-		{line: "pvesh get " + fw + "/rules --output-format json",
-			out: `[{"pos":0,"type":"in","action":"ACCEPT","iface":"net0","dport":"22"},` +
-				`{"pos":1,"type":"in","action":"ACCEPT","iface":"net1","proto":"udp","comment":"pco:0123456789ab"},` +
-				`{"pos":2,"type":"in","action":"ACCEPT","iface":"net1","dport":"8080","comment":"backup agent"},` +
-				`{"pos":3,"type":"in","action":"DROP","iface":"net1","comment":"pco:0123456789ab"},` +
-				`{"pos":4,"type":"out","action":"DROP","iface":"net1","comment":"pco:0123456789ab"}]`},
-		{line: "pvesh delete " + fw + "/rules/4"},
-		{line: "pvesh delete " + fw + "/rules/3"},
-		{line: "pvesh delete " + fw + "/rules/1"},
+		{line: "pvesh set /nodes/pve1/lxc/105/config --delete net1 --digest cfg1"},
+		{line: readRules, out: rules("r1", 0, 1, 2, 3, 4)},
+		{line: "pvesh delete " + fw + "/rules/4 --digest r1"},
+		{line: readRules, out: rules("r2", 0, 1, 2, 3)},
+		{line: "pvesh delete " + fw + "/rules/3 --digest r2"},
+		{line: readRules, out: rules("r3", 0, 1, 2)},
+		{line: "pvesh delete " + fw + "/rules/1 --digest r3"},
+		{line: readRules, out: rules("r4", 0, 2)},
 		{line: "pvesh get " + fw + "/ipset --output-format json", out: `[{"name":"ipfilter-net1"},{"name":"trusted"}]`},
 		{line: "pvesh delete " + fw + "/ipset/ipfilter-net1 --force 1"},
 		{line: "pvesh set " + fw + "/options --enable 0"},
@@ -222,7 +235,7 @@ func TestDetachLeavesAFirewallThatWasOn(t *testing.T) {
 	fw := "/nodes/pve1/lxc/105/firewall"
 	e.script([]call{
 		resources(ct), configRead(ct),
-		{line: "pvesh set /nodes/pve1/lxc/105/config --delete net1"},
+		{line: "pvesh set /nodes/pve1/lxc/105/config --delete net1 --digest cfg1"},
 		{line: "pvesh get " + fw + "/rules --output-format json", out: `[]`},
 		{line: "pvesh get " + fw + "/ipset --output-format json", out: `[]`},
 		configRead(ctOffPconet()),

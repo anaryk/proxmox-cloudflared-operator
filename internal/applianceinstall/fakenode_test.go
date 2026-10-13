@@ -240,13 +240,16 @@ func (f *fakeNode) guestFirewall(verb, rest string, args []string) (string, erro
 	case verb == "get" && tail == "rules":
 		var out []map[string]any
 		for pos, rule := range fw.rules {
-			out = append(out, map[string]any{"pos": pos, "type": "in", "action": "ACCEPT", "iface": rule.iface, "comment": rule.comment})
+			out = append(out, map[string]any{"pos": pos, "type": "in", "action": "ACCEPT", "iface": rule.iface, "comment": rule.comment, "digest": digestOf(fw.rules)})
 		}
 		return asJSON(out), nil
 	case verb == "delete" && strings.HasPrefix(tail, "rules/"):
 		pos, err := strconv.Atoi(strings.TrimPrefix(tail, "rules/"))
 		if err != nil || pos >= len(fw.rules) {
 			return "", fmt.Errorf("no rule at %s", tail)
+		}
+		if d := flag(args, "--digest"); d != "" && d != digestOf(fw.rules) {
+			return "", errors.New("detected modified configuration - file changed by other user? Try again.")
 		}
 		fw.rules = slices.Delete(fw.rules, pos, pos+1)
 		return "", nil
@@ -503,6 +506,9 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 		if ct == nil {
 			return "", fmt.Errorf("Configuration file 'nodes/%s/lxc/%d.conf' does not exist", f.name, id)
 		}
+		if d := flag(args, "--digest"); d != "" && d != digestOf(ct.cfg) {
+			return "", errors.New("detected modified configuration - file changed by other user? Try again.")
+		}
 		for key := range strings.SplitSeq(flag(args, "--delete"), ",") {
 			delete(ct.cfg, key)
 		}
@@ -651,19 +657,33 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 		if ct == nil {
 			return "", fmt.Errorf("Configuration file 'nodes/%s/lxc/%d.conf' does not exist", f.name, id)
 		}
-		return asJSON(ct.cfg), nil
+		return asJSON(withDigest(ct.cfg)), nil
 	}
 	// The configuration of a container of another node, which the API of any
 	// node of the cluster gives.
 	if node, rest, ok := strings.Cut(strings.TrimPrefix(path, "/nodes/"), "/lxc/"); verb == "get" && ok && node != f.name && strings.HasSuffix(rest, "/config") {
 		id, _ := strconv.Atoi(strings.TrimSuffix(rest, "/config"))
 		if ct := f.otherCTs[id]; ct != nil && f.elsewhere[id] == node {
-			return asJSON(ct.cfg), nil
+			return asJSON(withDigest(ct.cfg)), nil
 		}
 		return "", fmt.Errorf("Configuration file 'nodes/%s/lxc/%d.conf' does not exist", node, id)
 	}
 	f.t.Errorf("unexpected pvesh %v", args)
 	return "", errors.New("unexpected command")
+}
+
+// digestOf is the digest Proxmox gives a configuration or a list with it, and
+// takes back to refuse a change to one changed since it was read.
+func digestOf(v any) string {
+	sum := sha256.Sum256([]byte(asJSON(v)))
+	return hex.EncodeToString(sum[:8])
+}
+
+// withDigest is cfg as the API reads it, with its digest.
+func withDigest(cfg map[string]string) map[string]string {
+	out := maps.Clone(cfg)
+	out["digest"] = digestOf(cfg)
+	return out
 }
 
 func b01(b bool) int {
