@@ -31,8 +31,12 @@ func (k *Keeper) Gate(ctx context.Context) (planner.Writer, error) {
 		return planner.Writer{}, err
 	}
 	defer k.putOp()
-	// Another gate may have refreshed while this one waited.
+	// Another gate may have refreshed while this one waited, and the node
+	// may have been suspended meanwhile.
+	quorate, at = k.cfg.Quorum()
 	k.mu.Lock()
+	k.look()
+	k.noteQuorum(quorate, at)
 	w, refresh, err = k.admit()
 	if refresh {
 		err = k.shared()
@@ -53,6 +57,7 @@ func (k *Keeper) Gate(ctx context.Context) (planner.Writer, error) {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.look()
 	if w, refresh, err = k.admit(); refresh {
 		return planner.Writer{}, fmt.Errorf("%w: a pause came during the refresh", ErrFenced)
 	}
@@ -74,6 +79,8 @@ func (k *Keeper) admit() (w planner.Writer, refresh bool, err error) {
 // blocked says why no write may go out, whatever the age of the lease.
 func (k *Keeper) blocked() error {
 	switch {
+	case !k.held:
+		return fmt.Errorf("%w: the lease keeper is not running", ErrNotHolder)
 	case !k.holder && k.waiting != "":
 		return fmt.Errorf("%w: %s", ErrNotHolder, k.waiting)
 	case !k.holder, k.stopping:
@@ -255,11 +262,19 @@ func (k *Keeper) ours(rec store.LeaderRecord) (store.LeaderRecord, int64, error)
 
 // look looks for a pause since the last look: a gap between ticks, or a
 // suspend, which moves boot time and not monotonic time. A pause invalidates
-// the last refresh: the process cannot know what happened meanwhile.
+// the last refresh: the process cannot know what happened meanwhile. A step
+// of the wall clock asks for a refresh at once.
 func (k *Keeper) look() {
 	mono, boot := k.cfg.Clocks.Monotonic(), k.cfg.Clocks.Boottime()
 	offset := boot - mono
+	wallOffset := time.Duration(k.cfg.Clocks.Now().UnixNano()) - mono
 	if k.looked {
+		// A suspend moves the wall clock as much as boot time; a step moves
+		// the wall clock alone.
+		if step := wallOffset - k.wallOffset - (offset - k.offset); k.holder && (step > SuspendJump || step < -SuspendJump) {
+			k.log.Warn().Dur("step", step).Msg("the wall clock stepped; refreshing the lease at once")
+			k.stepped = true
+		}
 		gap, jump := mono-k.lookedAt, offset-k.offset
 		switch {
 		case gap > TickGap:
@@ -268,7 +283,7 @@ func (k *Keeper) look() {
 			k.paused(mono, fmt.Sprintf("a pause of %s in a suspend", jump.Abs()))
 		}
 	}
-	k.looked, k.lookedAt, k.offset = true, mono, offset
+	k.looked, k.lookedAt, k.offset, k.wallOffset = true, mono, offset, wallOffset
 }
 
 func (k *Keeper) paused(at time.Duration, why string) {

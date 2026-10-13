@@ -432,7 +432,7 @@ func TestARestartOnTheHoldersNodeKeepsTheEpoch(t *testing.T) {
 	old := l.m("pve1")
 	l.run(11 * time.Second)
 	epoch, rev := old.epoch(), l.rev()
-	old.stop()
+	old.exit()
 	l.run(5 * time.Second)
 
 	restarted := l.add("pve1", "pve1/boot-1")
@@ -449,7 +449,7 @@ func TestARebootDrawsANewEpoch(t *testing.T) {
 	old := l.m("pve1")
 	l.run(11 * time.Second)
 	epoch := old.epoch()
-	old.stop()
+	old.exit()
 	l.run(5 * time.Second)
 
 	rebooted := l.add("pve1", "pve1/boot-2")
@@ -460,16 +460,48 @@ func TestARebootDrawsANewEpoch(t *testing.T) {
 	require.Equal(t, "pve1/boot-2", l.leader().Incarnation)
 }
 
-// pmxcfs owns a lock per node and not per process: once a process of the
-// node took the lock after it lapsed, pmxcfs takes the refresh of another
-// process of the node as well. The nonce in leader.json tells them apart.
+// pmxcfs owns a lock per node and not per process: it takes the refresh of
+// any process of the owner's node. A second keeper on a node refuses to
+// start while the first one lives, stalled or not; once the first process is
+// gone, a keeper of the same boot keeps its epoch.
+func TestASecondKeeperOfANodeRefusesToStart(t *testing.T) {
+	l := newLab(t, "pve1")
+	a := l.m("pve1")
+	l.run(time.Second)
+	epoch := a.epoch()
+
+	for _, stalled := range []bool{false, true} {
+		if stalled {
+			a.stop()
+		}
+		b, err := l.start("pve1", "pve1/boot-1")
+		require.ErrorIs(t, err, ErrRunning)
+		require.ErrorContains(t, err, "another lease keeper is running on this node")
+		require.False(t, b.holds())
+		require.ErrorIs(t, b.gate(), ErrNotHolder)
+		b.k.tick(l.ctx)
+		require.Zero(t, l.cfs.count("pve1", "unlock"))
+		require.Equal(t, 1, l.cfs.count("pve1", "mkdir"), "it does not even try")
+	}
+
+	a.exit()
+	b, err := l.start("pve1", "pve1/boot-1")
+	require.NoError(t, err)
+	l.run(time.Second)
+	require.True(t, b.holds())
+	require.Equal(t, epoch, b.epoch())
+	require.NoError(t, b.gate())
+}
+
+// Should the process lock fail to keep a second keeper out, its file removed
+// say, the nonce in leader.json still tells two keepers of a node apart.
 func TestTwoKeepersOfOneNodeCannotBothHold(t *testing.T) {
 	l := newLab(t, "pve1")
 	a := l.m("pve1")
 	l.run(time.Second)
 	a.stop()
 
-	b := l.add("pve1", "pve1/boot-2")
+	b := l.addUnlocked("pve1", "pve1/boot-2")
 	l.runUntil(3*time.Minute, b.holds)
 	require.True(t, a.holds(), "the stalled one has not noticed")
 	require.NotEqual(t, a.epoch(), b.epoch())
@@ -620,6 +652,7 @@ func TestRunTicksUntilItsContextEnds(t *testing.T) {
 	pve1 := l.m("pve1")
 	ticks := make(chan time.Time)
 	pve1.k.ticker = func() (<-chan time.Time, func()) { return ticks, func() {} }
+	pve1.k.unhold() // Run takes the process lock itself
 	ctx, cancel := context.WithCancel(l.ctx)
 	done := make(chan error)
 	go func() { done <- pve1.k.Run(ctx) }()
@@ -628,6 +661,20 @@ func TestRunTicksUntilItsContextEnds(t *testing.T) {
 	require.True(t, pve1.holds(), "the first tick is at the start")
 	cancel()
 	require.NoError(t, <-done)
+	require.False(t, pve1.holds())
+	require.ErrorContains(t, pve1.gate(), "not running")
+
+	restarted := l.add("pve1", "pve1/boot-1")
+	l.run(time.Second)
+	require.True(t, restarted.holds(), "the process lock is free again")
+}
+
+func TestRunRefusesToStartBesideAnotherKeeper(t *testing.T) {
+	l := newLab(t, "pve1")
+	second := l.build("pve1", "pve1/boot-1", l.processLock("pve1"))
+	err := second.k.Run(l.ctx)
+	require.ErrorIs(t, err, ErrRunning)
+	require.Zero(t, l.cfs.count("pve1", "mkdir"))
 }
 
 func TestRunEndsAfterARelease(t *testing.T) {
@@ -635,6 +682,7 @@ func TestRunEndsAfterARelease(t *testing.T) {
 	pve1 := l.m("pve1")
 	ticks := make(chan time.Time)
 	pve1.k.ticker = func() (<-chan time.Time, func()) { return ticks, func() {} }
+	pve1.k.unhold() // Run takes the process lock itself
 	done := make(chan error)
 	go func() { done <- pve1.k.Run(l.ctx) }()
 	ticks <- t0

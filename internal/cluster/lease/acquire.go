@@ -86,14 +86,22 @@ func (k *Keeper) mkdir(ctx context.Context) error {
 // that is fresh. That is why a node sends one only while its agent hears no
 // live controller (mayTry).
 func (k *Keeper) contend(ctx context.Context, stored store.LeaderRecord, found bool) {
+	var mine string
 	if found && stored.Node == k.cfg.Node && stored.Incarnation == k.cfg.Incarnation {
 		start := k.stamp()
 		k.mu.Lock()
 		mtime := k.nextMtime(start.wall)
 		k.mu.Unlock()
-		if k.bounded(ctx, func() error { return k.cfg.FS.Refresh(k.cfg.Lock, mtime) }) == nil {
+		err := k.bounded(ctx, func() error { return k.cfg.FS.Refresh(k.cfg.Lock, mtime) })
+		if err == nil {
 			k.claim(ctx, false, start)
 			return
+		}
+		if errors.Is(err, syscall.EACCES) {
+			// pmxcfs refuses an mtime older than the lock's: a process of
+			// this boot set a later one, and the wall clock went back since.
+			mine = "pmxcfs refused the refresh of the lock this node and boot made, most likely because the wall " +
+				"clock stepped back behind the lock's mtime; the epoch is lost and the lock is taken again once it expired; "
 		}
 	}
 	err := k.bounded(ctx, func() error { return k.cfg.FS.UnlockRequest(k.cfg.Lock) })
@@ -110,7 +118,12 @@ func (k *Keeper) contend(ctx context.Context, stored store.LeaderRecord, found b
 		k.mu.Lock()
 		k.recheck = k.mono() + removalWait
 		k.mu.Unlock()
-		k.wait(fmt.Sprintf("the lock is held; leader.json names node %q", stored.Node))
+		why := fmt.Sprintf("the lock is held; leader.json names node %q", stored.Node)
+		if mine != "" {
+			k.waitAt(zerolog.WarnLevel, "waiting for the lease", mine+why)
+			return
+		}
+		k.wait(why)
 	case errors.Is(err, syscall.ENOTEMPTY):
 		k.waitAlarm(fmt.Sprintf("something put a file into the lock %s, so it never expires; pco never removes it", k.cfg.Lock))
 	default:

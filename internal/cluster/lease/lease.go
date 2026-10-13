@@ -135,7 +135,11 @@ type Config struct {
 	// identity of the cluster. why says what keeps it from being one.
 	Eligible func() (ok bool, why string)
 	Guard    Guard
-	Clocks   Clocks
+	// Exclusive takes the lock that keeps a second keeper of the node out,
+	// ProcessLock(DefaultProcessLock) on a node; it fails with ErrRunning
+	// while another one holds it. Run holds it as long as it runs.
+	Exclusive func() (release func(), err error)
+	Clocks    Clocks
 	// Rand draws the nonces.
 	Rand io.Reader
 	Log  zerolog.Logger

@@ -35,6 +35,11 @@ type Keeper struct {
 
 	mu sync.Mutex
 
+	// held is set while this keeper holds the process lock of the node, and
+	// release gives it back. Without it the keeper does nothing.
+	held    bool
+	release func()
+
 	// The newest read of the members file.
 	quorate  bool
 	quorumAt time.Time
@@ -44,6 +49,11 @@ type Keeper struct {
 	looked   bool
 	lookedAt time.Duration
 	offset   time.Duration
+	// wallOffset is the difference of wall and monotonic time at the last
+	// look; stepped is set when it moved by more than SuspendJump since, until
+	// the refresh it calls for.
+	wallOffset time.Duration
+	stepped    bool
 
 	// The tenure. rec is leader.json as this tenure wrote or found it.
 	holder     bool
@@ -103,7 +113,8 @@ func New(cfg Config) (*Keeper, error) {
 	}{
 		{"node", cfg.Node == ""}, {"incarnation", cfg.Incarnation == ""}, {"filesystem", cfg.FS == nil},
 		{"store", cfg.Store == nil}, {"quorum", cfg.Quorum == nil}, {"remembered epoch", cfg.Remembered == nil},
-		{"eligibility", cfg.Eligible == nil}, {"guard", cfg.Guard == nil}, {"clocks", cfg.Clocks == nil},
+		{"eligibility", cfg.Eligible == nil}, {"guard", cfg.Guard == nil},
+		{"process lock", cfg.Exclusive == nil}, {"clocks", cfg.Clocks == nil},
 		{"randomness", cfg.Rand == nil},
 	} {
 		if f.absent {
@@ -125,11 +136,18 @@ func New(cfg Config) (*Keeper, error) {
 	}, nil
 }
 
-// Run keeps the lease until ctx ends or Release ran. It ticks at once and
-// then every Tick: it looks for a pause, reads the quorum, refreshes the
-// lease every RefreshEvery while it holds it and tries to acquire it every
-// AcquireEvery while it does not.
+// Run keeps the lease until ctx ends or Release ran. It takes the process
+// lock of the node first and fails with ErrRunning while another keeper holds
+// it. It ticks at once and then every Tick: it looks for a pause, reads the
+// quorum, refreshes the lease every RefreshEvery while it holds it and tries
+// to acquire it every AcquireEvery while it does not. When it returns, the
+// keeper lets no write through; the lock on the cluster filesystem stays as
+// it is, so that a keeper started in the same boot keeps the epoch.
 func (k *Keeper) Run(ctx context.Context) error {
+	if err := k.hold(); err != nil {
+		return err
+	}
+	defer k.unhold()
 	ticks, stop := k.ticker()
 	defer stop()
 	for {
@@ -148,13 +166,44 @@ func (k *Keeper) Run(ctx context.Context) error {
 	}
 }
 
+// hold takes the process lock of the node.
+func (k *Keeper) hold() error {
+	release, err := k.cfg.Exclusive()
+	if err != nil {
+		return fmt.Errorf("lease: %w", err)
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.held, k.release = true, release
+	return nil
+}
+
+// unhold gives the process lock back. A tenure ends with it, without
+// touching the lock on the cluster filesystem.
+func (k *Keeper) unhold() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if !k.held {
+		return
+	}
+	if k.holder {
+		k.endTenure("the lease keeper stopped")
+	}
+	k.held = false
+	k.release()
+}
+
 func (k *Keeper) tick(ctx context.Context) {
 	quorate, at := k.cfg.Quorum()
 	k.mu.Lock()
+	if !k.held {
+		k.mu.Unlock()
+		return
+	}
 	k.look()
 	k.noteQuorum(quorate, at)
 	k.judgeRefusal()
-	refresh := k.holder && k.mono()-k.attemptAt >= RefreshEvery
+	refresh := k.refreshDue()
 	try, recheck := k.acquireDue()
 	k.mu.Unlock()
 	if !refresh && !try && !recheck {
@@ -165,7 +214,10 @@ func (k *Keeper) tick(ctx context.Context) {
 	}
 	defer k.putOp()
 	k.mu.Lock()
-	refresh = k.holder && k.mono()-k.attemptAt >= RefreshEvery
+	refresh = k.refreshDue()
+	if refresh {
+		k.stepped = false
+	}
 	try, recheck = k.acquireDue()
 	if try {
 		k.nextTry = k.mono() + AcquireEvery
@@ -180,6 +232,14 @@ func (k *Keeper) tick(ctx context.Context) {
 	case try, recheck:
 		k.acquire(ctx, recheck)
 	}
+}
+
+// refreshDue says whether the holder refreshes now: every RefreshEvery, and
+// at once after a step of the wall clock. On the node with the lowest node
+// id, whose wall clock judges the expiry of every lock, a step forward makes
+// the lock look expired until the next change.
+func (k *Keeper) refreshDue() bool {
+	return k.holder && (k.stepped || k.mono()-k.attemptAt >= RefreshEvery)
 }
 
 // acquireDue says whether an attempt to acquire is due, and whether only the

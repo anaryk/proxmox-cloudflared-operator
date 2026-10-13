@@ -34,6 +34,10 @@ type lab struct {
 	clocks  map[string]*clocks
 	order   []string
 	members []*member
+
+	// locked are the nodes where a keeper holds the process lock.
+	lockMu sync.Mutex
+	locked map[string]bool
 }
 
 // member is one keeper and what its node tells it.
@@ -55,7 +59,7 @@ type member struct {
 }
 
 func newLab(t *testing.T, nodes ...string) *lab {
-	l := &lab{t: t, ctx: t.Context(), cfs: newPmxcfs(), clocks: map[string]*clocks{}}
+	l := &lab{t: t, ctx: t.Context(), cfs: newPmxcfs(), clocks: map[string]*clocks{}, locked: map[string]bool{}}
 	l.cfs.writeLeader(store.LeaderRecord{Writer: setupWriter})
 	for _, n := range nodes {
 		l.add(n, n+"/boot-1")
@@ -63,9 +67,50 @@ func newLab(t *testing.T, nodes ...string) *lab {
 	return l
 }
 
-// add starts a keeper on node. A second keeper on a node shares its clocks
-// and its place in pmxcfs: pmxcfs cannot tell two processes of a node apart.
+// add starts a keeper on node, which takes the process lock of the node as
+// Run does.
 func (l *lab) add(node, incarnation string) *member {
+	l.t.Helper()
+	m := l.build(node, incarnation, l.processLock(node))
+	require.NoError(l.t, m.k.hold())
+	return m
+}
+
+// start is add that returns the error of the process lock.
+func (l *lab) start(node, incarnation string) (*member, error) {
+	m := l.build(node, incarnation, l.processLock(node))
+	return m, m.k.hold()
+}
+
+// addUnlocked is add with a process lock that never refuses, as a lock file
+// someone removed would be.
+func (l *lab) addUnlocked(node, incarnation string) *member {
+	l.t.Helper()
+	m := l.build(node, incarnation, func() (func(), error) { return func() {}, nil })
+	require.NoError(l.t, m.k.hold())
+	return m
+}
+
+// processLock is the process lock of node: one holder at a time.
+func (l *lab) processLock(node string) func() (func(), error) {
+	return func() (func(), error) {
+		l.lockMu.Lock()
+		defer l.lockMu.Unlock()
+		if l.locked[node] {
+			return nil, ErrRunning
+		}
+		l.locked[node] = true
+		return func() {
+			l.lockMu.Lock()
+			defer l.lockMu.Unlock()
+			l.locked[node] = false
+		}, nil
+	}
+}
+
+// build makes a keeper on node. A second keeper on a node shares its clocks
+// and its place in pmxcfs: pmxcfs cannot tell two processes of a node apart.
+func (l *lab) build(node, incarnation string, exclusive func() (func(), error)) *member {
 	c, ok := l.clocks[node]
 	if !ok {
 		c = newClocks(t0)
@@ -88,6 +133,7 @@ func (l *lab) add(node, incarnation string) *member {
 		Remembered:  m.rememberedEpoch,
 		Eligible:    m.eligible,
 		Guard:       m.heardLive,
+		Exclusive:   exclusive,
 		Clocks:      c,
 		Rand:        rand.Reader,
 		Log:         zerolog.New(zerolog.NewTestWriter(l.t)),
@@ -223,6 +269,13 @@ func (m *member) stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopped = true
+}
+
+// exit ends the process of the keeper: it never ticks again and its process
+// lock is free.
+func (m *member) exit() {
+	m.stop()
+	m.k.unhold()
 }
 
 // resume lets a stopped keeper tick again, as after SIGCONT.

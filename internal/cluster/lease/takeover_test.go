@@ -61,7 +61,9 @@ func lastMkdir(t *testing.T, calls []fsCall) int {
 // remove a fresh lock; a step anywhere else changes nothing. A node whose
 // agent hears the holder sends no request, so the step costs nothing; one
 // that does not hear it takes the lock, and the holder stops writing at the
-// latest the gate age after its last refresh.
+// latest the gate age after its last refresh. A holder with the lowest node
+// id refreshes at the first tick after its own step, before the next request
+// here; what is left of that case is in steps_test.go.
 func TestAStepOfAWallClock(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -81,7 +83,7 @@ func TestAStepOfAWallClock(t *testing.T) {
 		{name: "the holder has the lowest node id and the waiting node hears it",
 			holder: "pve1", stepped: "pve1", step: time.Hour, heard: true},
 		{name: "the holder has the lowest node id and the waiting node does not hear it",
-			holder: "pve1", stepped: "pve1", step: time.Hour, takesOver: true},
+			holder: "pve1", stepped: "pve1", step: time.Hour},
 		{name: "the holder has the lowest node id, a step back",
 			holder: "pve1", stepped: "pve1", step: -time.Hour},
 		{name: "another holder, a step forward",
