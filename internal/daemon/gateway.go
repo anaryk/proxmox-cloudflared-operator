@@ -440,12 +440,15 @@ const (
 	// it has none to listen on.
 	legPollEvery = 5 * time.Second
 	// reportEvery is how often at most the engine is told of one MAC, and
-	// maxReported how many MACs it is told of within that time: a guest that
-	// sends from ever new MACs has the node's guests read again and an event
-	// for the first of them, not for each. The engine's own rule is once per
-	// MAC in the same time.
-	reportEvery = 5 * time.Minute
+	// maxReported how many MACs it is told of apart within that time. Past
+	// that the engine is still told, of one MAC per reportEvery: whatever a
+	// guest sprays, the engine acts on an unknown card at least that often
+	// while one speaks, and the watch keeps no more than maxReported MACs.
+	reportEvery = time.Second
 	maxReported = 32
+	// droppedSaidEvery is how often the frames the watch did not pass on are
+	// logged.
+	droppedSaidEvery = time.Minute
 	// leasesReadEvery is how often at most a frame of a MAC the watch does
 	// not know has the leases read again: a card attached in this cycle
 	// speaks before the gateway is synced with its lease, and a guest that
@@ -471,9 +474,13 @@ type sourceWatch struct {
 	read   bool            // the leases were read once
 	readAt time.Time
 	// reported are, by MAC, when the engine was last told of it; never more
-	// than maxReported. overflowAt is when MACs past that were last logged.
+	// than maxReported. overflowAt is when the engine was last told of a MAC
+	// past those. dropped counts the frames not passed on since droppedAt,
+	// when they were last logged.
 	reported   map[string]time.Time
 	overflowAt time.Time
+	dropped    int
+	droppedAt  time.Time
 	failed     string // why the watch last failed, said once
 }
 
@@ -520,43 +527,63 @@ func (s *sourceWatch) fail(leg gateway.Leg, err error) {
 	s.log.WithLevel(level).Str("leg", leg.Iface()).Str("why", why).Msg("watching the managed network for cards no lease knows stopped; it starts again")
 }
 
-// report tells the engine of a MAC no lease knows: once per MAC in
-// reportEvery, and of no more than maxReported MACs in that time. The bound
-// is checked before a MAC is taken in, so that a guest that sprays MACs
-// grows neither the memory nor the work of the watch, nor of the engine.
+// report tells the engine of a MAC no lease knows, which acts on it each
+// time: once per MAC in reportEvery for maxReported MACs, and past those of
+// one MAC in reportEvery, so that a spoof hidden in a flood of MACs is acted
+// on all the same. The bound is checked before a MAC is taken in: a guest
+// that sprays MACs grows neither the memory of the watch nor the work of the
+// engine without end. The frames not passed on, each a repeat within a
+// second of an action, are counted and logged.
 func (s *sourceWatch) report(mac net.HardwareAddr) {
 	key, now := mac.String(), s.now()
 	s.mu.Lock()
+	pass := s.admit(key, now)
+	if !pass {
+		s.dropped++
+	}
+	var dropped int
+	if s.dropped > 0 && now.Sub(s.droppedAt) >= droppedSaidEvery {
+		dropped, s.dropped, s.droppedAt = s.dropped, 0, now
+	}
+	s.mu.Unlock()
+	if dropped > 0 {
+		s.log.Warn().Int("frames", dropped).Msg("frames of cards no lease knows were seen on the managed network faster than " +
+			"they are passed on; the engine is told at least once a second while one speaks")
+	}
+	if pass {
+		s.unknown(mac, now)
+	}
+}
+
+// admit says whether a report of key goes to the engine, and records it.
+func (s *sourceWatch) admit(key string, now time.Time) bool {
 	if s.reported == nil {
 		s.reported = make(map[string]time.Time, maxReported)
 	}
 	at, seen := s.reported[key]
-	if seen && now.Sub(at) < reportEvery {
-		s.mu.Unlock()
-		return
+	switch {
+	case seen && now.Sub(at) < reportEvery:
+		return false
+	case seen || len(s.reported) < maxReported:
+		s.reported[key] = now
+		return true
 	}
-	if !seen && len(s.reported) >= maxReported {
-		for other, at := range s.reported {
-			if now.Sub(at) >= reportEvery {
-				delete(s.reported, other)
-			}
-		}
-		if len(s.reported) >= maxReported {
-			overflow := now.Sub(s.overflowAt) >= reportEvery
-			if overflow {
-				s.overflowAt = now
-			}
-			s.mu.Unlock()
-			if overflow {
-				s.log.Warn().Int("reported", maxReported).Str("mac", key).
-					Msg("more cards no lease knows speak on the managed network than are reported; the guests of the node are read again already")
-			}
-			return
+	for other, at := range s.reported {
+		if now.Sub(at) >= reportEvery {
+			delete(s.reported, other)
 		}
 	}
-	s.reported[key] = now
-	s.mu.Unlock()
-	s.unknown(mac, now)
+	if len(s.reported) < maxReported {
+		s.reported[key] = now
+		return true
+	}
+	// Full: fail closed, the engine is told of this one when none of the
+	// others past the bound was within reportEvery.
+	if now.Sub(s.overflowAt) < reportEvery {
+		return false
+	}
+	s.overflowAt = now
+	return true
 }
 
 // isLease says whether a MAC is a lease's. A MAC it does not know has the

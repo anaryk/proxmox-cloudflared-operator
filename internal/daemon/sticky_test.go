@@ -298,25 +298,46 @@ func hw(s string) net.HardwareAddr {
 	return slices.Clone(m)
 }
 
-// A guest that sprays source MACs has the engine told of the first
-// maxReported of them in reportEvery, each once, and grows nothing past that.
-func TestTheSourceWatchReportsABoundedNumberOfMACs(t *testing.T) {
+// A guest that sprays source MACs fills the watch's record; a spoof hidden
+// in the flood still reaches the engine, which acts on it, within a second,
+// and the watch keeps no more than its bound.
+func TestAFloodOfMACsHidesNoSpoofFromTheEngine(t *testing.T) {
 	r := newSourceRig(t)
+	r.s.droppedAt = r.now // logged just now: the count is kept
 	for i := range 1000 {
 		r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, byte(i >> 8), byte(i)})
 	}
-	require.Len(t, r.seen, maxReported)
+	require.Len(t, r.seen, maxReported+1, "the bound, and one past it")
 	require.Len(t, r.s.reported, maxReported)
+	require.Equal(t, 1000-maxReported-1, r.s.dropped, "counted")
 
 	r.seen = nil
-	r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, 0x00, 0x00})
-	require.Empty(t, r.seen, "a MAC told of is not told again within the time")
+	r.now = r.now.Add(500 * time.Millisecond)
+	for i := range 1000 {
+		r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, byte(i >> 8), byte(i)})
+	}
+	r.s.report(hw("06:50:43:4f:76:02"))
+	require.Empty(t, r.seen, "all within a second of an action")
 
-	r.now = r.now.Add(reportEvery)
-	r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, 0x09, 0x99})
-	r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, 0x00, 0x00})
-	require.Equal(t, []string{"bc:24:11:00:09:99 12:05:00", "bc:24:11:00:00:00 12:05:00"}, r.seen, "after the time the old ones make room")
-	require.Len(t, r.s.reported, 2)
+	r.now = r.now.Add(500 * time.Millisecond)
+	r.s.report(hw("06:50:43:4f:76:02"))
+	require.Equal(t, []string{"06:50:43:4f:76:02 12:00:01"}, r.seen, "the spoof reaches the engine")
+	require.LessOrEqual(t, len(r.s.reported), maxReported)
+
+	r.seen = nil
+	r.s.report(hw("bc:24:11:00:00:05"))
+	require.Equal(t, []string{"bc:24:11:00:00:05 12:00:01"}, r.seen, "a MAC of the record a second later")
+}
+
+// One MAC is passed on once a second, however often it speaks.
+func TestOneMACIsPassedOnOnceASecond(t *testing.T) {
+	r := newSourceRig(t)
+	for range 100 {
+		r.s.report(hw("bc:24:11:00:99:99"))
+	}
+	r.now = r.now.Add(time.Second)
+	r.s.report(hw("bc:24:11:00:99:99"))
+	require.Equal(t, []string{"bc:24:11:00:99:99 12:00:00", "bc:24:11:00:99:99 12:00:01"}, r.seen)
 }
 
 // The port watch's callback never waits for the entries to be given: a
