@@ -426,3 +426,36 @@ func TestUseTokenFindsTheTokenByItsSecretAndNode(t *testing.T) {
 		require.ErrorIs(t, err, store.ErrNoJoinToken)
 	})
 }
+
+// TestTwoUsesOfATokenAtOnceHaveOneFirst races two uses without the server's
+// lock: the store alone keeps exactly one of them the first.
+func TestTwoUsesOfATokenAtOnceHaveOneFirst(t *testing.T) {
+	ca, err := pki.NewCA(testInstall, t0, rand.Reader)
+	require.NoError(t, err)
+	tok, err := pki.NewJoinToken(testInstall, testNode, []string{"10.0.0.1:8644"}, ca, t0, rand.Reader)
+	require.NoError(t, err)
+	for range 20 {
+		st := openStore(t)
+		require.NoError(t, st.SaveJoinToken(store.JoinRecord{
+			ID: "tok1", Node: testNode, SecretSHA256: tok.SecretHash(), CreatedAt: t0, Expires: tok.Expires,
+		}))
+		var wg sync.WaitGroup
+		var firsts atomic.Int32
+		start := make(chan struct{})
+		for vmid := range 2 {
+			wg.Go(func() {
+				<-start
+				rec, err := UseToken(st, tok, store.JoinUse{At: t0, Source: loopback, VMID: 200 + vmid})
+				if err == nil && len(rec.Uses) == 1 {
+					firsts.Add(1)
+				}
+			})
+		}
+		close(start)
+		wg.Wait()
+		require.Equal(t, int32(1), firsts.Load())
+		rec, _, _, err := st.JoinToken("tok1")
+		require.NoError(t, err)
+		require.Len(t, rec.Uses, 2)
+	}
+}
