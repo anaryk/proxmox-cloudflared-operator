@@ -58,19 +58,24 @@ type dhcpPart struct {
 	// allowed says whether the server may run; nil is always. The
 	// appliance's says no until it proved itself not to be a copy.
 	allowed func() bool
+	// nsID names the namespace the legs are in now, the one a server opens
+	// its sockets in; empty when that cannot be told. A server that runs in
+	// another one than the gateway holds now is started again in that.
+	nsID func() string
 
 	mu  sync.Mutex
 	cur *dhcpRun
 	// said is the last end of a server that was logged, so that a leg that
-	// stays away is logged once and not every check; unknown counts the
-	// requests without a lease the servers before cur saw.
-	said    string
-	unknown uint64
+	// stays away is logged once and not every check; before counts what
+	// the servers before cur saw.
+	said   string
+	before dhcp.Stats
 }
 
 // dhcpRun is one server with the leg it answers on.
 type dhcpRun struct {
 	cfg     dhcp.Config
+	ns      string // the namespace it was started for
 	srv     DHCPServer
 	started time.Time
 	since   time.Time // when it was first seen listening
@@ -106,9 +111,16 @@ func newDHCPPart(st *store.Store, node string, gw *gatewayPart, own bool, leases
 	if deps.NewDHCP != nil {
 		newServer = func(cfg dhcp.Config) DHCPServer { return deps.NewDHCP(cfg, leases) }
 	}
+	nsID := func() string {
+		var id string
+		if err := gw.namespace(own)(func(ns netns.NsHandle) error { id = ns.UniqueId(); return nil }); err != nil {
+			return ""
+		}
+		return id
+	}
 	return &dhcpPart{
 		networks: st.Networks, node: node, newServer: newServer, note: note, now: deps.Now,
-		after: time.After, log: log, wait: deps.DHCPReadyWait,
+		after: time.After, log: log, wait: deps.DHCPReadyWait, nsID: nsID,
 	}
 }
 
@@ -188,6 +200,7 @@ func (p *dhcpPart) check(ctx context.Context) {
 	p.mu.Lock()
 	cur := p.cur
 	p.mu.Unlock()
+	ns := p.namespaceID()
 	switch {
 	case !want, p.allowed != nil && !p.allowed():
 		p.stopServer()
@@ -196,6 +209,10 @@ func (p *dhcpPart) check(ctx context.Context) {
 	case cur == nil:
 	case cur.cfg != cfg:
 		p.log.Info().Str("leg", cfg.Iface).Msg("the managed leg changed; the DHCP server starts again on it")
+		p.stopServer()
+		cur = nil
+	case cur.ns != "" && ns != "" && cur.ns != ns:
+		p.log.Info().Str("leg", cfg.Iface).Msg("the gateway namespace was made again; the DHCP server starts again in it")
 		p.stopServer()
 		cur = nil
 	case cur.ended():
@@ -218,13 +235,13 @@ func (p *dhcpPart) check(ctx context.Context) {
 // ended by itself, whose error stands until the new one listens.
 func (p *dhcpPart) startServer(ctx context.Context, cfg dhcp.Config, last *dhcpRun) {
 	ctx, cancel := context.WithCancel(ctx)
-	r := &dhcpRun{cfg: cfg, srv: p.newServer(cfg), started: p.now(), cancel: cancel, done: make(chan struct{})}
+	r := &dhcpRun{cfg: cfg, ns: p.namespaceID(), srv: p.newServer(cfg), started: p.now(), cancel: cancel, done: make(chan struct{})}
 	if last != nil && last.ended() {
 		r.before = last.err
 	}
 	p.mu.Lock()
 	if last != nil {
-		p.unknown += last.srv.Stats().Unknown
+		p.before = addStats(p.before, last.srv.Stats())
 	}
 	p.mu.Unlock()
 	go func() {
@@ -248,9 +265,25 @@ func (p *dhcpPart) stopServer() {
 	if cur != nil {
 		cur.stop()
 		p.mu.Lock()
-		p.unknown += cur.srv.Stats().Unknown
+		p.before = addStats(p.before, cur.srv.Stats())
 		p.mu.Unlock()
 	}
+}
+
+// addStats adds what counts across the servers of a part.
+func addStats(a, b dhcp.Stats) dhcp.Stats {
+	a.Unknown += b.Unknown
+	a.Spoofed += b.Spoofed
+	return a
+}
+
+// namespaceID names the namespace the legs are in now; empty when that
+// cannot be told.
+func (p *dhcpPart) namespaceID() string {
+	if p.nsID == nil {
+		return ""
+	}
+	return p.nsID()
 }
 
 // report tells the engine how the server stands: when it listens, since
@@ -266,7 +299,8 @@ func (p *dhcpPart) report() {
 		if bound && cur.since.IsZero() {
 			cur.since = p.now()
 		}
-		view = &engine.DHCPView{Bound: bound, Unknown: int(p.unknown + cur.srv.Stats().Unknown)}
+		st := addStats(p.before, cur.srv.Stats())
+		view = &engine.DHCPView{Bound: bound, Unknown: int(st.Unknown), Forged: int(st.Spoofed)}
 		if bound {
 			view.Since = cur.since
 		}
@@ -295,10 +329,19 @@ func (p *dhcpPart) bound() bool {
 	return p.cur != nil && p.cur.srv.Bound()
 }
 
+// ended says whether the server ran and stopped.
+func (p *dhcpPart) ended() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cur != nil && p.cur.ended()
+}
+
 // awaitBound waits, when the managed network has a leg on this node, until
 // its server listens, at most p.wait; the guests that boot with the node ask
 // for their addresses as soon as the daemon is ready. A server that does
-// not listen in time is the engine's problem line, and the part keeps trying.
+// not listen in time, or that ended, is the engine's problem line, and the
+// part keeps trying: an end does not hold the start for the rest of the
+// wait, the check says why and starts the server again.
 func (p *dhcpPart) awaitBound(ctx context.Context) {
 	if _, want, err := p.wanted(); err != nil || !want {
 		return
@@ -306,6 +349,10 @@ func (p *dhcpPart) awaitBound(ctx context.Context) {
 	defer p.report()
 	deadline := p.after(p.wait)
 	for !p.bound() {
+		if p.ended() {
+			p.check(ctx)
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return

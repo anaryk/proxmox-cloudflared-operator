@@ -26,6 +26,7 @@ type fakeDHCP struct {
 	cfg     dhcp.Config
 	bound   atomic.Bool
 	unknown atomic.Uint64
+	forged  atomic.Uint64
 	listen  chan struct{} // closed: Run binds
 	fail    chan error    // what Run ends with
 	running chan struct{} // closed once Run runs
@@ -56,7 +57,9 @@ func (f *fakeDHCP) Run(ctx context.Context) error {
 
 func (f *fakeDHCP) Bound() bool { return f.bound.Load() }
 
-func (f *fakeDHCP) Stats() dhcp.Stats { return dhcp.Stats{Unknown: f.unknown.Load()} }
+func (f *fakeDHCP) Stats() dhcp.Stats {
+	return dhcp.Stats{Unknown: f.unknown.Load(), Spoofed: f.forged.Load()}
+}
 
 // dhcpNotes records what the part told the engine.
 type dhcpNotes struct {
@@ -208,10 +211,11 @@ func TestTheServerRunsOnTheManagedLeg(t *testing.T) {
 
 	d.bind(t, 0)
 	d.server(0).unknown.Store(4)
+	d.server(0).forged.Store(2)
 	d.advance(time.Second)
 	d.p.check(t.Context())
 	v, err = d.notes.last()
-	require.Equal(t, &engine.DHCPView{Bound: true, Since: t0.Add(time.Second), Unknown: 4}, v)
+	require.Equal(t, &engine.DHCPView{Bound: true, Since: t0.Add(time.Second), Unknown: 4, Forged: 2}, v)
 	require.NoError(t, err)
 	require.Equal(t, 1, d.count(), "a server that listens is kept")
 }
@@ -232,12 +236,13 @@ func TestAServerThatEndsRunsAgainAndSaysWhy(t *testing.T) {
 	d.p.check(t.Context())
 	d.bind(t, 0)
 	d.server(0).unknown.Store(2)
+	d.server(0).forged.Store(1)
 	d.end(t, 0, errors.New("reading on leg2: network is down"))
 
 	d.p.check(t.Context())
 	require.Equal(t, 2, d.count(), "started again")
 	v, err := d.notes.last()
-	require.Equal(t, &engine.DHCPView{Unknown: 2}, v, "the unknown requests of the server before count")
+	require.Equal(t, &engine.DHCPView{Unknown: 2, Forged: 1}, v, "the counts of the server before carry")
 	require.EqualError(t, err, "reading on leg2: network is down", "until the new one listens")
 
 	d.bind(t, 1)
@@ -272,6 +277,30 @@ func TestAChangedLegStartsTheServerAgainAndAGoneNetworkStopsIt(t *testing.T) {
 	d.p.mu.Lock()
 	require.Nil(t, d.p.cur)
 	d.p.mu.Unlock()
+}
+
+// A gateway namespace made again, as a restart of pco-netns makes it, has
+// the server started again in it: its sockets were opened in the one before.
+func TestAServerInANamespaceMadeAgainIsStartedAgain(t *testing.T) {
+	d := newDHCPTest(t, managedNet(2, managedLegs))
+	var ns atomic.Value
+	ns.Store("NS(4:4026531840)")
+	d.p.nsID = func() string { return ns.Load().(string) }
+	d.p.check(t.Context())
+	d.bind(t, 0)
+
+	d.p.check(t.Context())
+	require.Equal(t, 1, d.count(), "the same namespace keeps the server")
+	ns.Store("")
+	d.p.check(t.Context())
+	require.Equal(t, 1, d.count(), "a namespace that cannot be told keeps it too")
+
+	ns.Store("NS(4:4026531999)")
+	d.p.check(t.Context())
+	require.Equal(t, 2, d.count())
+	require.False(t, d.server(0).Bound(), "the old one stopped")
+	_, err := d.notes.last()
+	require.NoError(t, err, "a server stopped for the new namespace is no problem")
 }
 
 func TestAStoreThatCannotBeReadLeavesTheServerRunning(t *testing.T) {
@@ -323,6 +352,25 @@ func TestTheStartWaitsForTheServerAtMostItsWait(t *testing.T) {
 		d.p.awaitBound(t.Context())
 		_, err := d.notes.last()
 		require.ErrorIs(t, err, errDHCPNotListening)
+	})
+	t.Run("not for a server that ended", func(t *testing.T) {
+		d := newDHCPTest(t, managedNet(2, managedLegs))
+		d.p.after = func(time.Duration) <-chan time.Time { return nil } // never
+		d.p.check(t.Context())
+		d.end(t, 0, errors.New("opening the sockets on leg2: the gateway namespace is not open"))
+		returned := make(chan struct{})
+		go func() {
+			d.p.awaitBound(t.Context())
+			close(returned)
+		}()
+		select {
+		case <-returned:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the start waited for a server that ended")
+		}
+		require.Equal(t, 2, d.count(), "the check started it again")
+		_, err := d.notes.last()
+		require.EqualError(t, err, "opening the sockets on leg2: the gateway namespace is not open")
 	})
 	t.Run("not at all without a managed leg", func(t *testing.T) {
 		d := newDHCPTest(t)
