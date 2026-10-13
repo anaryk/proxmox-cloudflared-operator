@@ -206,3 +206,16 @@ func TestTheCertificateFileHoldsAKeyOfItsCertificate(t *testing.T) {
 	_, err = TLSFiles{Dir: t.TempDir()}.Client()
 	require.ErrorIs(t, err, ErrNoCredentials)
 }
+
+func TestTheCertificateDirectoryIsTheAgentsAlone(t *testing.T) {
+	re := newReissueEnv(t)
+	cert := re.issued(re.ca, t0)
+	dir := filepath.Join(t.TempDir(), "tls")
+	require.NoError(t, os.Mkdir(dir, 0o755))
+	creds, err := re.r.Files.Client()
+	require.NoError(t, err)
+	require.NoError(t, TLSFiles{Dir: dir}.SaveClient(Creds{Key: creds.Key, Cert: cert, CA: re.ca.Cert}))
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "a directory made before is brought to 0700")
+}

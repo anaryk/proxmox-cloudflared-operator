@@ -267,7 +267,7 @@ func (c *Client) session(ctx context.Context, ep Endpoint, creds Creds) (served 
 		MaxResponseHeaderBytes: 64 << 10,
 	}
 	defer tr.CloseIdleConnections()
-	s := &session{c: c, hc: &http.Client{Transport: tr}, base: "https://" + ep.ServerName, creds: creds}
+	s := &session{c: c, hc: httpClient(tr), base: "https://" + ep.ServerName, creds: creds}
 
 	sctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -327,6 +327,15 @@ func (c *Client) waitMove(ctx context.Context, ep Endpoint) {
 		if next, err := c.d.Discover.Endpoint(ctx); err != nil || !next.same(ep) {
 			return
 		}
+	}
+}
+
+// httpClient is the client of a session. The controller never redirects, so
+// a redirect is taken as the answer it is and never followed elsewhere.
+func httpClient(tr http.RoundTripper) *http.Client {
+	return &http.Client{
+		Transport:     tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
 

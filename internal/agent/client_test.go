@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
 	"slices"
@@ -429,8 +431,8 @@ func TestRefusalsThatAreNotDefinitiveAreWaitedOut(t *testing.T) {
 			require.Eventually(t, func() bool { return len(srv.auth.seen()) >= 3 }, waitFor, tick, "it asks again")
 			if r.Code != "" {
 				require.Eventually(t, func() bool {
-					return slices.ContainsFunc(ce.c.View().Problems, func(p string) bool { return strings.Contains(p, r.Message) })
-				}, waitFor, tick)
+					return slices.ContainsFunc(ce.c.View().Problems, func(p string) bool { return strings.Contains(p, "not one of this node's") })
+				}, waitFor, tick, "the agent is told what kind of refusal it is, not the controller's detail")
 			}
 			require.Empty(t, ce.c.View().StoodDown)
 			require.Equal(t, uint64(1), ce.agent.Status(t.Context()).SeqApplied, "it serves what it was last told")
@@ -642,4 +644,20 @@ func TestARenewedCertificateIsCheckedBeforeItIsKept(t *testing.T) {
 	require.ErrorContains(t, err, "not of the new key")
 	_, err = renewed(key, clusterapi.CertificateResponse{CertPEM: "junk"}, id, was)
 	require.Error(t, err)
+}
+
+func TestTheClientFollowsNoRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			t.Error("the redirect was followed")
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/v1/agent/desired", nil)
+	require.NoError(t, err)
+	resp, err := httpClient(srv.Client().Transport).Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusFound, resp.StatusCode)
 }

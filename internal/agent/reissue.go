@@ -136,6 +136,10 @@ func (f TLSFiles) write(name string, c Creds) error {
 	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", f.Dir, err)
 	}
+	// A directory made before, or by hand, is brought to the mode as well.
+	if err := os.Chmod(f.Dir, 0o700); err != nil {
+		return fmt.Errorf("restricting %s: %w", f.Dir, err)
+	}
 	path := filepath.Join(f.Dir, name)
 	if err := atomicfile.Write(path, data, atomicfile.Options{Mode: 0o600}); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
