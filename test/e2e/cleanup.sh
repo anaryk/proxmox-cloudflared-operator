@@ -365,7 +365,8 @@ if [ -e "$state/bridge-was-down" ]; then
 fi
 
 # The kernel parameters the networking scenarios set go back to their values
-# before, and pve-firewall stops again when the suite started it.
+# before, and the services the suite started for the run, pvestatd and
+# pve-firewall, stop again.
 if [ -e "$state/sysctl" ]; then
 	sysctlfailed=0
 	while IFS='=' read -r name value; do
@@ -374,13 +375,14 @@ if [ -e "$state/sysctl" ]; then
 	done <"$state/sysctl"
 	[ "$sysctlfailed" -eq 0 ] && rm -f "$state/sysctl"
 fi
-if [ -e "$state/pve-firewall-started" ]; then
-	if systemctl stop pve-firewall; then
-		rm -f "$state/pve-firewall-started"
+for service in pve-firewall pvestatd; do
+	[ -e "$state/$service-started" ] || continue
+	if systemctl stop "$service"; then
+		rm -f "$state/$service-started"
 	else
-		warn "stopping pve-firewall failed"
+		warn "stopping $service failed"
 	fi
-fi
+done
 
 if [ "$pco" = ours ]; then
 	# Connectors that uninstall could not remove, as when pco was gone already.

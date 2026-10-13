@@ -86,19 +86,20 @@ type suite struct {
 	bridgeDown   bool
 	addressAdded bool
 
-	// What the networking scenarios make and change on the node, each
-	// undone at the end: the runtime bridges, the kernel parameters with
-	// their values before, the firewall service when the suite started it,
-	// the registered tags before the suite added to them, the virtual
-	// machines, and the guests that may carry a card on pconet, which are
-	// destroyed before pco is uninstalled so that its zone can go.
-	bridges         map[string]bool
-	sysctls         map[string]string
-	firewallStarted bool
-	tagsBefore      []string
-	tagsRecorded    bool
-	vms             map[int]bool
-	pconetGuests    map[int]bool
+	// What the suite makes and changes on the node beyond the install, each
+	// undone at the end: the services it started for the run, and for the
+	// networking scenarios the runtime bridges, the kernel parameters with
+	// their values before, the registered tags before the suite added to
+	// them, the virtual machines, and the guests that may carry a card on
+	// pconet, which are destroyed before pco is uninstalled so that its zone
+	// can go.
+	started      map[string]bool
+	bridges      map[string]bool
+	sysctls      map[string]string
+	tagsBefore   []string
+	tagsRecorded bool
+	vms          map[int]bool
+	pconetGuests map[int]bool
 	// managed says that a scenario enabled the managed network.
 	managed bool
 }
@@ -127,6 +128,7 @@ func newSuite(t *testing.T) *suite {
 		dir:          t.TempDir(),
 		guests:       map[int]bool{},
 		began:        time.Now(),
+		started:      map[string]bool{},
 		bridges:      map[string]bool{},
 		sysctls:      map[string]string{},
 		vms:          map[int]bool{},
@@ -149,7 +151,7 @@ func newSuite(t *testing.T) *suite {
 	// since the uninstall takes away the tag setup registered.
 	t.Cleanup(func() { s.removeBridges(t) })
 	t.Cleanup(func() { s.restoreSysctls(t) })
-	t.Cleanup(func() { s.stopFirewallService(t) })
+	t.Cleanup(func() { s.stopServices(t) })
 	t.Cleanup(func() { s.removeAddress(t) })
 	t.Cleanup(func() { s.removeDropIn(t) })
 	t.Cleanup(func() { s.destroyGuests(t) })
@@ -158,6 +160,7 @@ func newSuite(t *testing.T) *suite {
 	t.Cleanup(func() { s.restoreRegisteredTags(t) })
 	t.Cleanup(func() { s.diagnose(t) })
 
+	s.requireStatusService(t)
 	s.addAddress(t)
 	if s.fake != nil {
 		s.writeDropIn(t)

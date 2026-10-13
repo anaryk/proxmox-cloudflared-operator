@@ -25,6 +25,9 @@ what that one needs and does. `-profile appliance` on the command line or
   API publish it.
 - The Alpine template `local:vztmpl/alpine-3.24-default_20260714_amd64.tar.xz` and
   the storage `local-lvm`; `PCO_E2E_TEMPLATE` and `PCO_E2E_STORAGE` name others.
+- `pvestatd` running, or free to be started for the run: it tells the cluster's
+  resource listing whether a guest runs, and without it the daemon serves no guest
+  it has never seen running.
 - For the networking scenarios: no bridge `pcot1`, `pcot2`, `pcotv` or `pcoti` (the
   suite makes them for the run), no SDN zone `pco` and no vnet `pconet` (pco makes
   them for the managed network, and takes them away with the install), and
@@ -45,6 +48,7 @@ when what is in the way was left by a run of its own.
 ## What it does to the node
 
 - Sets pco up, and uninstalls it at the end with `--purge-cloudflare`.
+- Starts `pvestatd` when it is not running, and stops it again at the end.
 - Makes containers 9100 to 9199 named `e2e-<vmid>`, with `10.77.0.<vmid - 9000>/24`
   on `vmbr1`, and destroys them at the end.
 - Gives `vmbr1` the address `10.77.0.1/24`, and brings it up when it is down; both are
@@ -93,8 +97,8 @@ package. `cleanup.sh` finishes that, and undoes what a run that was cut off left
   with `--detach-managed` when a run enabled the managed network;
 - it destroys the containers 9100 to 9199 named `e2e-*`, removes the drop-in, the
   address and the token file, and takes the bridge down when the suite brought it up;
-- it puts the kernel parameters back, stops `pve-firewall` when the suite started it,
-  and removes the runtime bridges the suite made;
+- it puts the kernel parameters back, stops `pve-firewall` and `pvestatd` when the
+  suite started them, and removes the runtime bridges the suite made;
 - then it purges the package and removes the user `pco-connector`, and says what
   should be gone and is not: the gateway namespace, its host tables and the vnet
   `pconet` among it.

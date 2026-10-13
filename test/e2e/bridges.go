@@ -41,7 +41,6 @@ const (
 	bridgesFile   = markerDir + "/bridges"
 	sysctlFile    = markerDir + "/sysctl"
 	tagsFile      = markerDir + "/registered-tags"
-	firewallFile  = markerDir + "/pve-firewall-started"
 	managedMarker = markerDir + "/managed"
 )
 
@@ -143,27 +142,60 @@ func (s *suite) restoreSysctls(t *testing.T) {
 // are for. A service the suite started is stopped at the end.
 func (s *suite) requireFirewallService(t testing.TB) {
 	t.Helper()
-	if active, _ := s.run("systemctl", "is-active", "pve-firewall"); strings.TrimSpace(active) == "active" {
-		return
-	}
-	if !s.firewallStarted {
-		marker(t, firewallFile, "")
-		s.firewallStarted = true
-	}
-	s.must(t, "systemctl", "start", "pve-firewall")
-	t.Log("started pve-firewall for the run")
+	s.requireService(t, "pve-firewall")
 }
 
-func (s *suite) stopFirewallService(t *testing.T) {
-	if !s.firewallStarted {
+// requireStatusService makes sure pvestatd runs: it is what tells the
+// cluster's resource listing whether a guest runs, and without it the daemon
+// sees every guest it has not seen running as of unknown state, and serves
+// none of them. A test node may have it stopped; a node in use never has.
+func (s *suite) requireStatusService(t testing.TB) {
+	t.Helper()
+	s.requireService(t, "pvestatd")
+}
+
+// requireService starts a service of the node for the run when it is not
+// running, and records it under markerDir as <name>-started, so that it is
+// stopped again at the end, by the suite or by cleanup.sh.
+func (s *suite) requireService(t testing.TB, name string) {
+	t.Helper()
+	if active, _ := s.run("systemctl", "is-active", name); strings.TrimSpace(active) == "active" {
 		return
 	}
-	if _, err := s.run("systemctl", "stop", "pve-firewall"); err != nil {
-		t.Errorf("stopping pve-firewall again: %v", err)
+	if s.started == nil {
+		s.started = map[string]bool{}
+	}
+	if !s.started[name] {
+		marker(t, serviceMarker(name), "")
+		s.started[name] = true
+	}
+	s.must(t, "systemctl", "start", name)
+	t.Logf("started %s for the run", name)
+}
+
+func serviceMarker(name string) string { return markerDir + "/" + name + "-started" }
+
+// stopFirewallService stops pve-firewall when the suite started it.
+func (s *suite) stopFirewallService(t *testing.T) { s.stopService(t, "pve-firewall") }
+
+// stopServices stops the services the suite started for the run.
+func (s *suite) stopServices(t *testing.T) {
+	for name := range s.started {
+		s.stopService(t, name)
+	}
+}
+
+// stopService stops a service the suite started for the run, and forgets it.
+func (s *suite) stopService(t *testing.T, name string) {
+	if !s.started[name] {
 		return
 	}
-	s.firewallStarted = false
-	unmark(t, firewallFile)
+	if _, err := s.run("systemctl", "stop", name); err != nil {
+		t.Errorf("stopping %s again: %v", name, err)
+		return
+	}
+	delete(s.started, name)
+	unmark(t, serviceMarker(name))
 }
 
 // registeredTags reads the tags only an admin may set, as the node has them.
