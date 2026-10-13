@@ -446,7 +446,7 @@ func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 	e.node.pools["web"] = &fakePool{Members: []int{105}}
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Pool: "web", Yes: true}))
 	e.guestOnPconet()
-	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true,
+	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true, policyIn: "ACCEPT", policyOut: "ACCEPT",
 		rules: []fakeRule{{"net0", ""}, pcoRule("net1"), {"net1", "backup agent"}, pcoRule("net1")}, ipsets: []string{"ipfilter-net1"}}
 	e.node.attachments = []map[string]any{attachedTo105("10.203.118.5")}
 	o := uninstallOptions()

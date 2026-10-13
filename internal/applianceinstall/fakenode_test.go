@@ -217,9 +217,10 @@ func newFakeNode(t *testing.T) *fakeNode {
 // fakeGuestFirewall is the firewall of a guest: on or off, its rules by
 // interface in their order, and its ipsets.
 type fakeGuestFirewall struct {
-	enabled bool
-	rules   []fakeRule
-	ipsets  []string
+	enabled             bool
+	policyIn, policyOut string
+	rules               []fakeRule
+	ipsets              []string
 }
 
 // fakeRule is a rule of a guest's firewall: its card and its comment, by
@@ -264,8 +265,11 @@ func (f *fakeNode) guestFirewall(verb, rest string, args []string) (string, erro
 	case verb == "delete" && strings.HasPrefix(tail, "ipset/"):
 		fw.ipsets = slices.DeleteFunc(fw.ipsets, func(n string) bool { return n == strings.TrimPrefix(tail, "ipset/") })
 		return "", nil
+	case verb == "get" && tail == "options":
+		return asJSON(map[string]any{"enable": onOffInt(fw.enabled), "policy_in": fw.policyIn, "policy_out": fw.policyOut, "digest": "o1"}), nil
 	case verb == "set" && tail == "options":
 		fw.enabled = flag(args, "--enable") == "1"
+		fw.policyIn, fw.policyOut = flag(args, "--policy_in"), flag(args, "--policy_out")
 		return "", nil
 	}
 	f.t.Errorf("unexpected pvesh %s %s %v", verb, rest, args)
@@ -470,6 +474,13 @@ func asJSON(v any) string {
 }
 
 // flag returns the value of --name in args.
+func onOffInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func flag(args []string, name string) string {
 	if i := slices.Index(args, name); i >= 0 && i+1 < len(args) {
 		return args[i+1]
