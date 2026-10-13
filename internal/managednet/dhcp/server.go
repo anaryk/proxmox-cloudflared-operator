@@ -183,12 +183,17 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("opening the sockets on %s: %w", s.cfg.Iface, err)
 	}
+	// The end of ctx closes both sockets, which ends the read; Run returns
+	// once they are closed, port 67 among them, so that it can be run again.
 	closeBoth := func() { _ = leg.Close(); _ = send.Close() }
-	stop := context.AfterFunc(ctx, closeBoth)
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { closeBoth(); close(closed) })
 	defer func() {
 		if stop() {
 			closeBoth()
+			return
 		}
+		<-closed
 	}()
 	s.bound.Store(true)
 	defer s.bound.Store(false)

@@ -85,10 +85,14 @@ type fakeSocket struct {
 	sendErr error
 	closed  chan struct{}
 	once    sync.Once
+	// closing is closed when Close is first called; closeGate, when set,
+	// holds Close until the test closes it.
+	closing   chan struct{}
+	closeGate chan struct{}
 }
 
 func newFakeSocket() *fakeSocket {
-	return &fakeSocket{in: make(chan []byte), readErr: make(chan error, 1), closed: make(chan struct{})}
+	return &fakeSocket{in: make(chan []byte), readErr: make(chan error, 1), closed: make(chan struct{}), closing: make(chan struct{})}
 }
 
 func (f *fakeSocket) ReadFrame(b []byte) (int, error) {
@@ -136,7 +140,10 @@ func (f *fakeSocket) WriteFrame(b []byte) error {
 func (f *fakeSocket) MAC() net.HardwareAddr { return legMAC }
 
 func (f *fakeSocket) Close() error {
-	f.once.Do(func() { close(f.closed) })
+	f.once.Do(func() { close(f.closed); close(f.closing) })
+	if f.closeGate != nil {
+		<-f.closeGate
+	}
 	return nil
 }
 
@@ -492,6 +499,24 @@ func TestRunIsBoundWhileItAnswersAndStopsWithTheContext(t *testing.T) {
 	require.NoError(t, <-done)
 	require.False(t, ts.Bound(), "not bound once it stopped")
 	require.Len(t, ts.sock.replies(), 2)
+}
+
+// Run returns only once both sockets are closed: the close of the UDP
+// socket waits for its drain, and a Run that returned with port 67 still
+// held could not be run again on it.
+func TestRunReturnsOnceTheSocketsAreClosed(t *testing.T) {
+	ts := newTestServer(t, leased())
+	ts.sock.closeGate = make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- ts.Run(ctx) }()
+	ts.sock.in <- goldenFrames["discover.bin"]
+
+	cancel()
+	<-ts.sock.closing
+	require.Never(t, func() bool { return len(done) > 0 }, 50*time.Millisecond, 5*time.Millisecond, "returned with the sockets still closing")
+	close(ts.sock.closeGate)
+	require.NoError(t, <-done)
 }
 
 func TestRunEndsWhenTheLegGoes(t *testing.T) {
