@@ -231,6 +231,7 @@ func (c *cycleRun) run() State {
 		c.retirePinned()
 		c.rotationStep()
 		c.forgetRotations()
+		c.expireJoinTokens()
 		c.publishRemote()
 	}
 	c.watchTunnels()
