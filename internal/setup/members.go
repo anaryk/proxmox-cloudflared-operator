@@ -70,7 +70,7 @@ func (r *run) ensureIdentity(ctx context.Context, m members.Members) error {
 	}
 	inst := r.install
 	switch {
-	case inst.Cluster == nil && inst.Restored != nil && !r.o.Recover && !r.o.NewInstall:
+	case inst.Cluster == nil && inst.Restored != nil:
 		return errRestoredWithoutCluster(inst)
 	case inst.Cluster == nil:
 		inst.Cluster = &store.ClusterIdentity{CASHA256: fingerprint, Name: m.Cluster}
@@ -82,7 +82,9 @@ func (r *run) ensureIdentity(ctx context.Context, m members.Members) error {
 		} else {
 			r.ask.Info("cluster: recorded the identity of cluster %s (%s)", m.Cluster, fingerprint)
 		}
-	case inst.Cluster.CASHA256 != fingerprint && !r.o.Recover && !r.o.NewInstall && inst.Restored != nil:
+	case inst.Cluster.CASHA256 != fingerprint && inst.Restored != nil:
+		// --recover too: what it adopts from Cloudflare is the writer, not
+		// the trust the store of the lost cluster holds.
 		return r.restoredElsewhere(ctx, fingerprint)
 	case inst.Cluster.CASHA256 != fingerprint && !r.o.Recover && !r.o.NewInstall:
 		// A node set up into a store of another cluster would register,

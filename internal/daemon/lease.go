@@ -378,7 +378,8 @@ func restoredWhy(st *store.Store, cluster func() (store.ClusterIdentity, error))
 	case !found || inst.Restored == nil:
 		return ""
 	case inst.Cluster == nil:
-		return "the store was restored from a bundle that records no cluster: whether it was made in this one cannot be told"
+		return "the store was restored from a bundle that records no cluster: whether it was made in this one cannot be told; " +
+			"pco uninstall --keep-cloudflare, then pco setup --recover, adopts the install under a store of its own"
 	}
 	here, err := cluster()
 	if err != nil {

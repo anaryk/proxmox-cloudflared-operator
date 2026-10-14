@@ -73,6 +73,10 @@ func (r *run) prepareStore(ctx context.Context) error {
 	case !found:
 		return r.createInstall()
 	}
+	if inst.Restored != nil && r.o.NewInstall {
+		return fmt.Errorf("install %s was restored from a bundle, and --new-install would start another install beside it "+
+			"and leave the restore half done: run pco setup, or pco setup --recover; nothing was changed", inst.ID)
+	}
 	r.install = inst
 	w, found, err := r.st.Writer()
 	switch {

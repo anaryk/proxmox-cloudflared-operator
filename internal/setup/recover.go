@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -35,6 +36,9 @@ func (r *run) recover(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("the Cloudflare token cannot be used: %w", err)
 	}
+	if err := r.restoredStopped(ctx); err != nil {
+		return err
+	}
 	inst, generation, err := RecoverInstall(ctx, api, r.st, r.o.InstallID, r.now, r.rand, store.Install{Profile: store.ProfileHost})
 	if err != nil {
 		return err
@@ -42,6 +46,29 @@ func (r *run) recover(ctx context.Context) error {
 	r.install = inst
 	r.ask.Info("store: recovered install %s with writer generation %d; it only observes until pco apply", inst.ID, generation)
 	return nil
+}
+
+// restoredStopped looks at Cloudflare before a recovery of a store restored
+// from a bundle of another cluster draws a writer, as the take-over that
+// follows does again: while the lost cluster still runs the install, the
+// store is left as it is.
+func (r *run) restoredStopped(ctx context.Context) error {
+	stored, found, err := r.st.Install()
+	switch {
+	case err != nil:
+		return fmt.Errorf("reading the install: %w", err)
+	case !found || stored.Restored == nil || stored.Cluster == nil:
+		return nil
+	}
+	fingerprint, err := members.CAFingerprint(r.host.pveRootCA)
+	if err != nil {
+		return fmt.Errorf("reading the cluster CA of Proxmox VE, which identifies the cluster: %w", err)
+	}
+	if fingerprint == stored.Cluster.CASHA256 {
+		return nil
+	}
+	r.install = stored
+	return r.oldClusterStopped(ctx)
 }
 
 // RecoverInstall adopts the install whose tunnels api sees: installID, or the
@@ -237,6 +264,13 @@ func adopt(st *store.Store, id string, highest int, now func() time.Time, rand i
 		return store.Install{}, 0, err
 	}
 	inst.ID, inst.CreatedAt = id, created
+	if found && stored.Restored != nil {
+		// A store restored from a bundle keeps what says so, and the
+		// cluster it was made in: in another cluster, the cluster step
+		// takes it over as setup does, and pco promote ends the restore
+		// and has every tunnel given a new secret.
+		inst.Cluster, inst.Restored = stored.Cluster, stored.Restored
+	}
 	if err := st.SaveInstall(inst); err != nil {
 		return store.Install{}, 0, fmt.Errorf("storing the install: %w", err)
 	}

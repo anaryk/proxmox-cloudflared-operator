@@ -296,6 +296,7 @@ func TestARestoredStoreWithoutAClusterIsRefused(t *testing.T) {
 	err := e.setup(Options{Yes: true, Node: testNode})
 
 	require.ErrorContains(t, err, "records no cluster")
+	require.ErrorContains(t, err, "pco uninstall --keep-cloudflare, then adopt the install from Cloudflare with pco setup --recover")
 	e.done()
 	require.Nil(t, e.install().Cluster, "nothing is recorded")
 	ca, _ := e.currentCA()
@@ -402,4 +403,56 @@ func TestATakeOverDropsWhatTheLostClusterLeftUnfinished(t *testing.T) {
 			require.Nil(t, e.node(firstNode).Rotation)
 		})
 	}
+}
+
+// pco setup --recover on a store restored from a bundle of another cluster
+// takes it over as setup does: the same checks, a new CA, the nodes of the
+// lost cluster removed. The record of the restore stays, so that pco promote
+// still waits for it and the tunnels still get new secrets.
+func TestRecoverOnARestoredStoreTakesItOverAsSetupDoes(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	old := e.restoredElsewhere()
+	e.cf.SetConnectors(testAccount, tunnelID, []cfapi.Connector{{ID: "conn-1", Connections: 2, OriginIP: "203.0.113.7"}})
+	e.script(preflight("9.0.10"), daemonIs("inactive"))
+
+	err := e.setup(Options{Yes: true, Recover: true, CloudflareToken: cfToken, Node: testNode})
+
+	require.ErrorContains(t, err, "still runs install "+testInstall)
+	e.done()
+	requireUntaken(t, e, old)
+	require.Equal(t, oldCluster, e.install().Cluster.CASHA256)
+	require.NotNil(t, e.install().Restored)
+	require.Equal(t, 3, e.writer().Generation, "no writer is drawn while the lost cluster runs the install")
+
+	e.cf.SetConnectors(testAccount, tunnelID, nil)
+	e.script(preflight("9.0.10"), daemonIs("inactive"), roleKept(), userKept(), tokenKept(), tagsKept(), cloudflaredKept(), serviceStarted())
+	require.NoError(t, e.setup(Options{Yes: true, Recover: true, CloudflareToken: cfToken, Node: testNode}))
+	e.done()
+
+	inst := e.install()
+	require.Equal(t, oldCluster, inst.Cluster.CASHA256, "pco promote makes this cluster the store's")
+	require.Equal(t, testNode, inst.Restored.TakenOverBy)
+	ca, _ := e.currentCA()
+	require.NotEqual(t, old.SHA256(), ca.SHA256())
+	require.Equal(t, ca.SHA256(), inst.Restored.CASHA256)
+	require.Equal(t, string(agentproto.Removed), e.node(firstNode).State)
+	require.Equal(t, 4, e.writer().Generation, "above the sentinel at Cloudflare")
+}
+
+// --new-install would start a second install beside the restored one and
+// leave the restore half done: it is refused.
+func TestANewInstallIsRefusedOnARestoredStore(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	old := e.restoredElsewhere()
+	e.script(preflight("9.0.10"))
+
+	err := e.setup(Options{Yes: true, NewInstall: true, CloudflareToken: cfToken, Node: testNode})
+
+	require.ErrorContains(t, err, "--new-install")
+	require.ErrorContains(t, err, "restored from a bundle")
+	e.done()
+	requireUntaken(t, e, old)
+	require.Equal(t, testInstall, e.install().ID)
 }

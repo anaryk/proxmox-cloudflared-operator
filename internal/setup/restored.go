@@ -62,8 +62,9 @@ func (r *run) restoredElsewhere(ctx context.Context, fingerprint string) error {
 // nor taken over.
 func errRestoredWithoutCluster(inst store.Install) error {
 	return fmt.Errorf("install %s was restored from a bundle that records no cluster, so setup cannot tell whether it was made "+
-		"in this one: start pco once on a node of the cluster it was made in, which records it, and export it again, or adopt "+
-		"the install from Cloudflare with pco setup --recover; nothing was changed", inst.ID)
+		"in this one: remove it with pco uninstall --keep-cloudflare, then adopt the install from Cloudflare with "+
+		"pco setup --recover, which makes a store of its own under a new CA and takes nothing of the lost cluster over; "+
+		"nothing was changed", inst.ID)
 }
 
 func errTakenBy(inst store.Install, by string) error {
