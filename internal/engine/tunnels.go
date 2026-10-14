@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
@@ -34,7 +35,7 @@ func (c *cycleRun) reconcileTunnels() bool {
 	case held != "":
 		res = c.e.tunnels.RunHeld(c.ctx, plans, c.zones.known, held)
 	case c.addOnly != "":
-		res = c.e.tunnels.RunAddOnly(c.ctx, plans, c.zones.known, c.mode())
+		res = c.e.tunnels.RunAddOnly(c.ctx, plans, c.zones.known, c.mode(), c.claimed)
 	default:
 		res = c.e.tunnels.Run(c.ctx, plans, c.zones.known, c.mode())
 	}
@@ -63,6 +64,16 @@ func (c *cycleRun) reconcileTunnels() bool {
 		return false
 	}
 	return c.writerStill("after the tunnel run")
+}
+
+// claimed says whether host is a hostname this install holds a claim on:
+// the only rules a cycle that withdraws nothing keeps beyond its plan.
+func (c *cycleRun) claimed(host string) bool {
+	if _, ok := c.claims.Claims[host]; ok {
+		return true
+	}
+	_, ok := c.claims.Claims[strings.ToLower(host)]
+	return ok
 }
 
 // unreportedOf are the tunnels with an id the last state showed that the

@@ -71,6 +71,26 @@ func TestTheSnapshotKeepsTheTargetsOfEachTunnel(t *testing.T) {
 	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.12:5432")}, got[1].Verified)
 }
 
+// A tunnel whose own configuration was never verified keeps no target in the
+// snapshot, whatever another tunnel of its account had verified: one
+// tunnel's configuration never stands in for another's.
+func TestATunnelGetsNoTargetsOfAnotherTunnelOfItsAccount(t *testing.T) {
+	e := newEnv(t)
+	e.eng.verified[tunnelRef{testAccount, tunnelName}] = egressTargets("10.0.0.11:8080")
+	c := e.eng.newCycle(t.Context())
+	c.install = store.Install{ID: testInstall}
+
+	got := c.withVerified([]agentproto.Tunnel{
+		{AccountID: testAccount, TunnelID: "t2", Name: pinnedName, Kind: agentproto.TunnelPinned},
+		{AccountID: "acc2", TunnelID: "t3", Name: tunnelName, Kind: agentproto.TunnelShared},
+	}, false)
+
+	require.Len(t, got, 2)
+	for _, tun := range got {
+		require.Empty(t, tun.Verified, tun.Name+" in "+tun.AccountID)
+	}
+}
+
 // The memory keeps the verified configurations per tunnel; one saved before
 // tunnels were told apart is the shared tunnel's, and the shared tunnel's
 // entry comes last of its account, where an earlier release, which keeps the

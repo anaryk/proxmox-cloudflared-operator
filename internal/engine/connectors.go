@@ -33,12 +33,15 @@ func (c *cycleRun) reconcileConnectors() {
 	run, prune := map[string]string{}, false
 	if c.mode() == reconcile.Enforce {
 		for _, t := range existing {
+			if !c.runsHere(t) {
+				continue
+			}
 			if token, ok := c.ensure(t); ok {
 				run[t.ID] = token
 			}
 		}
 		for _, t := range others {
-			if !c.zones.frozen[t.AccountID] {
+			if !c.zones.frozen[t.AccountID] || !c.runsHere(t) {
 				continue
 			}
 			if token, ok := c.keepRunning(t); ok {
@@ -86,6 +89,11 @@ func (c *cycleRun) keepConnectors(shown []reconcile.TunnelState, run map[string]
 	}
 	tunnels := make([]agentproto.Tunnel, 0, len(shown))
 	for _, t := range shown {
+		if !c.runsHere(t) {
+			// Not this node's: left out, so that a prune removes a
+			// connector of it that runs here.
+			continue
+		}
 		tunnels = append(tunnels, snapshotTunnel(t.AccountID, t.ID, t.Name, run[t.ID]))
 	}
 	s := c.keptSnapshot(tunnels, prune)
@@ -174,6 +182,21 @@ func (c *cycleRun) knownTunnels() (existing, shown []reconcile.TunnelState) {
 		}
 	}
 	return existing, shown
+}
+
+// runsHere says whether the connector of a tunnel may run on this node, by
+// its name: the shared tunnel of the install, or the one pinned to this
+// node. A tunnel pinned to another node, and any name the install does not
+// make, never runs here, and its token is never read or fetched for it.
+func (c *cycleRun) runsHere(t reconcile.TunnelState) bool {
+	if c.install.ID == "" {
+		return false
+	}
+	if t.Name == planner.TunnelName(c.install.ID) {
+		return true
+	}
+	node, pinned := planner.PinnedTunnelNode(c.install.ID, t.Name)
+	return pinned && node == c.e.d.Node
 }
 
 func (c *cycleRun) noteEnsured(id string) {
