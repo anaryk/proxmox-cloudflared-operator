@@ -143,7 +143,7 @@ func newHostLease(node string, st *store.Store, paths store.Paths, d LeaseDeps, 
 		Store:       leaderStore{st},
 		Quorum:      h.quorate,
 		Remembered:  remembered(st),
-		Eligible:    eligibility(st, node, paths, d.Clocks.Now),
+		Eligible:    eligibility(st, node, paths, h.Cluster, d.Clocks.Now),
 		Guard:       h.heardLive,
 		Standalone:  h.alone,
 		Exclusive:   lease.ProcessLock(d.ProcessLock),
@@ -340,13 +340,20 @@ func holdingClients(newClient engine.ClientFactory, k interface{ State() lease.S
 // admin did not take it out; and the store holds no object of a schema this
 // build does not read. A store made in another cluster does not keep the
 // node from the lease: the engine writes nothing under it until pco promote,
-// which needs the lease to read Cloudflare. The schema is read again at most
-// every eligibleSchemaEvery.
-func eligibility(st *store.Store, node string, paths store.Paths, now func() time.Time) func() (bool, string) {
+// which needs the lease to read Cloudflare. A store restored from a bundle
+// of another cluster does, until pco setup took it into this one under a new
+// CA: until then the registry and the CA are the lost cluster's, whose nodes
+// the agent endpoint of the holder would take. The schema is read again at
+// most every eligibleSchemaEvery.
+func eligibility(st *store.Store, node string, paths store.Paths, cluster func() (store.ClusterIdentity, error),
+	now func() time.Time) func() (bool, string) {
 	var schemaAt time.Time
 	var schemaWhy string
 	return func() (bool, string) {
 		if why := registryWhy(st, node); why != "" {
+			return false, why
+		}
+		if why := restoredWhy(st, cluster); why != "" {
 			return false, why
 		}
 		if t := now(); schemaAt.IsZero() || t.Sub(schemaAt) >= eligibleSchemaEvery {
@@ -357,6 +364,38 @@ func eligibility(st *store.Store, node string, paths store.Paths, now func() tim
 		}
 		return true, ""
 	}
+}
+
+// restoredWhy says why a store restored from a bundle keeps the node from
+// the lease: it records no cluster, so it cannot be told from one of this
+// cluster, or it is of another cluster and was not taken into this one in
+// full. What cannot be read keeps it too.
+func restoredWhy(st *store.Store, cluster func() (store.ClusterIdentity, error)) string {
+	inst, found, err := st.Install()
+	switch {
+	case err != nil:
+		return fmt.Sprintf("the install cannot be read: %v", err)
+	case !found || inst.Restored == nil:
+		return ""
+	case inst.Cluster == nil:
+		return "the store was restored from a bundle that records no cluster: whether it was made in this one cannot be told"
+	}
+	here, err := cluster()
+	if err != nil {
+		return fmt.Sprintf("the store was restored from a bundle, and the identity of this cluster cannot be read: %v", err)
+	}
+	if here.CASHA256 == inst.Cluster.CASHA256 {
+		return ""
+	}
+	done, why, err := st.TakenOver(inst)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("the store was restored from a bundle of another cluster, and how far it was taken into this one cannot be read: %v", err)
+	case !done:
+		return "the store was restored from a bundle of another cluster and is not taken into this cluster: " + why +
+			"; pco setup on the node that is to run the controller takes it"
+	}
+	return ""
 }
 
 func registryWhy(st *store.Store, node string) string {

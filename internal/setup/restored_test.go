@@ -322,6 +322,57 @@ func TestACredentialThatNoLongerWorksIsPassedOver(t *testing.T) {
 	e.requireNoSecret()
 }
 
+// A take-over cut short at any step is finished by the next setup on the
+// node that claimed the store, which looks at Cloudflare again first; what
+// the install says of it is not taken on its word.
+func TestATakeOverCutShortAtAnyStepIsFinishedAfterTheSameChecks(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		crash func(e *testEnv)
+	}{
+		{"after the claim", func(*testEnv) {}},
+		{"after the new CA", func(e *testEnv) { e.installCA() }},
+		{"recorded done with a node of the lost cluster left", func(e *testEnv) {
+			ca := e.installCA()
+			inst := e.install()
+			inst.Restored.CASHA256 = ca.SHA256()
+			require.NoError(e.t, e.st.SaveInstall(inst))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit(serviceUnit)
+			e.restoredElsewhere()
+			inst := e.install()
+			inst.Restored.TakenOverBy = testNode
+			require.NoError(t, e.st.SaveInstall(inst))
+			tt.crash(e)
+			half, _ := e.currentCA()
+
+			e.cf.SetConnectors(testAccount, tunnelID, []cfapi.Connector{{ID: "conn-1", Connections: 2, OriginIP: "203.0.113.7"}})
+			e.script(preflight("9.0.10"))
+			err := e.setup(Options{Yes: true, Node: testNode})
+			require.ErrorContains(t, err, "still runs install "+testInstall, "the redo looks at Cloudflare again")
+			e.done()
+			require.Equal(t, string(agentproto.Active), e.node(firstNode).State)
+
+			e.cf.SetConnectors(testAccount, tunnelID, nil)
+			e.script(joined()...)
+			require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+			e.done()
+
+			ca, previous := e.currentCA()
+			require.NotEqual(t, half.SHA256(), ca.SHA256(), "a CA made by a run cut short is not kept on its word")
+			require.False(t, previous)
+			require.Equal(t, ca.SHA256(), e.install().Restored.CASHA256)
+			require.Equal(t, string(agentproto.Removed), e.node(firstNode).State)
+			done, why, err := e.st.TakenOver(e.install())
+			require.NoError(t, err)
+			require.True(t, done, why)
+		})
+	}
+}
+
 // What the lost cluster left unfinished does not go on in the new one: its
 // rotation of every secret, and the rotations of the forgets of its nodes.
 // The take-over makes a new CA, and the promotion gives every tunnel a new

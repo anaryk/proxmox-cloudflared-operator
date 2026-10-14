@@ -138,9 +138,10 @@ func (s stateOf) State() lease.State { return lease.State(s) }
 func TestTheNodeIsEligibleAsTheRegistryAndTheStoreSay(t *testing.T) {
 	no := false
 	for name, tc := range map[string]struct {
-		entry   *store.NodeEntry
-		cluster *store.ClusterIdentity
-		why     string
+		entry    *store.NodeEntry
+		cluster  *store.ClusterIdentity
+		restored *store.Restored
+		why      string
 	}{
 		"registered":         {entry: &store.NodeEntry{Name: testNode, Since: t0}},
 		"not registered":     {why: "node " + testNode + " is not registered"},
@@ -148,6 +149,14 @@ func TestTheNodeIsEligibleAsTheRegistryAndTheStoreSay(t *testing.T) {
 		"set not to be":      {entry: &store.NodeEntry{Name: testNode, Since: t0, ControllerEligible: &no}, why: "node " + testNode + " was set not to be the controller"},
 		"of another cluster": {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("aa")}},
 		"of this cluster":    {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("bb")}},
+		"restored in this cluster": {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("bb")},
+			restored: &store.Restored{}},
+		"restored in another cluster, not taken": {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("aa")},
+			restored: &store.Restored{}, why: "not taken into this cluster: no node took it into this cluster yet; pco setup"},
+		"restored in another cluster, half taken": {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("aa")},
+			restored: &store.Restored{TakenOverBy: testNode}, why: "node " + testNode + " began to take it into this cluster and did not finish"},
+		"restored without a cluster": {entry: &store.NodeEntry{Name: testNode, Since: t0}, restored: &store.Restored{},
+			why: "records no cluster"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -155,11 +164,12 @@ func TestTheNodeIsEligibleAsTheRegistryAndTheStoreSay(t *testing.T) {
 			st, err := store.Open(p)
 			require.NoError(t, err)
 			require.NoError(t, st.Init())
-			require.NoError(t, st.SaveInstall(store.Install{ID: testInstall, CreatedAt: t0, Cluster: tc.cluster}))
+			require.NoError(t, st.SaveInstall(store.Install{ID: testInstall, CreatedAt: t0, Cluster: tc.cluster, Restored: tc.restored}))
 			if tc.entry != nil {
 				require.NoError(t, st.SaveNode(*tc.entry))
 			}
-			ok, why := eligibility(st, testNode, p, time.Now)()
+			here := func() (store.ClusterIdentity, error) { return store.ClusterIdentity{CASHA256: fingerprint("bb")}, nil }
+			ok, why := eligibility(st, testNode, p, here, time.Now)()
 
 			require.Equal(t, tc.why == "", ok, why)
 			require.Contains(t, why, tc.why)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -26,25 +24,30 @@ import (
 // nothing until pco promote draws a new epoch.
 func (r *run) restoredElsewhere(ctx context.Context, fingerprint string) error {
 	inst := r.install
-	by, done := inst.Restored.TakenOverBy, inst.Restored.CASHA256 != ""
-	switch {
-	case by != "" && by != r.o.Node:
+	by := inst.Restored.TakenOverBy
+	if by != "" && by != r.o.Node {
 		return errTakenBy(inst, by)
-	case by == r.o.Node && done:
+	}
+	// Whether the take-over is done is read from the CA and the registry,
+	// not from the install alone: a run cut short at any step, or a record
+	// that says more than was done, is done again, after every check.
+	done, why, err := r.st.TakenOver(inst)
+	switch {
+	case err != nil:
+		return fmt.Errorf("reading how far this cluster took the store: %w", err)
+	case done:
 		r.ask.Info("cluster: the store of cluster %s was taken into this one by this node; pco promote here makes this cluster its writer",
 			clusterName(*inst.Cluster))
 		return nil
 	case r.o.Repair:
-		return fmt.Errorf("install %s was restored from a bundle of cluster %s and is not taken into this cluster (%s) yet: "+
-			"run pco setup, not --repair; nothing was changed", inst.ID, clusterName(*inst.Cluster), fingerprint)
+		return fmt.Errorf("install %s was restored from a bundle of cluster %s and is not taken into this cluster (%s): %s; "+
+			"run pco setup, not --repair; nothing was changed", inst.ID, clusterName(*inst.Cluster), fingerprint, why)
 	}
 	if err := r.oldClusterStopped(ctx); err != nil {
 		return err
 	}
-	if by == "" {
-		if err := r.claimRestored(); err != nil {
-			return err
-		}
+	if err := r.claimRestored(); err != nil {
+		return err
 	}
 	if err := r.takeOver(); err != nil {
 		return err
@@ -73,8 +76,11 @@ func clusterName(id store.ClusterIdentity) string {
 }
 
 // claimRestored records this node as the one that takes the store, at the
-// revision of the install it reads: of two nodes set up at once, one takes
-// it and the other is refused before it changes anything.
+// revision of the install it reads, on every attempt, a redo of its own
+// included: of two nodes set up at once, one takes it and the other is
+// refused before it changes anything, and a claim of another node is never
+// taken over. The record of a take-over that was not done is cleared with
+// it.
 func (r *run) claimRestored() error {
 	const changed = "the install changed while setup ran; run pco setup again"
 	inst, rev, found, err := r.st.InstallRev()
@@ -83,11 +89,11 @@ func (r *run) claimRestored() error {
 		return fmt.Errorf("reading the install: %w", err)
 	case !found || inst.ID != r.install.ID || inst.Restored == nil:
 		return errors.New(changed)
-	case inst.Restored.TakenOverBy != "":
+	case inst.Restored.TakenOverBy != "" && inst.Restored.TakenOverBy != r.o.Node:
 		return errTakenBy(inst, inst.Restored.TakenOverBy)
 	}
 	restored := *inst.Restored
-	restored.TakenOverBy = r.o.Node
+	restored.TakenOverBy, restored.CASHA256 = r.o.Node, ""
 	inst.Restored = &restored
 	_, err = r.st.SaveInstallIf(inst, rev)
 	switch {
@@ -228,13 +234,13 @@ func (r *run) oldClusterStopped(ctx context.Context) error {
 	return nil
 }
 
-// connectedWith is connectedTunnels with a client of token.
+// connectedWith is cfapi.Connected with a client of token.
 func (r *run) connectedWith(ctx context.Context, token, installID string) ([]string, error) {
 	api, err := r.newClient(token)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errNoClient, err)
 	}
-	return connectedTunnels(ctx, api, installID)
+	return cfapi.Connected(ctx, api, installID)
 }
 
 // isRejected says whether err is that of a token Cloudflare does not take at
@@ -242,57 +248,4 @@ func (r *run) connectedWith(ctx context.Context, token, installID string) ([]str
 func isRejected(err error) bool {
 	var apiErr *cfapi.Error
 	return errors.Is(err, errNoClient) || errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized
-}
-
-// connectedTunnels says, for each tunnel of the install that api sees, the
-// shared one and those pinned to a node, which connectors are connected and
-// from where.
-func connectedTunnels(ctx context.Context, api cfapi.API, installID string) ([]string, error) {
-	accounts, err := accountsOf(ctx, api)
-	if err != nil {
-		return nil, err
-	}
-	shared := planner.TunnelName(installID)
-	var out []string
-	for _, account := range accounts {
-		tunnels, err := api.Tunnels(ctx, account, shared)
-		if err != nil {
-			return nil, fmt.Errorf("listing the tunnels of account %s: %w", account, err)
-		}
-		for _, t := range tunnels {
-			if t.Name != shared && !strings.HasPrefix(t.Name, shared+"-") {
-				continue
-			}
-			conns, err := api.Connectors(ctx, account, t.ID)
-			if err != nil {
-				return nil, fmt.Errorf("listing the connectors of tunnel %s (%s): %w", t.Name, t.ID, err)
-			}
-			for _, c := range conns {
-				if c.Connections > 0 {
-					out = append(out, fmt.Sprintf("tunnel %s has connector %s connected from %s", t.Name, c.ID, cmp.Or(c.OriginIP, "an unknown address")))
-				}
-			}
-		}
-	}
-	return out, nil
-}
-
-// accountsOf are the accounts a credential lists and those of its zones.
-func accountsOf(ctx context.Context, api cfapi.API) ([]string, error) {
-	listed, err := api.Accounts(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing the accounts: %w", err)
-	}
-	zones, err := api.Zones(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing the zones: %w", err)
-	}
-	accounts := map[string]bool{}
-	for _, a := range listed {
-		accounts[a.ID] = true
-	}
-	for _, z := range zones {
-		accounts[z.AccountID] = true
-	}
-	return slices.Sorted(maps.Keys(accounts)), nil
 }
