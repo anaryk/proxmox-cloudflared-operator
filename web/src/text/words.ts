@@ -275,6 +275,25 @@ export type CommandWords = { command: Command; refused?: undefined } | { command
 export const egressOnCommand: CommandWords = { command: command('pco egress on') }
 export const egressLoadCommand: CommandWords = { command: command('pco egress load') }
 export const setupCommand: CommandWords = { command: command('pco setup') }
+export const promoteCommand: CommandWords = { command: command('pco promote') }
+
+// forgetCompromisedCommand is the command that forgets a node whose disk is
+// out of the admin's hands and rotates every secret of the install, which
+// only root on the controller may run: the page never sends it.
+export function forgetCompromisedCommand(node: string): CommandWords {
+  const arg = commandArg('node name', node)
+  if (arg.refused) return { refused: arg.refused }
+  return { command: command(`pco node forget ${arg.value} --compromised`) }
+}
+
+// delnodeCommand is what Proxmox needs before a node is forgotten as
+// compromised: the node out of the cluster, so that it receives no new
+// secret.
+export function delnodeCommand(node: string): CommandWords {
+  const arg = commandArg('node name', node)
+  if (arg.refused) return { refused: arg.refused }
+  return { command: command(`pvecm delnode ${arg.value}`) }
+}
 
 // commandArg is present.CommandArg: value when it has the form of its kind,
 // else why not. A value that begins with a dash is refused whatever its

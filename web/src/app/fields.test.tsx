@@ -7,6 +7,7 @@ import { stateFields, type State } from '../api/types.gen'
 import { ToastProvider } from '../components/Toast'
 import populated from '../fixtures/populated.json'
 import { DoctorPage } from '../pages/doctor/DoctorPage'
+import { NodesPage } from '../pages/nodes/NodesPage'
 import { PlanSections } from '../pages/routes/PlanPage'
 import { fakeStore } from '../test/store'
 import { fieldHomes, homeless } from './fields'
@@ -28,6 +29,7 @@ test('no home is kept for a field the state no longer has', () => {
 const pages: Record<string, () => JSX.Element> = {
   'Doctor:': () => <DoctorPage />,
   'Routes > Plan:': () => <PlanSections />,
+  'Nodes:': () => <NodesPage view={{ name: 'nodes' }} />,
 }
 
 // For each field whose home is one of those pages: a value of it that only
@@ -41,12 +43,25 @@ const probes: Record<string, { state: Partial<State>; shows: string }> = {
   },
   conflicts: { state: { conflicts: [{ zone: 'example.com', name: 'probe-conflict.example.com', type: 'A', content: '192.0.2.99' }] }, shows: 'probe-conflict.example.com' },
   lost: { state: { lost: ['probe-lost.example.com'] }, shows: 'probe-lost.example.com' },
+  lease: { state: { lease: { holder: 'pve-probe-holder', generation: 4242, refreshAge: 3e9, valid: true } }, shows: 'pve-probe-holder' },
+  nodes: {
+    state: {
+      nodes: [
+        { name: 'pve-probe-node', state: 'active', kind: 'host', controller: false, statusAge: 1e9, watchRunning: true, covered: true, replicaReady: true, verified: 1, failing: 0, belowMinimum: 0, pinned: 0, clockSkew: 0 },
+      ],
+    },
+    shows: 'pve-probe-node',
+  },
+  cluster: {
+    state: { cluster: { controller: 'pve-probe-controller', generation: 4242, members: ['pve-probe-controller'], quorate: true, quorumDevice: false, coverage: { covered: true } } },
+    shows: 'pve-probe-controller',
+  },
 }
 
 const checked = Object.entries(fieldHomes).filter(([, home]) => Object.keys(pages).some((page) => home.startsWith(page)))
 
 test('the homes the tests can render are there to check', () => {
-  expect(checked.map(([field]) => field).sort()).toEqual(['actions', 'conflicts', 'epochDrawnAt', 'identity', 'lost'])
+  expect(checked.map(([field]) => field).sort()).toEqual(['actions', 'cluster', 'conflicts', 'epochDrawnAt', 'identity', 'lease', 'lost', 'nodes'])
 })
 
 test.each(checked)('%s is shown where its home says: %s', async (field, home) => {

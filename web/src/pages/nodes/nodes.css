@@ -1,0 +1,71 @@
+.node-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.node-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.node-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+}
+
+.node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.node-actions:empty {
+  display: none;
+}
+
+.join-uses {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.join-uses li + li {
+  margin-top: 4px;
+}
+
+.token-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.token-box .snippet {
+  flex: 1 1 240px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.replica-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 2px 0;
+}

@@ -4,6 +4,7 @@ import { useApp } from '../api/store'
 import type { State } from '../api/types.gen'
 import { IconButton } from '../components/Button'
 import {
+  AgentIcon,
   DoctorIcon,
   EventsIcon,
   GlobeIcon,
@@ -12,11 +13,13 @@ import {
   KeyIcon,
   ListIcon,
   NetworkIcon,
+  NodesIcon,
   OverviewIcon,
   RouteIcon,
   SettingsIcon,
   TunnelIcon,
 } from '../components/icons'
+import { clustered, nodesNeeding } from '../pages/nodes/nodes'
 import { credentialState } from '../text/words'
 import { Link } from './Link'
 import { type Section, sectionOf, useView } from './router'
@@ -31,6 +34,7 @@ export interface Counters {
   zones: number // zones frozen
   tunnels: number // connectors pco does not run
   edge: number // the three above
+  nodes: number // nodes that need a person: joining, contested, unknown, refused by a new CA
   doctor?: number // failures of this browser's last run, for admins
 }
 
@@ -46,6 +50,7 @@ export function countersOf(st: State | undefined, role: string | undefined, doct
     zones,
     tunnels,
     edge: credentials + zones + tunnels,
+    nodes: nodesNeeding(st),
     doctor: role === 'admin' && doctorLast ? doctorLast.fail : undefined,
   }
 }
@@ -87,9 +92,10 @@ function Group({ label, count, children }: { label?: string; count?: number; chi
   )
 }
 
-// Nav is the navigation on the left: no group, Edge and Operate, as the
-// mockup has them. There is no item for the first-run setup: it shows itself
-// while there is no credential and stays reachable from Settings.
+// Nav is the navigation on the left: no group, Edge, on a cluster Cluster,
+// and Operate, as the mockup has them. There is no item for the first-run
+// setup: it shows itself while there is no credential and stays reachable
+// from Settings.
 export function Nav({ open, collapsed, onCollapse, onAbout }: { open: boolean; collapsed: boolean; onCollapse: () => void; onAbout: () => void }) {
   const st = useApp((s) => s.state)
   const role = useApp((s) => s.session?.role)
@@ -116,6 +122,18 @@ export function Nav({ open, collapsed, onCollapse, onAbout }: { open: boolean; c
         { section: 'tunnels', to: '/edge/tunnels', label: 'Tunnels', Icon: TunnelIcon, count: c.tunnels, why: 'connectors pco does not run' },
       ],
     },
+    ...(clustered(st)
+      ? [
+          {
+            label: 'Cluster',
+            count: c.nodes,
+            items: [
+              { section: 'nodes' as const, to: '/nodes', label: 'Nodes', Icon: NodesIcon, count: c.nodes, why: 'nodes that need a person' },
+              { section: 'agent' as const, to: '/agent', label: 'This node', Icon: AgentIcon },
+            ],
+          },
+        ]
+      : []),
     {
       label: 'Operate',
       items: [

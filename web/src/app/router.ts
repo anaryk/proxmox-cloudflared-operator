@@ -20,6 +20,9 @@ export type View =
   | { name: 'zone'; zone: string }
   | { name: 'tunnels' }
   | { name: 'tunnel'; account: string }
+  | { name: 'nodes' }
+  | { name: 'node'; node: string }
+  | { name: 'agent' }
   | { name: 'events' }
   | { name: 'doctor' }
   | { name: 'settings' }
@@ -72,6 +75,11 @@ export function match(pathname: string, search = ''): View {
       return none
     case 'networks':
       return second === undefined ? { name: 'networks' } : none
+    case 'nodes': {
+      if (second === undefined) return { name: 'nodes' }
+      const node = part(second)
+      return node && third === undefined ? { name: 'node', node } : none
+    }
     case 'edge': {
       if (fourth !== undefined) return none
       const id = part(third)
@@ -88,6 +96,8 @@ export function match(pathname: string, search = ''): View {
   }
   if (second !== undefined) return none
   switch (first) {
+    case 'agent':
+      return { name: 'agent' }
     case 'events':
       return { name: 'events' }
     case 'doctor':
@@ -103,7 +113,7 @@ export function match(pathname: string, search = ''): View {
 }
 
 // The item of the navigation a view belongs to.
-export type Section = 'overview' | 'routes' | 'guests' | 'networks' | 'credentials' | 'zones' | 'tunnels' | 'events' | 'doctor' | 'settings'
+export type Section = 'overview' | 'routes' | 'guests' | 'networks' | 'credentials' | 'zones' | 'tunnels' | 'nodes' | 'agent' | 'events' | 'doctor' | 'settings'
 
 export function sectionOf(v: View): Section | undefined {
   switch (v.name) {
@@ -130,6 +140,11 @@ export function sectionOf(v: View): Section | undefined {
     case 'tunnels':
     case 'tunnel':
       return 'tunnels'
+    case 'nodes':
+    case 'node':
+      return 'nodes'
+    case 'agent':
+      return 'agent'
     case 'events':
       return 'events'
     case 'doctor':

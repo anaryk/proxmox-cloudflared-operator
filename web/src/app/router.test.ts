@@ -24,6 +24,9 @@ describe('every path of the page', () => {
     ['/edge/zones/example.com', '', { name: 'zone', zone: 'example.com' }],
     ['/edge/tunnels', '', { name: 'tunnels' }],
     ['/edge/tunnels/023e105f4ecef8ad9ca31a8372d0c353', '', { name: 'tunnel', account: '023e105f4ecef8ad9ca31a8372d0c353' }],
+    ['/nodes', '', { name: 'nodes' }],
+    ['/nodes/pve2', '', { name: 'node', node: 'pve2' }],
+    ['/agent', '', { name: 'agent' }],
     ['/events', '?route=www.example.com&level=error', { name: 'events' }],
     ['/doctor', '', { name: 'doctor' }],
     ['/settings', '', { name: 'settings' }],
@@ -52,6 +55,9 @@ describe('every path of the page', () => {
     '/edge/zones/a/b',
     '/events/x',
     '/doctor/x',
+    '/nodes/pve2/x',
+    '/nodes/a%2Fb',
+    '/agent/x',
     '/assets/index.js',
   ])('%s is no view', (path) => {
     expect(match(path)).toEqual({ name: 'not-found' })
@@ -63,6 +69,8 @@ test('the section of the navigation each view belongs to', () => {
   expect(sectionOf(match('/guests/claims'))).toBe('guests')
   expect(sectionOf(match('/edge/zones/example.com'))).toBe('zones')
   expect(sectionOf(match('/setup'))).toBe('settings')
+  expect(sectionOf(match('/nodes/pve2'))).toBe('nodes')
+  expect(sectionOf(match('/agent'))).toBe('agent')
   expect(sectionOf(match('/signin'))).toBeUndefined()
 })
 

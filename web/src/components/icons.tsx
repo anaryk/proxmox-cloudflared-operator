@@ -103,6 +103,15 @@ export const OverviewIcon = icon(
 )
 export const RouteIcon = icon('RouteIcon', <path d="M2 12.5h3.5c1.5 0 2-.8 2.5-2.5l1-4c.4-1.7 1-2.5 2.5-2.5H14M11.5 1.3l2.5 2.2-2.5 2.2" />)
 export const GuestIcon = icon('GuestIcon', <><rect x="2" y="2.5" width="12" height="8.5" rx="1.2" /><path d="M5.5 14h5M8 11v3" /></>)
+export const NodesIcon = icon(
+  'NodesIcon',
+  <>
+    <rect x="2" y="2" width="12" height="4.5" rx="1" />
+    <rect x="2" y="9.5" width="12" height="4.5" rx="1" />
+    <path d="M4.5 4.25h.01M4.5 11.75h.01" strokeWidth="2" strokeLinecap="round" />
+  </>,
+)
+export const AgentIcon = icon('AgentIcon', <><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2.3M8 12.2v2.3M1.5 8h2.3M12.2 8h2.3M3.5 3.5l1.6 1.6M10.9 10.9l1.6 1.6M12.5 3.5l-1.6 1.6M5.1 10.9l-1.6 1.6" /></>)
 export const NetworkIcon = icon(
   'NetworkIcon',
   <g strokeWidth="1.4">

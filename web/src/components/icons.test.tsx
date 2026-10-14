@@ -10,9 +10,9 @@ const set = Object.entries(icons).filter(([name]) => name.endsWith('Icon') && ![
   ComponentType<icons.IconProps>,
 ][]
 
-test('the sheet of the mockup and the three icons it lacks', () => {
-  expect(set).toHaveLength(36)
-  expect(set.map(([name]) => name)).toEqual(expect.arrayContaining(['FrozenIcon', 'RejectedIcon', 'RogueIcon']))
+test('the sheet of the mockup, the three icons it lacks and the two of a cluster', () => {
+  expect(set).toHaveLength(38)
+  expect(set.map(([name]) => name)).toEqual(expect.arrayContaining(['FrozenIcon', 'RejectedIcon', 'RogueIcon', 'NodesIcon', 'AgentIcon']))
 })
 
 describe.each(set)('%s', (_, Icon) => {

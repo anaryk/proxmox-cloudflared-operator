@@ -23,6 +23,8 @@ const SettingsPage = lazy(() => loadPart(() => import('../pages/settings/Setting
 const DoctorPage = lazy(() => loadPart(() => import('../pages/doctor/DoctorPage')).then((m) => ({ default: m.DoctorPage })))
 const EventsPage = lazy(() => loadPart(() => import('../pages/events/EventsPage')).then((m) => ({ default: m.EventsPage })))
 const NetworksPage = lazy(() => loadPart(() => import('../pages/networks/NetworksPage')).then((m) => ({ default: m.NetworksPage })))
+const NodesPage = lazy(() => loadPart(() => import('../pages/nodes/NodesPage')).then((m) => ({ default: m.NodesPage })))
+const LocalAgent = lazy(() => loadPart(() => import('../pages/LocalAgent')).then((m) => ({ default: m.LocalAgent })))
 
 // Later holds a page loaded when first shown. Each page has its own, by its
 // key: a page that did not load is not taken for the next one.
@@ -105,6 +107,19 @@ export function Page({ view }: { view: View }) {
       return (
         <Later key="networks">
           <NetworksPage />
+        </Later>
+      )
+    case 'nodes':
+    case 'node':
+      return (
+        <Later key="nodes">
+          <NodesPage view={view} />
+        </Later>
+      )
+    case 'agent':
+      return (
+        <Later key="agent">
+          <LocalAgent />
         </Later>
       )
     case 'events':

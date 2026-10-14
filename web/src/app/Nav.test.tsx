@@ -3,6 +3,7 @@ import { expect, test } from 'vitest'
 
 import { StoreProvider } from '../api/store'
 import type { State } from '../api/types.gen'
+import cluster from '../fixtures/cluster.json'
 import empty from '../fixtures/empty.json'
 import populated from '../fixtures/populated.json'
 import rogue from '../fixtures/rogue.json'
@@ -20,8 +21,13 @@ test('the counters of the populated fixture', () => {
     zones: 1,
     tunnels: 1,
     edge: 3,
+    nodes: 0,
     doctor: undefined,
   })
+})
+
+test('the counter of the nodes: those that need a person, on a cluster', () => {
+  expect(countersOf(cluster as unknown as State, 'admin').nodes).toBe(1)
 })
 
 test('the counters of the rogue fixture: only the two connectors pco does not run', () => {
@@ -64,4 +70,21 @@ test('the groups of the mockup, no setup item, the counters and the current page
   expect([count('Routes'), count('Guests'), count('Credentials'), count('Zones'), count('Tunnels'), count('Doctor')]).toEqual(['1', '3', '1', '1', '1', '4'])
   expect(links.find((l) => l.getAttribute('aria-current') === 'page')?.textContent).toBe('Routes1 routes that are not active')
   expect(nav.textContent).not.toContain('setup')
+  expect(screen.queryByRole('group', { name: 'Cluster' })).toBeNull()
+})
+
+test('on a cluster the group of the cluster, with the nodes that need a person', async () => {
+  const { store } = await fakeStore({ state: cluster })
+  navigate('/nodes/pve3')
+  render(
+    <StoreProvider store={store}>
+      <Nav open={false} collapsed={false} onCollapse={() => {}} onAbout={() => {}} />
+    </StoreProvider>,
+  )
+  const group = screen.getByRole('group', { name: 'Cluster' })
+  const links = within(group).getAllByRole('link')
+  expect(links.map((l) => l.querySelector('.nav-label')?.textContent)).toEqual(['Nodes', 'This node'])
+  expect(links[0]?.querySelector('.count')?.firstChild?.textContent).toBe('1')
+  expect(links[0]?.getAttribute('aria-current')).toBe('page')
+  expect(links.map((l) => l.getAttribute('href'))).toEqual(['/nodes', '/agent'])
 })
