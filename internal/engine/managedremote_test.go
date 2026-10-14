@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -102,6 +103,8 @@ func TestAManagedGuestOfAnotherNodeIsAttachedByItsAgent(t *testing.T) {
 			require.Equal(t, agentproto.ActionPVEWrite, s.Actions[0].Kind)
 			id = s.Actions[0].ID
 			require.NoError(t, json.Unmarshal(s.Actions[0].Args, &write))
+			require.True(t, slices.ContainsFunc(s.Guests, func(g model.Guest) bool { return g.Ref == mgd.Ref }),
+				"the snapshot gives the agent the guest it writes, which has no route")
 			break
 		}
 	}

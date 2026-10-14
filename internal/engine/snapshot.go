@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"maps"
 	"net/netip"
 	"slices"
@@ -312,6 +313,35 @@ func (c *cycleRun) snapshotGuests(targets []agentproto.Target) []model.Guest {
 		}
 	}
 	return out
+}
+
+// withWritten adds to guests every guest a pveWrite action of actions writes
+// that is not in guests or targets yet: the agent writes a card only of a
+// guest the snapshot gives it, and a consenting guest need not have a route.
+func (c *cycleRun) withWritten(guests []model.Guest, targets []agentproto.Target, actions []agentproto.Action) []model.Guest {
+	have := map[model.GuestRef]bool{}
+	for _, t := range targets {
+		if t.Guest != nil {
+			have[t.Guest.Ref] = true
+		}
+	}
+	for _, g := range guests {
+		have[g.Ref] = true
+	}
+	for _, a := range actions {
+		if a.Kind != agentproto.ActionPVEWrite {
+			continue
+		}
+		var w agentproto.PVEWrite
+		if err := json.Unmarshal(a.Args, &w); err != nil || have[w.Guest] {
+			continue
+		}
+		if g, ok := c.snap.Guest(w.Guest); ok {
+			have[g.Ref] = true
+			guests = append(guests, g)
+		}
+	}
+	return guests
 }
 
 // withVerified gives each tunnel the targets of its configuration last
