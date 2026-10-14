@@ -403,7 +403,8 @@ func (c *cycleRun) followBlocks() {
 	}
 	maps.DeleteFunc(mem.moved, func(key string, _ time.Time) bool { return !seenMoves[key] })
 	for addr, b := range mem.blocks {
-		if !b.quiet(c.now) || c.attestation(c.hostOf(b.guest), b.mac) == nil {
+		gone := c.guestGone(b)
+		if !gone && (!b.quiet(c.now) || c.attestation(c.hostOf(b.guest), b.mac) == nil) {
 			continue
 		}
 		if err := c.e.d.Store.DeleteBlock(addr); err != nil {
@@ -411,10 +412,35 @@ func (c *cycleRun) followBlocks() {
 			continue
 		}
 		delete(mem.blocks, addr)
+		why := fmt.Sprintf("no agent reported its MAC %s elsewhere for %s, and node %s attests it again", b.mac, blockQuiet, c.hostOf(b.guest))
+		if gone {
+			why = fmt.Sprintf("its guest %s is gone from the inventory, and no card carries its MAC %s or its address", b.guest, b.mac)
+		}
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindBlock, Subject: addr.String(), Guest: b.guest.String(),
-			Message: fmt.Sprintf("%s is no longer blocked: no agent reported its MAC %s elsewhere for %s, and node %s attests it again",
-				addr, b.mac, blockQuiet, c.hostOf(b.guest))})
+			Message: fmt.Sprintf("%s is no longer blocked: %s", addr, why)})
 	}
+}
+
+// guestGone says whether the guest of a block is gone from an inventory
+// that is complete, while no card the inventory has carries the MAC or the
+// address blocked: the guest's node will never attest the card again, and
+// what the block protected is not published any more. A card that carries
+// either may be what the block is for, and keeps it.
+func (c *cycleRun) guestGone(b *conflictBlock) bool {
+	if !c.snap.Complete {
+		return false
+	}
+	if _, ok := c.snap.Guest(b.guest); ok {
+		return false
+	}
+	for _, g := range c.snap.Guests {
+		for _, nic := range g.NICs {
+			if normalMAC(nic.MAC) == b.mac || nic.Leased == b.addr || slices.Contains(nic.Static, b.addr) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // migrating says whether the guest of a card shows that it migrates: the

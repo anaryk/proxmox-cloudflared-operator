@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -385,6 +387,65 @@ func TestABlockTheAdminEndsIsGoneFromTheStore(t *testing.T) {
 	require.Empty(t, st.Cluster.Blocks)
 	s, _ := w.r.lastOf("pve2")
 	require.Empty(t, s.Blocks)
+}
+
+// A block whose guest is gone from a complete inventory ends, when no card
+// the inventory has carries the MAC or the address blocked: the guest's
+// node will never attest the card again, and what the block protected is
+// not published any more. A card elsewhere with the MAC, or the address,
+// keeps the block, as does an inventory that may be missing the guest.
+func TestABlockEndsOnceItsGuestIsGoneFromACompleteInventory(t *testing.T) {
+	blocked := func(t *testing.T, edit func(snap *inventory.Snapshot)) *world {
+		t.Helper()
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve3"].edit = dbConflict
+		w.tick(time.Second)
+		w.acts["pve3"].edit = nil
+		require.Contains(t, w.eng.place.blocks, dbAddr)
+		snap := w.inv.snapshot()
+		snap.Guests = slices.DeleteFunc(snap.Guests, func(g model.Guest) bool { return g.Ref == db })
+		edit(&snap)
+		w.inv.set(snap)
+		w.tick(time.Second)
+		w.tick(time.Second)
+		return w
+	}
+
+	t.Run("gone", func(t *testing.T) {
+		w := blocked(t, func(*inventory.Snapshot) {})
+		require.NotContains(t, w.eng.place.blocks, dbAddr)
+		blocks, err := w.store.Blocks()
+		require.NoError(t, err)
+		require.Empty(t, blocks)
+		s, _ := w.r.lastOf("pve2")
+		require.Empty(t, s.Blocks)
+		var said bool
+		for _, ev := range w.eng.Events(time.Time{}) {
+			if ev.Kind == kindBlock && strings.Contains(ev.Message, "10.0.0.22 is no longer blocked: its guest qemu/102 is gone from the inventory") {
+				said = true
+			}
+		}
+		require.True(t, said, "the end says why")
+	})
+	t.Run("a card elsewhere carries its MAC", func(t *testing.T) {
+		w := blocked(t, func(snap *inventory.Snapshot) {
+			snap.Guests = append(snap.Guests, carded(guest(104, "clone"), "pve3", dbCard))
+		})
+		require.Contains(t, w.eng.place.blocks, dbAddr)
+	})
+	t.Run("a card elsewhere carries its address", func(t *testing.T) {
+		w := blocked(t, func(snap *inventory.Snapshot) {
+			g := carded(guest(104, "clone"), "pve3", "bc:24:11:00:04:01")
+			g.NICs[0].Static = []netip.Addr{dbAddr}
+			snap.Guests = append(snap.Guests, g)
+		})
+		require.Contains(t, w.eng.place.blocks, dbAddr)
+	})
+	t.Run("the inventory is not complete", func(t *testing.T) {
+		w := blocked(t, func(snap *inventory.Snapshot) { snap.Complete = false })
+		require.Contains(t, w.eng.place.blocks, dbAddr)
+	})
 }
 
 // A block ends only on a fresh attestation of the guest's card by its
