@@ -184,7 +184,9 @@ its tags and the consent setting say. It is no route and names no hostname. A re
 must not fail by a typo, so it counts wherever the key `cf-tunnel-managed` is read in the
 route text: in any case, with any value, and also in an entry or a block that is dropped
 for an error. A value other than `off` is an error all the same. In a comment it does not
-count.
+count, and neither does it outside the route text: a line of the Notes that holds only
+`cf-tunnel-managed=off`, outside every block, is prose like any other. On a line of its own it
+reads `cf-tunnel: cf-tunnel-managed=off`.
 
 ### Comments
 

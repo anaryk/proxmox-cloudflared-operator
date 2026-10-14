@@ -379,9 +379,20 @@ attaches in the same way, and start no grace. `pco setup --repair` registers the
 
 ### Refusing a card
 
-The word `cf-tunnel-managed=off` in the route text of a guest's Notes, on a line of its own,
-refuses a card whatever the tags and the setting say, and starts the detach of a card the
-guest has. It is for whoever writes the Notes and does not want pco to change the hardware of
+The word `cf-tunnel-managed=off` in the route text of a guest's Notes, where an entry may
+start in a `cf-tunnel` block or on a `cf-tunnel:` line, refuses a card whatever the tags and
+the setting say, and starts the detach of a card the guest has. Outside the route text it is
+plain prose and does not count: a line that holds only the word, outside every block, refuses
+nothing. Write it as `cf-tunnel: cf-tunnel-managed=off`, or as a line of the block:
+
+````text
+```cf-tunnel
+cf-tunnel-managed=off
+app.example.com -> :3000
+```
+````
+
+The marker is for whoever writes the Notes and does not want pco to change the hardware of
 their guest, and it must not fail by a typo: it counts in any case, with any value
 (`cf-tunnel-managed=yes` is an error that counts as `off`), and also in a block or an entry
 that is dropped for another error. [Annotations](annotations.md#refusing-the-managed-network)
