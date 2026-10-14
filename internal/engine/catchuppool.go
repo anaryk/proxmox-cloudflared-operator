@@ -60,7 +60,7 @@ func (m *catchUpMemory) of(epoch agentproto.Epoch) *catchUpMemory {
 // read or moved, or would move more than maxCatchUp in the epoch. What a
 // report names at or past the pool's next that is not taken from it is a
 // problem line, and holds nothing.
-func (c *cycleRun) raisePool(m *catchUpMemory, settled bool) string {
+func (c *cycleRun) raisePool(m *catchUpMemory, settled bool, overdue []string) string {
 	next, _, _, err := c.e.d.Store.ServicePool()
 	if err != nil {
 		c.storeHold = true
@@ -81,7 +81,7 @@ func (c *cycleRun) raisePool(m *catchUpMemory, settled bool) string {
 			want, highest = addr.Next(), addr
 		}
 	}
-	reported, refused := c.reportedServices()
+	reported, refused := c.reportedServices(overdue)
 	limit := addrPlus(next, len(known))
 	for _, addr := range slices.SortedFunc(maps.Keys(reported), netip.Addr.Compare) {
 		var why string
@@ -174,18 +174,21 @@ func (r refusedReport) what() string {
 // not taken whatever the pool: the addresses of a node that is not Active or
 // Draining or of a report that names another node, and every one of a
 // report that names more than maxReported. A report that is not fresh is not
-// gone by at all.
-func (c *cycleRun) reportedServices() (map[netip.Addr]string, []refusedReport) {
+// gone by, unless it is the last of an admitted node that allocation no
+// longer waits for (overdue): what it maps stays taken.
+func (c *cycleRun) reportedServices(overdue []string) (map[netip.Addr]string, []refusedReport) {
 	out := map[netip.Addr]string{}
 	var refused []refusedReport
 	reports := c.reportsNow()
 	for _, name := range slices.Sorted(maps.Keys(reports)) {
 		rep := reports[name]
-		if !c.fresh(rep) {
+		late := slices.Contains(overdue, name)
+		if !late && !c.fresh(rep) {
 			continue
 		}
 		n, known := c.nodes[name]
-		admitted := known && (n.Node.State == store.NodeActive || n.Node.State == store.NodeDraining)
+		admitted := known && (n.Node.State == store.NodeActive || n.Node.State == store.NodeDraining ||
+			late && n.Node.State == store.NodeUnknown && n.Node.Index != nil)
 		if count := len(rep.Status.ServiceAddrs); count > maxReported {
 			refused = append(refused, refusedReport{node: name, n: count, why: fmt.Sprintf("more than %d", maxReported)})
 			continue

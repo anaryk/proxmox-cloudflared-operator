@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
@@ -36,14 +37,20 @@ func (c *cycleRun) catchUp() {
 		c.e.saidIn = map[string]agentproto.Epoch{}
 	}
 	m := c.e.caught.of(c.epoch())
-	silent := c.silentNode()
-	why := c.raisePool(m, silent == "")
+	s := c.silentNodes()
+	for _, name := range s.overdue {
+		c.problem(problemSilentNode, name, silentWait, name, name)
+	}
+	why := c.raisePool(m, s.waiting == "" && s.unknown == "", s.overdue)
 	if why == "" && !m.caughtUp {
 		switch {
 		case !c.keepCardLeases():
 			why = "the leases are not yet checked against the cards of the guests"
-		case silent != "":
-			why = fmt.Sprintf("node %s has not reported to this controller yet", silent)
+		case s.unknown != "":
+			why = fmt.Sprintf("node %s has not reported to this controller, so what its gateway maps is not known: "+
+				"bring its agent back, or pco node forget %s", s.unknown, s.unknown)
+		case s.waiting != "":
+			why = fmt.Sprintf("node %s has not reported to this controller yet", s.waiting)
 		default:
 			m.caughtUp = true
 		}
@@ -54,23 +61,69 @@ func (c *cycleRun) catchUp() {
 	}
 }
 
-// silentNode is the first node the registry serves a snapshot, or that went
-// silent and is not known to be down, that has no fresh report; empty when
-// every one has.
-func (c *cycleRun) silentNode() string {
+// problemSilentNode names a node that sent nothing for silentWait, which
+// allocation no longer waits for.
+const problemSilentNode = "node %s has sent no status to this controller for %s; service addresses and managed cards are made without it, " +
+	"past what its last report maps: bring its agent back, or pco node drain %s and pco node forget %s"
+
+// silentWait is how long allocation waits for a node that has no fresh
+// report: a node that reported to this controller, or one never admitted,
+// that sent nothing for as long stops holding it back.
+const silentWait = 5 * time.Minute
+
+// silence is what catchUp knows of the nodes without a fresh report: the
+// first that allocation waits for, the first admitted node that never
+// reported to this controller, whose holdings are not known, and the nodes
+// it no longer waits for.
+type silence struct {
+	waiting string
+	unknown string
+	overdue []string
+}
+
+// silentNodes sorts the nodes the registry serves a snapshot, or that went
+// silent and are not known to be down, that have no fresh report.
+func (c *cycleRun) silentNodes() silence {
+	var out silence
 	reports := c.reportsNow()
+	since := c.since()
 	for _, name := range slices.Sorted(maps.Keys(c.nodes)) {
-		if s := c.nodes[name].Node.State; !servedState(s) && s != store.NodeUnknown {
+		n := c.nodes[name].Node
+		if !servedState(n.State) && n.State != store.NodeUnknown {
 			// A node that went silent and is not known to be down may
 			// still map what the store lost.
 			continue
 		}
 		rep, ok := reports[name]
-		if !ok || !c.fresh(rep) {
-			return name
+		if ok && c.fresh(rep) {
+			continue
+		}
+		heard := ok && !rep.ReceivedAt.Before(since)
+		from := since
+		switch {
+		case heard:
+			from = rep.ReceivedAt
+		case n.Since.After(from):
+			// A node that joined in this tenure is waited for from then.
+			from = n.Since
+		}
+		switch {
+		case c.now.Sub(from) < silentWait:
+			if out.waiting == "" {
+				out.waiting = name
+			}
+		case !heard && n.Index != nil:
+			// Admitted once, and never heard by this controller: what its
+			// gateway maps is not known, and it holds allocation back
+			// until it reports or is forgotten.
+			if out.unknown == "" {
+				out.unknown = name
+			}
+		default:
+			out.overdue = append(out.overdue, name)
 		}
 	}
-	return ""
+	return out
 }
 
 // keepCardLeases gives every managed card of a guest whose lease is missing
