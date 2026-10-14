@@ -176,6 +176,18 @@ func (c *Client) RotateTunnel(ctx context.Context, account string) (engine.Tunne
 	return res, err
 }
 
+// Promote asks what differs between the store and what the agents and
+// Cloudflare say, and with confirm has the daemon draw a new epoch that
+// makes its node the writer.
+func (c *Client) Promote(ctx context.Context, confirm bool) (engine.PromoteResult, error) {
+	body := struct {
+		Confirm bool `json:"confirm,omitempty"`
+	}{confirm}
+	var res engine.PromoteResult
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/promote", body, &res)
+	return res, err
+}
+
 // Sync asks for a reconcile cycle now.
 func (c *Client) Sync(ctx context.Context) error {
 	return c.call(ctx, c.short, http.MethodPost, "/v1/sync", nil, nil)

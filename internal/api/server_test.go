@@ -245,6 +245,18 @@ func (f *fakeEngine) Adopt(ctx context.Context, name string) error {
 	return f.failure()
 }
 
+func (f *fakeEngine) Promote(ctx context.Context, confirm bool) (engine.PromoteResult, error) {
+	f.record(ctx, fmt.Sprintf("promote:%t", confirm))
+	if err := f.failure(); err != nil {
+		return engine.PromoteResult{}, err
+	}
+	res := engine.PromoteResult{Differences: []engine.DifferenceView{{Subject: "epoch the agent of pve1 remembers", Store: "3.abc", Reported: "4.def"}}}
+	if confirm {
+		res.Drawn, res.Generation, res.Nonce = true, 5, "drawn"
+	}
+	return res, nil
+}
+
 func (f *fakeEngine) RotateTunnel(ctx context.Context, account string) (engine.TunnelRotation, error) {
 	f.record(ctx, "rotate:"+account)
 	if err := f.failure(); err != nil {

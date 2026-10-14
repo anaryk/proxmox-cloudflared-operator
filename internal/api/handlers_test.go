@@ -485,6 +485,46 @@ func TestOnlyRootRotatesASecret(t *testing.T) {
 	}
 }
 
+func TestPromote(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, call, answer string
+	}{
+		{"the differences", `{}`, "promote:false",
+			`{"differences":[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}],"drawn":false}`},
+		{"confirmed", `{"confirm":true}`, "promote:true",
+			`{"differences":[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}],"drawn":true,"generation":5,"nonce":"drawn"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			s := New(f, "1.2.3", []uint32{0}, zerolog.Nop())
+
+			rec := send(s, requestFrom(0, http.MethodPost, "/v1/promote", tt.body))
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.JSONEq(t, tt.answer, rec.Body.String())
+			require.Equal(t, []string{tt.call}, f.called())
+		})
+	}
+	t.Run("refused", func(t *testing.T) {
+		f := &fakeEngine{err: fmt.Errorf("%w: the generation at Cloudflare cannot be read", engine.ErrRefused)}
+		rec := send(New(f, "1.2.3", []uint32{0}, zerolog.Nop()), requestFrom(0, http.MethodPost, "/v1/promote", `{"confirm":true}`))
+
+		require.Equal(t, http.StatusConflict, rec.Code)
+		require.Equal(t, "refused", errorCode(t, rec))
+	})
+	t.Run("not by the web user", func(t *testing.T) {
+		f := &fakeEngine{}
+		s := New(f, "1.2.3", []uint32{0, 4242}, zerolog.Nop())
+		s.checkPeers = true
+
+		rec := send(s, requestFrom(4242, http.MethodPost, "/v1/promote", `{"confirm":true}`))
+
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		require.Equal(t, "only root may promote a node to be the writer", errorMessage(t, rec))
+		require.Empty(t, f.called())
+	})
+}
+
 func TestCredentialsAreListedByTheEngine(t *testing.T) {
 	st := testState()
 	f := &fakeEngine{state: engine.State{}, creds: st.Credentials}

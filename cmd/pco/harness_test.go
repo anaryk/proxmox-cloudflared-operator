@@ -196,6 +196,13 @@ func (f *fakeEngine) RotateTunnel(_ context.Context, account string) (engine.Tun
 	return engine.TunnelRotation{}, fmt.Errorf("%w: not in this test", engine.ErrRefused)
 }
 
+// Promote is root's alone too: the tests of pco promote answer from a
+// daemon of their own.
+func (f *fakeEngine) Promote(_ context.Context, confirm bool) (engine.PromoteResult, error) {
+	f.record(fmt.Sprintf("promote %t", confirm))
+	return engine.PromoteResult{}, fmt.Errorf("%w: not in this test", engine.ErrRefused)
+}
+
 func (f *fakeEngine) AddCredential(_ context.Context, label, token string) (engine.CredentialView, error) {
 	f.record("add " + label + " " + token)
 	return f.addView, f.addErr

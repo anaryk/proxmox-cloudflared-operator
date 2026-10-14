@@ -99,6 +99,20 @@ func (e *Engine) Adopt(ctx context.Context, name string) error {
 	return nil
 }
 
+// Promote finds nothing that differs; the fake holds no lease, so it draws
+// no epoch.
+func (e *Engine) Promote(ctx context.Context, confirm bool) (engine.PromoteResult, error) {
+	if err := e.begin(ctx, "Promote", struct {
+		Confirm bool `json:"confirm"`
+	}{confirm}); err != nil {
+		return engine.PromoteResult{}, err
+	}
+	if confirm {
+		return engine.PromoteResult{}, fmt.Errorf("%w: this daemon holds no lease to draw an epoch under", engine.ErrRefused)
+	}
+	return engine.PromoteResult{Differences: []engine.DifferenceView{}}, nil
+}
+
 // RotateTunnel rotates nothing, but answers as the daemon does: the tunnel
 // is the one engine.RotationTarget picks.
 func (e *Engine) RotateTunnel(ctx context.Context, account string) (engine.TunnelRotation, error) {

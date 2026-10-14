@@ -100,6 +100,7 @@ pco help route manual add
   - [pco net show](pco-net-show.md): Show the device, route, rules and table that keep the service prefix in the appliance
 - [pco netns](pco-netns.md): Show the gateway namespace the attached networks are reached through
   - [pco netns status](pco-netns-status.md): Show the legs of the gateway namespace and whether it is as pco left it
+- [pco promote](pco-promote.md): Make this node the writer of a store the daemon only observes
 - [pco settings](pco-settings.md): Show the settings and save them
   - [pco settings apply](pco-settings-apply.md): Save the settings of a file, at the revision they were read at
   - [pco settings show](pco-settings-show.md): Show the settings with their revision

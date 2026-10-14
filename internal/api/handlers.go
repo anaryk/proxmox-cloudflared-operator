@@ -30,6 +30,7 @@ var (
 	errBadHolder  = &httpError{http.StatusBadRequest, codeInvalid, "owner names one route, the holder the caller expects: &owner=qemu/101", false}
 	errNoRouteOf  = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/traffic/route?hostname=<name>", false}
 	errRootOnly   = &httpError{http.StatusForbidden, codeForbidden, "only root may rotate the secret of a tunnel", false}
+	errPromoteBy  = &httpError{http.StatusForbidden, codeForbidden, "only root may promote a node to be the writer", false}
 )
 
 // routes builds the handler of the API: the router, behind the peer check, in
@@ -56,6 +57,7 @@ func (s *Server) routes() http.Handler {
 	v1.POST("/apply", s.postApply)
 	v1.POST("/adopt", s.postAdopt)
 	v1.POST("/tunnels/rotate", s.postRotateTunnel)
+	v1.POST("/promote", s.postPromote)
 	v1.GET("/credentials", s.getCredentials)
 	v1.POST("/credentials", s.postCredential)
 	v1.POST("/credentials/:id/check", s.postCredentialCheck)
@@ -263,6 +265,29 @@ func (s *Server) postRotateTunnel(c *gin.Context) {
 		return
 	}
 	res, err := s.engine.RotateTunnel(c.Request.Context(), req.Account)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// postPromote answers with what differs between the store and what the
+// agents and Cloudflare say, and, confirmed, draws a new epoch that makes
+// this node the writer. Only root may ask, where the peer can be told.
+func (s *Server) postPromote(c *gin.Context) {
+	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != 0) {
+		s.fail(c, errPromoteBy)
+		return
+	}
+	var req struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := decode(c, &req, true); err != nil {
+		s.fail(c, err)
+		return
+	}
+	res, err := s.engine.Promote(c.Request.Context(), req.Confirm)
 	if err != nil {
 		s.fail(c, err)
 		return
