@@ -699,6 +699,18 @@ again, and draws nothing when what differs is not what it showed. Nothing pco do
 store go back: `pco setup` run again only adds and updates objects, and `pco uninstall` stops
 the daemon before it removes any.
 
+A controller learns that the store is older than what the agents remember from the agents
+themselves, so a new controller on a cluster writes nothing, to the store or at Cloudflare,
+until the agent of every node that is neither down nor removed has reported to it once
+(`waiting for the agents of <nodes> to report to this controller ...`). It waits for a minute
+at most: a node whose agent cannot reach it, as when the agent channel is cut while corosync
+works, would otherwise keep the whole cluster from a controller. That minute bounds the
+defence against a restored store: if the one agent that remembers a later epoch is also the
+one that cannot report, the controller writes after the minute, and stops as soon as that agent
+reports. The silent nodes are `unknown`, nothing is withdrawn for them, and the controller
+names them (`.members lists <n> nodes online that have sent no status (<nodes>) ...`). After a
+restore, check that every node's agent reports before you trust the first writes.
+
 The engine has a deadline of 75 seconds per cycle, and pings the watchdog of systemd every 15
 seconds only while a cycle runs that began less than 75 seconds ago, or while it waits for the
 next one. The reads before a cycle, the first checks of new credentials and of the access
