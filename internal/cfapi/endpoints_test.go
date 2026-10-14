@@ -972,7 +972,7 @@ func TestConnectors(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []Connector{
-		{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4, OriginIP: "203.0.113.10"},
+		{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4, OriginIP: "203.0.113.10", RunAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 		{ID: "c2", Version: "2026.8.1", ConfigVersion: 3, Connections: 2, OriginIP: "198.51.100.7, 2001:db8::7"},
 		{ID: "c3", Version: "2026.8.1"},
 		{ID: "c4", Version: "2026.8.1"},

@@ -1142,7 +1142,7 @@ func connectorScenarios() []scenario {
 			std(f)
 			tun := f.SeedTunnel(acct, "pco-abc", nil)
 			f.SetConnectors(acct, tun.ID, []cfapi.Connector{
-				{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4, OriginIP: "203.0.113.10"},
+				{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4, OriginIP: "203.0.113.10", RunAt: time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)},
 				{ID: "c2", Version: "2026.8.1", ConfigVersion: 3, Connections: 1, OriginIP: "2001:db8::7"},
 				{ID: "c3", Version: "2026.8.1"},
 			})

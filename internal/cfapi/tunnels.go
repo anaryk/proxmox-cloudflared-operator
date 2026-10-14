@@ -309,6 +309,7 @@ func (c *Client) Connectors(ctx context.Context, accountID, tunnelID string) ([]
 		ID            string `json:"id"`
 		Version       string `json:"version"`
 		ConfigVersion int    `json:"config_version"`
+		RunAt         string `json:"run_at"`
 		Conns         []struct {
 			OriginIP string `json:"origin_ip"`
 		} `json:"conns"`
@@ -333,7 +334,18 @@ func (c *Client) Connectors(ctx context.Context, accountID, tunnelID string) ([]
 			ConfigVersion: w.ConfigVersion,
 			Connections:   len(w.Conns),
 			OriginIP:      strings.Join(slices.Compact(slices.Sorted(slices.Values(origins))), ", "),
+			RunAt:         runAt(w.RunAt),
 		})
 	}
 	return out, nil
+}
+
+// runAt reads when a connector started; a time Cloudflare does not give, or
+// gives in another form, is none.
+func runAt(text string) time.Time {
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
 }

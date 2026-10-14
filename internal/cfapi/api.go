@@ -64,6 +64,9 @@ type Connector struct {
 	// OriginIP is the address the connections come from, as Cloudflare saw
 	// it; the distinct ones, sorted and joined with ", ", when they differ.
 	OriginIP string
+	// RunAt is when the connector started, as Cloudflare says; zero when
+	// it does not.
+	RunAt time.Time
 }
 
 // Record is a DNS record.

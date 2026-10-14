@@ -193,6 +193,7 @@ type wireConnector struct {
 	ID            string     `json:"id"`
 	Version       string     `json:"version"`
 	ConfigVersion int        `json:"config_version"`
+	RunAt         string     `json:"run_at,omitempty"`
 	Conns         []wireConn `json:"conns"`
 }
 
@@ -212,6 +213,9 @@ func (h *handler) listConnections(r *http.Request, p params) (reply, error) {
 	items := make([]wireConnector, len(all))
 	for i, c := range all {
 		items[i] = wireConnector{ID: c.ID, Version: c.Version, ConfigVersion: c.ConfigVersion, Conns: make([]wireConn, max(c.Connections, 0))}
+		if !c.RunAt.IsZero() {
+			items[i].RunAt = c.RunAt.UTC().Format(time.RFC3339Nano)
+		}
 		for n := range items[i].Conns {
 			items[i].Conns[n] = wireConn{ID: fmt.Sprintf("%s-%d", c.ID, n+1), OriginIP: c.OriginIP}
 		}
