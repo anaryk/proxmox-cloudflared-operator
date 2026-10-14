@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -183,6 +184,11 @@ func withoutLegMACs(nets []engine.NetworkView) []engine.NetworkView {
 	out := only(nets, func(engine.NetworkView) bool { return true })
 	for i := range out {
 		out[i].LegMAC, out[i].LegMACs = "", nil
+		legs := slices.Clone(out[i].Legs)
+		for j := range legs {
+			legs[j].MAC = ""
+		}
+		out[i].Legs = legs
 	}
 	return out
 }
@@ -235,6 +241,11 @@ func managedFor(m engine.ManagedView, visible auth.Visible) engine.ManagedView {
 		m.Foreign[i].MAC, m.Foreign[i].Why = "", redactMACs(m.Foreign[i].Why)
 	}
 	m.PoolGrant, m.Filtered = "", nil
+	if m.Leg != nil {
+		leg := *m.Leg
+		leg.MAC = ""
+		m.Leg = &leg
+	}
 	return m
 }
 

@@ -30,7 +30,7 @@ func agentDeps(res agent.Resolver, conns agent.Connectors, filter agent.Egress, 
 		},
 	}
 	if gw != nil {
-		d.Gateway = agentGateway{gw}
+		d.Gateway = agentGateway{gw: gw, unit: probe.unit}
 		if probe.gw != nil && probe.prober != nil {
 			d.Interfaces, d.ProbeAddr = probe.prober.Interfaces, probe.addr
 		}
@@ -63,10 +63,25 @@ func (n nodeProbe) addr(ctx context.Context, bridge string, vlan int, addr netip
 // agentGateway is the gateway as the agent drives it: what it is given is
 // kept as the cache that pco netns up restores the namespace from at boot,
 // before the guests start, as the engine keeps it on the node it runs on.
-type agentGateway struct{ gw *gatewayPart }
+// The first leg the controller gives a node that has no namespace has the
+// unit of the namespace enabled and started, as the first attach does on
+// the controller's node.
+type agentGateway struct {
+	gw   *gatewayPart
+	unit Netns // nil where there is none
+}
 
 func (a agentGateway) Sync(ctx context.Context, legs []gateway.Leg, services []gateway.Service, pins []gateway.Pin, sticky []gateway.Sticky) ([]gateway.LegState, error) {
 	states, err := a.gw.Sync(ctx, legs, services, pins, sticky)
+	if errors.Is(err, gateway.ErrNotPinned) && len(legs) > 0 && a.unit != nil {
+		if eerr := a.unit.Enable(ctx); eerr != nil {
+			return nil, fmt.Errorf("enabling the gateway namespace for the first leg: %w", eerr)
+		}
+		if serr := a.unit.Start(ctx); serr != nil {
+			return nil, fmt.Errorf("starting the gateway namespace for the first leg: %w", serr)
+		}
+		states, err = a.gw.Sync(ctx, legs, services, pins, sticky)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 type proxmoxNetworks interface {
 	NodeNetwork(ctx context.Context, node string) ([]pve.NodeIface, error)
 	VNets(ctx context.Context) ([]pve.VNet, error)
+	SDNZones(ctx context.Context) ([]pve.SDNZone, error)
 }
 
 // Netns is pco-netns.service as the daemon runs it: setup.NamespaceUnit.
@@ -38,6 +39,10 @@ func (n nodeNetworks) NodeNetwork(ctx context.Context, node string) ([]pve.NodeI
 }
 
 func (n nodeNetworks) VNets(ctx context.Context) ([]pve.VNet, error) { return n.proxmox.VNets(ctx) }
+
+func (n nodeNetworks) Zones(ctx context.Context) ([]pve.SDNZone, error) {
+	return n.proxmox.SDNZones(ctx)
+}
 
 func (n nodeNetworks) Interfaces(ctx context.Context) ([]resolve.HostIface, error) {
 	return n.prober.Interfaces(ctx)

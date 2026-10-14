@@ -298,6 +298,19 @@ func DecodeSDNSubnets(data []byte) ([]SDNSubnet, error) {
 	return out, nil
 }
 
+// SDNZones lists the zones as configured, applied or not.
+func (c *Client) SDNZones(ctx context.Context) ([]SDNZone, error) {
+	var raw json.RawMessage
+	if err := c.get(ctx, "cluster/sdn/zones", nil, &raw); err != nil {
+		return nil, fmt.Errorf("fetching sdn zones: %w", err)
+	}
+	zones, err := DecodeSDNZones(raw)
+	if err != nil {
+		return nil, fmt.Errorf("fetching sdn zones: %w", err)
+	}
+	return zones, nil
+}
+
 // SDNVnets lists the vnets as configured, applied or not.
 func (c *Client) SDNVnets(ctx context.Context) ([]SDNVnet, error) {
 	var raw json.RawMessage

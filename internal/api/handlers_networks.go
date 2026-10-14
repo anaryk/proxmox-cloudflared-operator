@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -61,14 +62,18 @@ func (s *Server) getCandidateNetworks(c *gin.Context) {
 	c.JSON(http.StatusOK, nonNil(candidates))
 }
 
-// probeRequest is the body of a probe: the prefix and the address are text,
-// so that one that does not parse is refused with its field, and either may
-// be left out.
+// probeRequest is the body of a probe: the prefix and the addresses are
+// text, so that one that does not parse is refused with its field, and
+// either may be left out. Scope, node and legs ask for the legs of a network
+// on a cluster.
 type probeRequest struct {
-	Bridge  string `json:"bridge"`
-	VLAN    int    `json:"vlan"`
-	Prefix  string `json:"prefix"`
-	Address string `json:"address"`
+	Bridge  string            `json:"bridge"`
+	VLAN    int               `json:"vlan"`
+	Prefix  string            `json:"prefix"`
+	Address string            `json:"address"`
+	Scope   string            `json:"scope"`
+	Node    string            `json:"node"`
+	Legs    map[string]string `json:"legs"`
 }
 
 func (s *Server) postProbeNetwork(c *gin.Context) {
@@ -82,7 +87,14 @@ func (s *Server) postProbeNetwork(c *gin.Context) {
 		s.fail(c, err)
 		return
 	}
-	res, err := s.engine.ProbeNetwork(c.Request.Context(), engine.ProbeRequest{Bridge: req.Bridge, VLAN: req.VLAN, Prefix: prefix, Address: addr})
+	legs, err := legAddresses(req.Legs)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	res, err := s.engine.ProbeNetwork(c.Request.Context(), engine.ProbeRequest{
+		Bridge: req.Bridge, VLAN: req.VLAN, Prefix: prefix, Address: addr, Scope: req.Scope, Node: req.Node, Legs: legs,
+	})
 	if err != nil {
 		s.fail(c, err)
 		return
@@ -91,14 +103,18 @@ func (s *Server) postProbeNetwork(c *gin.Context) {
 }
 
 // attachRequest is the body of an attach, which needs the prefix and the
-// address.
+// address of a leg: of this node, or of the node named, or of the nodes of
+// legs.
 type attachRequest struct {
-	Bridge        string `json:"bridge"`
-	VLAN          int    `json:"vlan"`
-	Prefix        string `json:"prefix"`
-	Address       string `json:"address"`
-	ConfirmUplink bool   `json:"confirmUplink"`
-	OverlapOK     bool   `json:"overlapOK"`
+	Bridge        string            `json:"bridge"`
+	VLAN          int               `json:"vlan"`
+	Prefix        string            `json:"prefix"`
+	Address       string            `json:"address"`
+	ConfirmUplink bool              `json:"confirmUplink"`
+	OverlapOK     bool              `json:"overlapOK"`
+	Scope         string            `json:"scope"`
+	Node          string            `json:"node"`
+	Legs          map[string]string `json:"legs"`
 }
 
 // postNetwork attaches a network and answers with it.
@@ -112,7 +128,7 @@ func (s *Server) postNetwork(c *gin.Context) {
 	case req.Prefix == "":
 		s.fail(c, errNoPrefix)
 		return
-	case req.Address == "":
+	case req.Address == "" && len(req.Legs) == 0:
 		s.fail(c, errNoAddress)
 		return
 	}
@@ -121,14 +137,42 @@ func (s *Server) postNetwork(c *gin.Context) {
 		s.fail(c, err)
 		return
 	}
+	legs, err := legAddresses(req.Legs)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
 	v, err := s.engine.Attach(c.Request.Context(), engine.AttachRequest{
 		Bridge: req.Bridge, VLAN: req.VLAN, Prefix: prefix, Address: addr, ConfirmUplink: req.ConfirmUplink, OverlapOK: req.OverlapOK,
+		Scope: req.Scope, Node: req.Node, Legs: legs,
 	})
 	if err != nil {
 		s.fail(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, v)
+}
+
+// maxLegs bounds the legs a request names: one for each node of a cluster.
+const maxLegs = 64
+
+// legAddresses reads the addresses of the legs of a request, by node.
+func legAddresses(legs map[string]string) (map[string]netip.Addr, error) {
+	if len(legs) > maxLegs {
+		return nil, &engine.FieldError{Field: "legs", Err: fmt.Errorf("legs: at most %d, one for each node", maxLegs)}
+	}
+	var out map[string]netip.Addr
+	for node, text := range legs {
+		a, err := netip.ParseAddr(text)
+		if err != nil || !a.Is4() {
+			return nil, &engine.FieldError{Field: "legs", Err: fmt.Errorf("legs: the leg of node %s: want an IPv4 address such as 10.77.0.250", node)}
+		}
+		if out == nil {
+			out = map[string]netip.Addr{}
+		}
+		out[node] = a
+	}
+	return out, nil
 }
 
 // prefixAndAddress reads the prefix and the address of a request; an empty

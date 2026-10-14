@@ -78,7 +78,7 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	checks := &agentDoctor{}
 	ag, err := agent.New(agent.Deps{
 		Node: a.Node, Kind: pki.KindAppliance, InstallID: state.install.ID, Store: st,
-		Resolver: res, Connectors: conns, Egress: filter, Blocked: filter.ov.Blocked, Gateway: agentGateway{gw},
+		Resolver: res, Connectors: conns, Egress: filter, Blocked: filter.ov.Blocked, Gateway: agentGateway{gw: gw},
 		Now: deps.Now, Log: log, Event: events.Add, Changed: r.trigger, Doctor: checks.run,
 	})
 	if err != nil {

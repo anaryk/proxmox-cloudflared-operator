@@ -55,14 +55,22 @@ func (f *fakeEngine) CandidateNetworks(ctx context.Context) ([]engine.CandidateN
 }
 
 func (f *fakeEngine) ProbeNetwork(ctx context.Context, r engine.ProbeRequest) (engine.ProbeResult, error) {
-	f.record(ctx, fmt.Sprintf("probe:%s:%d:%v:%v", r.Bridge, r.VLAN, r.Prefix, r.Address))
+	call := fmt.Sprintf("probe:%s:%d:%v:%v", r.Bridge, r.VLAN, r.Prefix, r.Address)
+	if r.Scope != "" || r.Node != "" || len(r.Legs) > 0 {
+		call += fmt.Sprintf(" scope=%s node=%s legs=%v", r.Scope, r.Node, r.Legs)
+	}
+	f.record(ctx, call)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.probed, f.err
 }
 
 func (f *fakeEngine) Attach(ctx context.Context, r engine.AttachRequest) (engine.NetworkView, error) {
-	f.record(ctx, fmt.Sprintf("attach:%s:%d:%v:%v uplink=%t overlap=%t", r.Bridge, r.VLAN, r.Prefix, r.Address, r.ConfirmUplink, r.OverlapOK))
+	call := fmt.Sprintf("attach:%s:%d:%v:%v uplink=%t overlap=%t", r.Bridge, r.VLAN, r.Prefix, r.Address, r.ConfirmUplink, r.OverlapOK)
+	if r.Scope != "" || r.Node != "" || len(r.Legs) > 0 {
+		call += fmt.Sprintf(" scope=%s node=%s legs=%v", r.Scope, r.Node, r.Legs)
+	}
+	f.record(ctx, call)
 	if err := f.failure(); err != nil {
 		return engine.NetworkView{}, err
 	}
@@ -167,6 +175,26 @@ func TestAnAttachAnswersWithTheNetwork(t *testing.T) {
 	require.Equal(t, []string{"attach:pcot1:0:192.168.4.0/24:192.168.4.249 uplink=true overlap=true"}, f.called())
 }
 
+// On a cluster a probe and an attach name the scope and the legs of the
+// other nodes; an attach may name only those.
+func TestTheLegsOfACusterNetworkGoToTheEngine(t *testing.T) {
+	f := &fakeEngine{}
+
+	rec := do(newServer(f), http.MethodPost, "/v1/networks/probe", `{"bridge":"vmbr2","vlan":20,"scope":"cluster","legs":{"pve2":"10.20.0.249"}}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	rec = do(newServer(f), http.MethodPost, "/v1/networks",
+		`{"bridge":"vmbr2","vlan":20,"prefix":"10.20.0.0/24","scope":"cluster","legs":{"pve3":"10.20.0.248"},"confirmUplink":true}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	rec = do(newServer(f), http.MethodPost, "/v1/networks", `{"bridge":"vmbr1","prefix":"10.77.0.0/24","address":"10.77.0.250","scope":"node","node":"pve2"}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	require.Equal(t, []string{
+		"probe:vmbr2:20:invalid Prefix:invalid IP scope=cluster node= legs=map[pve2:10.20.0.249]",
+		"attach:vmbr2:20:10.20.0.0/24:invalid IP uplink=true overlap=false scope=cluster node= legs=map[pve3:10.20.0.248]",
+		"attach:vmbr1:0:10.77.0.0/24:10.77.0.250 uplink=false overlap=false scope=node node=pve2 legs=map[]",
+	}, f.called())
+}
+
 func TestADetachNamesTheRevisionAndTheRoutesServed(t *testing.T) {
 	f := &fakeEngine{}
 
@@ -195,6 +223,10 @@ func TestTheNetworkRequestsAreRefusedWithTheirField(t *testing.T) {
 			http.StatusBadRequest, "invalid", "prefix"},
 		{"an attach without an address", http.MethodPost, "/v1/networks", `{"bridge":"vmbr1","prefix":"10.77.0.0/24"}`, nil,
 			http.StatusBadRequest, "invalid", "address"},
+		{"an attach with a leg of no address", http.MethodPost, "/v1/networks", `{"bridge":"vmbr1","prefix":"10.77.0.0/24","legs":{"pve2":"nowhere"}}`, nil,
+			http.StatusBadRequest, "invalid", "legs"},
+		{"a probe with a leg of an IPv6 address", http.MethodPost, "/v1/networks/probe", `{"bridge":"vmbr1","scope":"cluster","legs":{"pve2":"fd00::1"}}`, nil,
+			http.StatusBadRequest, "invalid", "legs"},
 		{"an attach the engine refuses for a field", http.MethodPost, "/v1/networks", `{"bridge":"pcot1","prefix":"10.50.0.0/24","address":"10.50.0.249"}`,
 			&engine.FieldError{Field: "overlapOK", Err: errors.New("10.50.0.0/24 overlaps the node's route on vmbr9; " + engine.OverlapHint)},
 			http.StatusBadRequest, "invalid", "overlapOK"},

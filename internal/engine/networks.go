@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -39,31 +40,37 @@ type Networks interface {
 	StartNamespace(ctx context.Context) error
 	EnableNamespace(ctx context.Context) error
 	DisableNamespace(ctx context.Context) error
+	// Zones lists the SDN zones, with their types.
+	Zones(ctx context.Context) ([]pve.SDNZone, error)
 }
 
 // NetworkView is a network pco reaches through a leg, with how its leg is
 // and what it serves.
 type NetworkView struct {
 	store.Network
-	Legs    []LegView `json:"legStates"` // this node only until the cluster milestone
+	Legs    []LegView `json:"legStates"` // of every node with a leg, this node first
 	Targets int       `json:"targets"`   // service addresses in use
 	Routes  int       `json:"routes"`    // routes served through it
 }
 
-// LegView is the leg of a network on a node, as the gateway last said.
+// LegView is the leg of a network on a node, as the gateway of the node last
+// said: this node's own, or as the agent of another node reported it.
 type LegView struct {
 	Node    string     `json:"node"`
 	Addr    netip.Addr `json:"addr"`
+	MAC     string     `json:"mac,omitempty"`
 	Up      bool       `json:"up"`
 	Problem string     `json:"problem,omitempty"`
 }
 
 // NetworkDetail is a network with its service addresses and the hostnames of
-// the routes served through it.
+// the routes served through it. NodeServices are the service addresses of
+// the guests behind the leg of each node of a network of scope node.
 type NetworkDetail struct {
 	NetworkView
-	Services []store.ServiceAddr `json:"services"`
-	Served   []string            `json:"served"`
+	Services     []store.ServiceAddr     `json:"services"`
+	NodeServices []store.NodeServiceAddr `json:"nodeServices,omitempty"`
+	Served       []string                `json:"served"`
 }
 
 // CandidateNetwork is a bridge or VLAN the wizard may attach to.
@@ -90,11 +97,18 @@ type GuestAddr struct {
 // ProbeRequest names what a probe asks for: an address on a bridge and VLAN,
 // in a prefix. Without a prefix the one the guest addresses there suggest is
 // taken, without an address the highest one in the prefix that no guest has.
+// Scope, Node and Legs ask for the legs of a network on a cluster: of scope
+// cluster, this node at Address and every other node with an agent, each at
+// its address in Legs or one proposed; of scope node, the node Node names,
+// or this one, at Address. Without them the probe is of this node alone.
 type ProbeRequest struct {
-	Bridge  string       `json:"bridge"`
-	VLAN    int          `json:"vlan,omitempty"`
-	Prefix  netip.Prefix `json:"prefix,omitzero"`
-	Address netip.Addr   `json:"address,omitzero"`
+	Bridge  string                `json:"bridge"`
+	VLAN    int                   `json:"vlan,omitempty"`
+	Prefix  netip.Prefix          `json:"prefix,omitzero"`
+	Address netip.Addr            `json:"address,omitzero"`
+	Scope   string                `json:"scope,omitempty"`
+	Node    string                `json:"node,omitempty"`
+	Legs    map[string]netip.Addr `json:"legs,omitempty"`
 }
 
 // ProbeResult is who answered for an address on a bridge and VLAN.
@@ -117,17 +131,52 @@ type ProbeResult struct {
 	// card on a bridge before the network there is attached. Free is false
 	// then, and an attach is not refused for it.
 	NotProbed string `json:"notProbed,omitempty"`
+	// Clustered says that this node is one of a cluster, where an attach
+	// names the scope of the network, and Suggested is the scope the
+	// configuration of the bridge suggests: cluster for a bridge with a
+	// physical uplink or a vnet of a zone that spans the nodes, node
+	// otherwise.
+	Clustered bool   `json:"clustered,omitempty"`
+	Suggested string `json:"suggested,omitempty"`
+	// Scope is the scope the probe was of, and Legs the legs it probed,
+	// one for each node, this node first; the fields above are of the
+	// first. Without a scope there are none.
+	Scope string     `json:"scope,omitempty"`
+	Legs  []LegProbe `json:"legs,omitempty"`
+}
+
+// LegProbe is what a probe found of the leg of one node.
+type LegProbe struct {
+	Node       string     `json:"node"`
+	Address    netip.Addr `json:"address,omitzero"`
+	Free       bool       `json:"free"`
+	AnsweredBy []string   `json:"answeredBy"`
+	Uplink     bool       `json:"uplink"`
+	Overlap    string     `json:"overlap,omitempty"`
+	// Problem says why the node gets no leg: it has no such bridge, no
+	// agent answered for it, or the leg would be refused there. Missing
+	// says that it is one of the first two, which an attach of scope
+	// cluster leaves out; the others refuse it.
+	Problem string `json:"problem,omitempty"`
+	Missing bool   `json:"missing,omitempty"`
 }
 
 // AttachRequest is a network to attach: a bridge and VLAN, the prefix of the
-// guests there and the address of the leg on this node.
+// guests there and the address of the leg on this node. On a cluster it
+// names the scope, and the legs of the other nodes: Address is the leg of
+// the node Node names, or of this node, and Legs those of the others. A
+// request for the legs of nodes that have none of a network attached adds
+// them to it.
 type AttachRequest struct {
-	Bridge        string       `json:"bridge"`
-	VLAN          int          `json:"vlan,omitempty"`
-	Prefix        netip.Prefix `json:"prefix"`
-	Address       netip.Addr   `json:"address"`
-	ConfirmUplink bool         `json:"confirmUplink"`
-	OverlapOK     bool         `json:"overlapOK"` // the prefix may overlap a route of the node
+	Bridge        string                `json:"bridge"`
+	VLAN          int                   `json:"vlan,omitempty"`
+	Prefix        netip.Prefix          `json:"prefix"`
+	Address       netip.Addr            `json:"address,omitzero"`
+	ConfirmUplink bool                  `json:"confirmUplink"`
+	OverlapOK     bool                  `json:"overlapOK"` // the prefix may overlap a route of the node
+	Scope         string                `json:"scope,omitempty"`
+	Node          string                `json:"node,omitempty"`
+	Legs          map[string]netip.Addr `json:"legs,omitempty"`
 }
 
 // OverlapHint is what the refusal of a prefix that overlaps a route of the
@@ -175,7 +224,7 @@ func (e *Engine) Networks() ([]NetworkView, error) {
 	if err != nil {
 		return nil, err
 	}
-	return networkViews(nets, mappings, e.State().Routes, e.LegStates(), e.d.Node), nil
+	return networkViews(nets, mappings, e.State().Routes, e.legsSeen()), nil
 }
 
 // Network returns one network with its service addresses and the routes
@@ -190,48 +239,101 @@ func (e *Engine) Network(id string) (NetworkDetail, error) {
 		return NetworkDetail{}, fmt.Errorf("%w: network %s is not attached", ErrNotFound, id)
 	}
 	routes := e.State().Routes
-	views := networkViews(map[string]store.Network{id: n}, mappings, routes, e.LegStates(), e.d.Node)
-	d := NetworkDetail{NetworkView: views[0], Services: []store.ServiceAddr{}, Served: servedThrough(routes, id)}
-	for _, m := range mappings {
+	views := networkViews(map[string]store.Network{id: n}, mappings, routes, e.legsSeen())
+	d := NetworkDetail{NetworkView: views[0], Services: []store.ServiceAddr{}, NodeServices: []store.NodeServiceAddr{}, Served: servedThrough(routes, id)}
+	for _, m := range mappings.cluster {
 		if m.Network == id {
 			d.Services = append(d.Services, m)
+		}
+	}
+	for _, m := range mappings.nodes {
+		if m.Network == id {
+			d.NodeServices = append(d.NodeServices, m)
 		}
 	}
 	slices.SortFunc(d.Services, func(a, b store.ServiceAddr) int { return a.Service.Compare(b.Service) })
 	return d, nil
 }
 
-func (e *Engine) storedNetworks() (map[string]store.Network, []store.ServiceAddr, error) {
-	nets, err := e.d.Store.Networks()
-	if err != nil {
-		return nil, nil, fmt.Errorf("reading the networks: %w", err)
-	}
-	mappings, err := e.d.Store.ServiceAddrs()
-	if err != nil {
-		return nil, nil, fmt.Errorf("reading the service addresses: %w", err)
-	}
-	return nets, mappings, nil
+// storedMappings are the service addresses of both kinds: of the networks
+// that are one on every node, and of the networks of single nodes.
+type storedMappings struct {
+	cluster []store.ServiceAddr
+	nodes   []store.NodeServiceAddr
 }
 
-// networkViews are the views of the networks, by id: the leg of node with
-// what the gateway said of it, the service addresses of each and the routes
-// served through it.
-func networkViews(nets map[string]store.Network, mappings []store.ServiceAddr, routes []RouteView, legs []gateway.LegState, node string) []NetworkView {
+func (e *Engine) storedNetworks() (map[string]store.Network, storedMappings, error) {
+	nets, err := e.d.Store.Networks()
+	if err != nil {
+		return nil, storedMappings{}, fmt.Errorf("reading the networks: %w", err)
+	}
+	var m storedMappings
+	if m.cluster, err = e.d.Store.ServiceAddrs(); err != nil {
+		return nil, storedMappings{}, fmt.Errorf("reading the service addresses: %w", err)
+	}
+	if m.nodes, err = e.d.Store.NodeServiceAddrs(); err != nil {
+		return nil, storedMappings{}, fmt.Errorf("reading the service addresses of single nodes: %w", err)
+	}
+	return nets, m, nil
+}
+
+// legsSeen is what the views of the networks go by beyond the store: what
+// the gateway of this node said of its legs, what the agents of the other
+// nodes said of theirs, and the indexes of the nodes, which make the MACs.
+type legsSeen struct {
+	node    string
+	local   []gateway.LegState
+	remote  map[string]map[string]agentproto.LegReport
+	indexes map[string]int
+}
+
+// legsSeen reads what the views of the networks go by outside a cycle.
+func (e *Engine) legsSeen() legsSeen {
+	seen := legsSeen{node: e.d.Node, local: e.LegStates()}
+	if e.d.Remote != nil {
+		seen.remote = reportedLegs(e.d.Node, e.d.Remote.Reports(context.Background(), 0, nil))
+	}
+	if ln, err := e.legNodes(); err == nil {
+		seen.indexes = ln.indexes
+	}
+	return seen
+}
+
+// reportedLegs are the legs each other node's agent said its gateway found,
+// by node and network: from fresh reports alone, each of the node that sent
+// it.
+func reportedLegs(self string, reports map[string]NodeReport) map[string]map[string]agentproto.LegReport {
+	out := map[string]map[string]agentproto.LegReport{}
+	for node, rep := range reports {
+		if node == self || !rep.Fresh || rep.Status.Node != node {
+			continue
+		}
+		legs := map[string]agentproto.LegReport{}
+		for _, l := range rep.Status.Legs {
+			legs[l.ID] = agentproto.LegReport{ID: l.ID, Up: l.Up, Problem: clip(l.Problem)}
+		}
+		out[node] = legs
+	}
+	return out
+}
+
+// networkViews are the views of the networks, by id: the leg of each node
+// with what its gateway said of it, the service addresses of each and the
+// routes served through it.
+func networkViews(nets map[string]store.Network, mappings storedMappings, routes []RouteView, seen legsSeen) []NetworkView {
 	out := make([]NetworkView, 0, len(nets))
 	for _, id := range slices.Sorted(maps.Keys(nets)) {
 		n := nets[id]
 		v := NetworkView{Network: n, Legs: []LegView{}, Routes: len(servedThrough(routes, id))}
-		if addr, ok := n.Legs[node]; ok {
-			leg := LegView{Node: node, Addr: addr, Problem: "the gateway has not reported the leg yet"}
-			if i := slices.IndexFunc(legs, func(s gateway.LegState) bool { return s.ID == id }); i >= 0 {
-				leg.Up, leg.Problem = legs[i].Up, legs[i].Problem
-				if !leg.Up && leg.Problem == "" {
-					leg.Problem = "the gateway does not say why"
-				}
-			}
-			v.Legs = append(v.Legs, leg)
+		for _, node := range legOrder(n, seen.node) {
+			v.Legs = append(v.Legs, seen.legView(n, node))
 		}
-		for _, m := range mappings {
+		for _, m := range mappings.cluster {
+			if m.Network == id {
+				v.Targets++
+			}
+		}
+		for _, m := range mappings.nodes {
 			if m.Network == id {
 				v.Targets++
 			}
@@ -239,6 +341,46 @@ func networkViews(nets map[string]store.Network, mappings []store.ServiceAddr, r
 		out = append(out, v)
 	}
 	return out
+}
+
+// legOrder are the nodes with a leg of n, self first.
+func legOrder(n store.Network, self string) []string {
+	return slices.SortedFunc(maps.Keys(n.Legs), func(a, b string) int {
+		return cmp.Or(-cmp.Compare(boolInt(a == self), boolInt(b == self)), strings.Compare(a, b))
+	})
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// legView is the leg of n on node as its gateway last said.
+func (seen legsSeen) legView(n store.Network, node string) LegView {
+	leg := LegView{Node: node, Addr: n.Legs[node], Problem: "the gateway has not reported the leg yet"}
+	if mac, err := n.LegMACOn(node, seen.indexes); err == nil {
+		leg.MAC = mac
+	} else if node == seen.node {
+		leg.MAC = n.LegMAC
+	}
+	if node != seen.node {
+		l, ok := seen.remote[node][n.ID]
+		if !ok {
+			leg.Problem = fmt.Sprintf("the agent of node %s has not reported the leg yet", node)
+			return leg
+		}
+		leg.Up, leg.Problem = l.Up, l.Problem
+	} else if i := slices.IndexFunc(seen.local, func(s gateway.LegState) bool { return s.ID == n.ID }); i >= 0 {
+		leg.Up, leg.Problem = seen.local[i].Up, seen.local[i].Problem
+	} else {
+		return leg
+	}
+	if !leg.Up && leg.Problem == "" {
+		leg.Problem = "the gateway does not say why"
+	}
+	return leg
 }
 
 // servedThrough are the hostnames of the routes whose path goes through the
@@ -274,7 +416,8 @@ func (c *cycleRun) showNetworks() {
 	if err != nil {
 		return
 	}
-	c.st.Networks = networkViews(nets, mappings, c.st.Routes, c.e.LegStates(), c.e.d.Node)
+	seen := legsSeen{node: c.e.d.Node, local: c.e.LegStates(), remote: reportedLegs(c.e.d.Node, c.reportsNow()), indexes: c.nodeIndexes()}
+	c.st.Networks = networkViews(nets, mappings, c.st.Routes, seen)
 }
 
 // legEvents are the events of what the gateway says of the legs now against
@@ -310,6 +453,8 @@ func legEvents(before, after []gateway.LegState, at time.Time) []Event {
 // they are, the guests, the networks stored and the settings.
 type networkFacts struct {
 	node      string
+	remote    bool // of another node, whose interfaces its agent answered
+	clustered bool // this node is one of a cluster
 	appliance bool
 	self      model.GuestRef // the appliance's own container
 	config    []pve.NodeIface
@@ -318,6 +463,7 @@ type networkFacts struct {
 	snap      inventory.Snapshot
 	nets      map[string]store.Network
 	settings  store.Settings
+	zones     []pve.SDNZone // read on a cluster only
 }
 
 // networkFacts reads the facts. The guests are listed afresh; a listing that
@@ -337,6 +483,11 @@ func (e *Engine) networkFacts(ctx context.Context) (networkFacts, error) {
 	if f.settings, err = e.d.Store.Settings(); err != nil {
 		return f, fmt.Errorf("reading the settings: %w", err)
 	}
+	ln, err := e.legNodes()
+	if err != nil {
+		return f, err
+	}
+	f.clustered = ln.clustered
 	if f.nets, err = e.d.Store.Networks(); err != nil {
 		return f, fmt.Errorf("reading the networks: %w", err)
 	}
@@ -369,10 +520,16 @@ func (f networkFacts) isVnet(name string) bool {
 }
 
 // isBridge says that name is a bridge guests may be on: one Proxmox has
-// configured on the node, an SDN vnet, or one the node has now.
+// configured on the node, an SDN vnet, or one the node has now. Of another
+// node it is one Proxmox has configured, or a vnet, that its agent finds
+// there: an agent cannot make a bridge.
 func (f networkFacts) isBridge(name string) bool {
 	c, ok := f.configured(name)
-	return ok && c.Type == "bridge" || f.isVnet(name) || f.liveBridge(name)
+	known := ok && c.Type == "bridge" || f.isVnet(name)
+	if f.remote {
+		return known && f.liveBridge(name)
+	}
+	return known || f.liveBridge(name)
 }
 
 // liveBridge says that name is a bridge the node has now, as the prober sees
@@ -611,7 +768,11 @@ func (f networkFacts) nodeRoutes() []nodeRoute {
 // prefix overlaps; empty when there is none.
 func (f networkFacts) overlap(prefix netip.Prefix, seg resolve.Segment) string {
 	for _, r := range f.nodeRoutes() {
-		if r.seg != seg && r.prefix.Overlaps(prefix) {
+		switch {
+		case r.seg == seg || !r.prefix.Overlaps(prefix):
+		case f.remote:
+			return fmt.Sprintf("%s overlaps the route of node %s on %s", prefix, f.node, r.iface)
+		default:
 			return fmt.Sprintf("%s overlaps the node's route on %s", prefix, r.iface)
 		}
 	}
@@ -625,6 +786,15 @@ func (f networkFacts) lookup(bridge string, vlan int) (CandidateNetwork, error) 
 		return CandidateNetwork{}, fieldError("bridge", "%s is no bridge or vnet of node %s", bridge, f.node)
 	}
 	return f.candidate(resolve.Segment{Bridge: bridge, VLAN: vlan}), nil
+}
+
+// suggestion is the scope a probe suggests for seg on a cluster; none on a
+// node alone.
+func (f networkFacts) suggestion(seg resolve.Segment) string {
+	if !f.clustered {
+		return ""
+	}
+	return f.suggestedScope(seg)
 }
 
 // probeArgs checks a bridge and a VLAN as a request names them.
@@ -642,11 +812,13 @@ func probeArgs(bridge string, vlan int) error {
 
 // usable refuses a candidate pco does not attach: one the profile refuses,
 // and one the node reaches without a leg.
-func usable(c CandidateNetwork) error {
+func (f networkFacts) usable(c CandidateNetwork) error {
 	seg := resolve.Segment{Bridge: c.Bridge, VLAN: c.VLAN}
 	switch {
 	case c.Refused != "":
 		return fmt.Errorf("%w: %s", ErrRefused, c.Refused)
+	case c.Direct && f.remote:
+		return fmt.Errorf("%w: node %s reaches %s directly; nothing to attach", ErrRefused, f.node, seg)
 	case c.Direct:
 		return fmt.Errorf("%w: the node reaches %s directly; nothing to attach", ErrRefused, seg)
 	}
@@ -699,6 +871,10 @@ func (f networkFacts) taken(c CandidateNetwork) map[netip.Addr]string {
 	}
 	for _, h := range f.host {
 		for _, p := range h.Addrs {
+			if f.remote {
+				out[p.Addr()] = fmt.Sprintf("an address of node %s on %s", f.node, h.Name)
+				continue
+			}
 			out[p.Addr()] = "an address of the node on " + h.Name
 		}
 	}
@@ -727,6 +903,9 @@ func (e *Engine) ProbeNetwork(ctx context.Context, r ProbeRequest) (ProbeResult,
 	if err := e.networksHere(); err != nil {
 		return ProbeResult{}, err
 	}
+	if r.Scope != "" || r.Node != "" || len(r.Legs) > 0 {
+		return e.probeLegs(ctx, r)
+	}
 	if err := e.acquireAdmin(ctx); err != nil {
 		return ProbeResult{}, err
 	}
@@ -740,11 +919,16 @@ func (e *Engine) ProbeNetwork(ctx context.Context, r ProbeRequest) (ProbeResult,
 	if err != nil {
 		return ProbeResult{}, err
 	}
-	if err := usable(c); err != nil {
+	if err := f.usable(c); err != nil {
 		return ProbeResult{}, err
 	}
 	seg := resolve.Segment{Bridge: c.Bridge, VLAN: c.VLAN}
-	res := ProbeResult{Bridge: c.Bridge, VLAN: c.VLAN, Prefix: r.Prefix, Address: r.Address, AnsweredBy: []string{}, Uplink: c.Uplink}
+	if f.clustered {
+		if err := e.readZones(ctx, &f); err != nil {
+			return ProbeResult{}, err
+		}
+	}
+	res := ProbeResult{Clustered: f.clustered, Suggested: f.suggestion(seg), Bridge: c.Bridge, VLAN: c.VLAN, Prefix: r.Prefix, Address: r.Address, AnsweredBy: []string{}, Uplink: c.Uplink}
 	var notes []string
 	if !res.Prefix.IsValid() {
 		if len(c.Prefixes) == 0 {
@@ -858,6 +1042,13 @@ func (e *Engine) CandidateNetworks(ctx context.Context) ([]CandidateNetwork, err
 // unless overlapOK, one over another network's on the same bridge, and an
 // address that is taken. The first network has pco-netns.service enabled. The
 // leg is raised by the cycle it asks for.
+//
+// On a cluster the request names the scope and the nodes that get a leg,
+// each checked in the same way against the facts of its node: those of
+// another node as Proxmox has them configured and as its agent's probe
+// answered, which is asked before the cycle lock is taken. A network of
+// scope cluster is one segment on every node by the configuration alone. A
+// request for legs of nodes that have none of a network attached adds them.
 func (e *Engine) Attach(ctx context.Context, r AttachRequest) (NetworkView, error) {
 	if err := probeArgs(r.Bridge, r.VLAN); err != nil {
 		return NetworkView{}, err
@@ -865,12 +1056,30 @@ func (e *Engine) Attach(ctx context.Context, r AttachRequest) (NetworkView, erro
 	if err := checkPrefix(r.Prefix); err != nil {
 		return NetworkView{}, err
 	}
-	if err := checkAddress(r.Prefix, r.Address); err != nil {
-		return NetworkView{}, err
+	if len(r.Legs) == 0 {
+		if err := checkAddress(r.Prefix, r.Address); err != nil {
+			return NetworkView{}, err
+		}
 	}
 	if err := e.networksHere(); err != nil {
 		return NetworkView{}, err
 	}
+	ln, err := e.legNodes()
+	if err != nil {
+		return NetworkView{}, err
+	}
+	legs, err := e.requestedLegs(ln, r.Scope, r.Node, r.Address, r.Legs, r.Prefix)
+	if err != nil {
+		return NetworkView{}, err
+	}
+	seg := resolve.Segment{Bridge: r.Bridge, VLAN: r.VLAN}
+	others := maps.Clone(legs)
+	delete(others, e.d.Node)
+	if why := e.unasked(slices.Collect(maps.Keys(others))); len(why) > 0 {
+		node := slices.Sorted(maps.Keys(why))[0]
+		return NetworkView{}, fmt.Errorf("%w: %s; no leg can be checked there", ErrRefused, why[node])
+	}
+	answers := e.probeNodes(ctx, seg, others)
 	if err := e.acquireWriter(ctx); err != nil {
 		return NetworkView{}, err
 	}
@@ -880,30 +1089,43 @@ func (e *Engine) Attach(ctx context.Context, r AttachRequest) (NetworkView, erro
 	if err != nil {
 		return NetworkView{}, err
 	}
-	c, err := f.lookup(r.Bridge, r.VLAN)
+	if ln.clustered && r.Scope == store.ScopeCluster {
+		if err := e.readZones(ctx, &f); err != nil {
+			return NetworkView{}, err
+		}
+	}
+	a, err := e.attachable(ctx, f, ln, r, legs, answers)
 	if err != nil {
 		return NetworkView{}, err
 	}
-	n, err := e.attachable(ctx, f, c, r)
-	if err != nil {
-		return NetworkView{}, err
-	}
-	first := len(f.nets) == 0
+	n := a.network
+	first := len(f.nets) == 0 && a.ext == "" && slices.Contains(slices.Collect(maps.Keys(n.Legs)), e.d.Node)
 	if first {
 		if err := e.d.Networks.EnableNamespace(ctx); err != nil {
 			return NetworkView{}, fmt.Errorf("enabling pco-netns.service for the first network: %w", err)
 		}
 	}
-	if err := e.d.Store.SaveNetwork(n, 0); err != nil {
+	var indexes map[string]int
+	if ln.clustered {
+		indexes = ln.indexes
+	}
+	if err := e.d.Store.SaveNetworkIndexed(n, n.Rev, indexes); err != nil {
 		if first {
 			e.disableNamespace(ctx)
 		}
 		if errors.Is(err, store.ErrRevision) {
-			return NetworkView{}, fmt.Errorf("%w: network %s was attached meanwhile", ErrRefused, n.ID)
+			return NetworkView{}, fmt.Errorf("%w: network %s was attached or changed meanwhile", ErrRefused, n.ID)
 		}
 		return NetworkView{}, fmt.Errorf("saving network %s: %w", n.ID, err)
 	}
-	e.networkEvent(ctx, n.ID, attachedMessage(n, r.Address, f.overlap(n.Prefix, resolve.Segment{Bridge: n.Bridge, VLAN: n.VLAN})))
+	switch {
+	case a.ext != "":
+		e.networkEvent(ctx, n.ID, addedMessage(n, legs))
+	case ln.clustered:
+		e.networkEvent(ctx, n.ID, legsMessage(n, a.overlap))
+	default:
+		e.networkEvent(ctx, n.ID, attachedMessage(n, r.Address, a.overlap))
+	}
 	e.Trigger()
 	nets, mappings, err := e.storedNetworks()
 	if err != nil {
@@ -913,59 +1135,184 @@ func (e *Engine) Attach(ctx context.Context, r AttachRequest) (NetworkView, erro
 	if !ok {
 		return NetworkView{}, fmt.Errorf("network %s is not stored after it was saved", n.ID)
 	}
-	return networkViews(map[string]store.Network{n.ID: saved}, mappings, nil, e.LegStates(), e.d.Node)[0], nil
+	return networkViews(map[string]store.Network{n.ID: saved}, mappings, nil, e.legsSeen())[0], nil
 }
 
-// attachable checks a request against the facts and returns the network it
-// makes: the refusals of Attach in their order, the last of which probes the
-// address once more.
-func (e *Engine) attachable(ctx context.Context, f networkFacts, c CandidateNetwork, r AttachRequest) (store.Network, error) {
-	seg := resolve.Segment{Bridge: c.Bridge, VLAN: c.VLAN}
-	if err := usable(c); err != nil {
-		return store.Network{}, err
-	}
-	if c.Attached != "" {
-		return store.Network{}, fmt.Errorf("%w: network %s is attached already; detach it first to attach it anew", ErrRefused, c.Attached)
-	}
-	if c.Uplink && !r.ConfirmUplink {
-		return store.Network{}, fieldError("confirmUplink", "%s has a physical uplink: "+uplinkWarning+"; %s", seg, c.Bridge, UplinkHint)
-	}
-	if p := gateway.ServicePrefix; r.Prefix.Overlaps(p) {
-		return store.Network{}, fieldError("prefix", "%s overlaps the service prefix %s, whose addresses the connectors dial", r.Prefix, p)
-	}
-	if p := f.settings.Managed.Subnet; p.IsValid() && r.Prefix.Overlaps(p) {
-		return store.Network{}, fieldError("prefix", "%s overlaps the managed subnet %s (managed.subnet)", r.Prefix, p)
-	}
-	overlap := f.overlap(r.Prefix, seg)
-	if overlap != "" && !r.OverlapOK {
-		return store.Network{}, fieldError("overlapOK", "%s; %s", overlap, OverlapHint)
-	}
-	for _, id := range slices.Sorted(maps.Keys(f.nets)) {
-		if n := f.nets[id]; n.Bridge == c.Bridge && n.Prefix.Overlaps(r.Prefix) {
-			return store.Network{}, fieldError("prefix", "%s overlaps %s of network %s on the same bridge %s", r.Prefix, n.Prefix, id, c.Bridge)
+// attachment is what an attach saves: the network, at the revision it was
+// read at when legs are added to it, with ext its id then, and the route of
+// a node the prefix overlaps.
+type attachment struct {
+	network store.Network
+	ext     string
+	overlap string
+}
+
+// attachable checks a request against the facts of the node of each leg and
+// returns the network it makes, or the network attached with the legs
+// added: the refusals of Attach in their order, the last of which probes
+// the address once more, this node's through its gateway and another's by
+// what its agent answered. On a cluster a network of scope cluster is first
+// checked to be one segment on each node.
+func (e *Engine) attachable(ctx context.Context, f networkFacts, ln legNodes, r AttachRequest, legs map[string]netip.Addr,
+	answers map[string]nodeAnswer) (attachment, error) {
+	seg := resolve.Segment{Bridge: r.Bridge, VLAN: r.VLAN}
+	id := store.SegmentID(r.Bridge, r.VLAN)
+	var a attachment
+	have, attached := f.nets[id]
+	if attached && ln.clustered {
+		if err := extendable(have, r, legs); err != nil {
+			return a, err
 		}
+		a.ext = id
 	}
-	if who, ok := f.taken(c)[r.Address]; ok {
-		return store.Network{}, fieldError("address", "%s is %s", r.Address, cmp.Or(who, "an address of the node"))
-	}
-	if f.canProbe(c) {
-		answers, err := e.probe(ctx, seg, r.Address)
+	uplink := false
+	for _, node := range legOrder(store.Network{Legs: legs}, e.d.Node) {
+		g := f
+		if node != e.d.Node {
+			var err error
+			if g, err = e.onNode(ctx, f, node); err != nil {
+				return a, err
+			}
+		}
+		if r.Scope == store.ScopeCluster && ln.clustered {
+			if why := g.notOneSegment(seg); why != "" {
+				return a, fmt.Errorf("%w: %s; attach it with the scope node", ErrRefused, why)
+			}
+		}
+		var (
+			overlap string
+			err     error
+		)
+		if node == e.d.Node {
+			overlap, err = e.localLeg(ctx, f, r, legs[node], a.ext)
+		} else {
+			overlap, err = g.remoteRefusal(seg, r, legs[node], answers[node], a.ext)
+		}
 		if err != nil {
-			return store.Network{}, err
+			return a, err
 		}
-		if len(answers) > 0 {
-			return store.Network{}, fieldError("address", "%s is in use on %s: %s answered", r.Address, seg, strings.Join(answers, ", "))
+		a.overlap = cmp.Or(a.overlap, overlap)
+		uplink = uplink || g.uplink(seg.Bridge)
+	}
+	if a.ext != "" {
+		n := have
+		n.Legs = maps.Clone(have.Legs)
+		maps.Copy(n.Legs, legs)
+		n.LegMACs = maps.Clone(have.LegMACs)
+		if err := withLegMACs(&n, ln); err != nil {
+			return a, err
 		}
+		a.network = n
+		return a, nil
 	}
 	mark, err := e.freeMark(f.nets)
 	if err != nil {
-		return store.Network{}, err
+		return a, err
 	}
-	return store.Network{
-		ID: store.SegmentID(c.Bridge, c.VLAN), Kind: store.NetworkAttach, Bridge: c.Bridge, VLAN: c.VLAN, Prefix: r.Prefix,
-		Legs: map[string]netip.Addr{e.d.Node: r.Address}, LegMAC: store.LegMACFor(store.NetworkAttach, mark), Mark: mark,
-		Uplink: c.Uplink, OverlapOK: overlap != "", CreatedAt: e.d.Now(),
-	}, nil
+	a.network = store.Network{
+		ID: id, Kind: store.NetworkAttach, Bridge: r.Bridge, VLAN: r.VLAN, Prefix: r.Prefix,
+		Legs: legs, LegMAC: store.LegMACFor(store.NetworkAttach, mark), Mark: mark,
+		Uplink: uplink, OverlapOK: a.overlap != "", Scope: r.Scope, CreatedAt: e.d.Now(),
+	}
+	if ln.clustered {
+		if err := withLegMACs(&a.network, ln); err != nil {
+			return a, err
+		}
+	}
+	return a, nil
+}
+
+// localLeg checks the leg of this node, as an attach on a node alone does.
+func (e *Engine) localLeg(ctx context.Context, f networkFacts, r AttachRequest, addr netip.Addr, ext string) (string, error) {
+	c, err := f.lookup(r.Bridge, r.VLAN)
+	if err != nil {
+		return "", err
+	}
+	overlap, err := f.legRefusal(c, r, addr, ext)
+	if err != nil {
+		return "", err
+	}
+	if f.canProbe(c) {
+		seg := resolve.Segment{Bridge: c.Bridge, VLAN: c.VLAN}
+		answers, err := e.probe(ctx, seg, addr)
+		if err != nil {
+			return "", err
+		}
+		if len(answers) > 0 {
+			return "", fieldError("address", "%s is in use on %s: %s answered", addr, seg, strings.Join(answers, ", "))
+		}
+	}
+	return overlap, nil
+}
+
+// extendable refuses legs added to a network attached that are not of it:
+// another kind, prefix or scope, a node that has its leg, or an address of
+// a leg it has.
+func extendable(n store.Network, r AttachRequest, legs map[string]netip.Addr) error {
+	switch {
+	case n.Kind != store.NetworkAttach:
+		return fmt.Errorf("%w: %s is pco's managed network, which is not attached", ErrRefused, n.ID)
+	case n.Prefix != r.Prefix:
+		return fmt.Errorf("%w: network %s is attached already in %s; a leg added to it is in that prefix", ErrRefused, n.ID, n.Prefix)
+	case r.Scope != "" && r.Scope != n.ScopeName():
+		return fmt.Errorf("%w: network %s is attached already of scope %s; a leg added to it is of that scope", ErrRefused, n.ID, n.ScopeName())
+	case n.ScopeName() == store.ScopeNode:
+		return fmt.Errorf("%w: network %s is of scope node and has its one leg; detach it first to attach it anew", ErrRefused, n.ID)
+	}
+	for _, node := range slices.Sorted(maps.Keys(legs)) {
+		if _, has := n.Legs[node]; has {
+			return fmt.Errorf("%w: network %s is attached already with a leg on node %s; detach it first to attach it anew", ErrRefused, n.ID, node)
+		}
+		for other, addr := range n.Legs {
+			if addr == legs[node] {
+				return fieldError("legs", "%s is the leg of node %s on network %s", addr, other, n.ID)
+			}
+		}
+	}
+	return nil
+}
+
+// withLegMACs gives each leg of n the MAC of its node's index, which an
+// admitted node has; a node without one has no MAC, and no leg.
+func withLegMACs(n *store.Network, ln legNodes) error {
+	if n.LegMACs == nil {
+		n.LegMACs = map[string]string{}
+	}
+	for _, node := range slices.Sorted(maps.Keys(n.Legs)) {
+		index, ok := ln.indexes[node]
+		if !ok {
+			return fmt.Errorf("%w: node %s has no index yet, so the MAC of its leg is not known; attach once it is admitted", ErrRefused, node)
+		}
+		n.LegMACs[node] = store.NodeLegMAC(index, n.Mark)
+	}
+	return nil
+}
+
+// legsMessage is the event of an attach on a cluster.
+func legsMessage(n store.Network, overlap string) string {
+	seg := resolve.Segment{Bridge: n.Bridge, VLAN: n.VLAN}
+	var legs []string
+	for _, node := range slices.Sorted(maps.Keys(n.Legs)) {
+		legs = append(legs, fmt.Sprintf("%s on %s", netip.PrefixFrom(n.Legs[node], n.Prefix.Bits()), node))
+	}
+	msg := fmt.Sprintf("network %s of scope %s is attached: the leg %s on %s with %s, mark %d", n.ID, n.ScopeName(), gateway.LegIface(n.Mark),
+		seg, strings.Join(legs, ", "), n.Mark)
+	if n.Uplink {
+		msg += "; on a bridge with a physical uplink, confirmed: " + fmt.Sprintf(uplinkWarning, n.Bridge)
+	}
+	if n.OverlapOK {
+		msg += "; " + overlap + ", allowed with --overlap-ok"
+	}
+	return msg + "; the next cycle raises the legs"
+}
+
+// addedMessage is the event of legs added to a network attached.
+func addedMessage(n store.Network, added map[string]netip.Addr) string {
+	var legs []string
+	for _, node := range slices.Sorted(maps.Keys(added)) {
+		legs = append(legs, fmt.Sprintf("%s on %s", netip.PrefixFrom(added[node], n.Prefix.Bits()), node))
+	}
+	return fmt.Sprintf("network %s has %s more: %s; the next cycle raises them", n.ID, plural(len(added), "leg", "legs"), strings.Join(legs, ", "))
 }
 
 // freeMark is the lowest mark no network has and none had since the gateway
@@ -1092,6 +1439,20 @@ func (e *Engine) releaseNetwork(id string) (released int, failed []string) {
 		}
 		if err := e.d.Store.ReleaseServiceAddr(m.Network, m.Addr); err != nil {
 			failed = append(failed, fmt.Sprintf("%s of %s: %v", m.Service, m.Addr, err))
+			continue
+		}
+		released++
+	}
+	nodes, err := e.d.Store.NodeServiceAddrs()
+	if err != nil {
+		return released, append(failed, fmt.Sprintf("the service addresses of single nodes could not be read: %v", err))
+	}
+	for _, m := range nodes {
+		if m.Network != id {
+			continue
+		}
+		if err := e.d.Store.ReleaseNodeServiceAddr(m.Network, m.Node, m.Addr); err != nil {
+			failed = append(failed, fmt.Sprintf("%s of %s on node %s: %v", m.Service, m.Addr, m.Node, err))
 			continue
 		}
 		released++

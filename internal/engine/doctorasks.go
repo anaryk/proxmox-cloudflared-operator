@@ -2,25 +2,28 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 )
 
-// ErrDoctorBusy is an ask of the agents' checks that could not start
-// within its wait: another ran all along.
-var ErrDoctorBusy = errors.New("another doctor ask was running")
+// ErrDoctorBusy is an ask of the agents that could not start within its
+// wait: another ran all along.
+var ErrDoctorBusy = errors.New("another ask of the agents was running")
 
-// doctorAsks are the doctor actions the controller hands the agents of the
-// other nodes, by id, until they are answered or the asker stops waiting.
+// doctorAsks are the actions the controller hands the agents of the other
+// nodes to answer at once, doctor and probe actions, by id, until they are
+// answered or the asker stops waiting.
 type doctorAsks struct {
 	// one is held by the ask that runs: one at a time hands the agents
-	// actions, so that the doctor cannot be made to flood them.
+	// actions, so that the agents cannot be made to flood.
 	one  chan struct{}
 	mu   sync.Mutex
 	n    uint64
@@ -41,6 +44,16 @@ type doctorAsk struct {
 // another waits for it within its own wait, and is ErrDoctorBusy when it
 // could not start.
 func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Duration) (map[string]agentproto.ActionResult, error) {
+	args := make(map[string]json.RawMessage, len(nodes))
+	for _, node := range nodes {
+		args[node] = json.RawMessage(`{}`)
+	}
+	return e.askAgents(ctx, agentproto.ActionDoctor, args, wait)
+}
+
+// askAgents hands the agent of each node of args an action of kind with its
+// arguments, as AskDoctor does.
+func (e *Engine) askAgents(ctx context.Context, kind string, args map[string]json.RawMessage, wait time.Duration) (map[string]agentproto.ActionResult, error) {
 	d := &e.asks
 	ctx, cancel := e.timeout(ctx, wait)
 	defer cancel()
@@ -61,10 +74,10 @@ func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Durati
 		d.acts = map[string]*doctorAsk{}
 	}
 	mine := map[string]*doctorAsk{}
-	for _, node := range nodes {
+	for _, node := range slices.Sorted(maps.Keys(args)) {
 		d.n++
-		id := fmt.Sprintf("doctor-%s-%d", e.boot, d.n)
-		a := &doctorAsk{node: node, action: agentproto.Action{ID: id, Kind: agentproto.ActionDoctor, Args: []byte(`{}`)}, done: make(chan struct{})}
+		id := fmt.Sprintf("%s-%s-%d", strings.ToLower(kind), e.boot, d.n)
+		a := &doctorAsk{node: node, action: agentproto.Action{ID: id, Kind: kind, Args: args[node]}, done: make(chan struct{})}
 		d.acts[id], mine[node] = a, a
 	}
 	d.mu.Unlock()
@@ -92,7 +105,7 @@ func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Durati
 	return out, nil
 }
 
-// actionsFor are the doctor actions node has not answered.
+// actionsFor are the actions asked of node it has not answered.
 func (d *doctorAsks) actionsFor(node string) []agentproto.Action {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -105,8 +118,9 @@ func (d *doctorAsks) actionsFor(node string) []agentproto.Action {
 	return out
 }
 
-// take keeps the answers to doctor actions that a status of node carries.
-// An answer of another node's action is not taken.
+// take keeps the answers to the actions asked that a status of node
+// carries. An answer of another node's action is not taken: an answer is
+// the word of the node whose agent sent the status, of that node alone.
 func (d *doctorAsks) take(node string, results []agentproto.ActionResult) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

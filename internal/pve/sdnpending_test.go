@@ -104,6 +104,17 @@ func TestSDNVnetsAreTheConfiguredOnes(t *testing.T) {
 	require.Len(t, rec.requests(), 1)
 }
 
+func TestSDNZonesAreTheConfiguredOnes(t *testing.T) {
+	c, rec := newTestClient(t, map[string]reply{"/cluster/sdn/zones": {http.StatusOK,
+		`{"data":[{"zone":"pco","type":"simple"},{"zone":"z1","type":"vxlan","peers":"10.0.0.2,10.0.0.3"}]}`}})
+
+	got, err := c.SDNZones(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, []SDNZone{{Name: "pco", Type: "simple"}, {Name: "z1", Type: "vxlan"}}, got)
+	require.Len(t, rec.requests(), 1)
+}
+
 func TestSDNDecodersRefuseBadAnswers(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

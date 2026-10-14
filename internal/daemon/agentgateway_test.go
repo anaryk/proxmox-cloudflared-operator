@@ -50,10 +50,10 @@ func (b *unpinnedBackend) Probe(context.Context, string, int, netip.Addr) ([]net
 	return []net.HardwareAddr{mac}, nil
 }
 
-type startedUnit struct{ started bool }
+type startedUnit struct{ started, enabled bool }
 
 func (u *startedUnit) Start(context.Context) error   { u.started = true; return nil }
-func (u *startedUnit) Enable(context.Context) error  { return nil }
+func (u *startedUnit) Enable(context.Context) error  { u.enabled = true; return nil }
 func (u *startedUnit) Disable(context.Context) error { return nil }
 
 type ifacesOnly struct{ resolve.Prober }
@@ -84,4 +84,36 @@ func TestTheAgentProbesThroughTheGatewayOfItsNode(t *testing.T) {
 		require.Nil(t, d.ProbeAddr)
 		require.Nil(t, d.Interfaces)
 	})
+}
+
+// A node given its first leg by the controller has the namespace unit
+// enabled and started, so that the leg is raised now and after a boot.
+func TestTheAgentEnablesTheNamespaceForTheFirstLeg(t *testing.T) {
+	unit := &startedUnit{}
+	b := &unpinnedSync{unit: unit}
+	g := newGatewayPart(b, t.TempDir(), func() time.Time { return t0 }, zerolog.Nop())
+	d := agentDeps(nil, nil, nil, g, nodeProbe{gw: g, prober: ifacesOnly{}, unit: unit}, nil)
+
+	_, err := d.Gateway.Sync(t.Context(), nil, nil, nil, nil)
+	require.ErrorIs(t, err, gateway.ErrNotPinned, "no leg: nothing is started")
+	require.False(t, unit.started)
+
+	_, err = d.Gateway.Sync(t.Context(), testCache.Legs, nil, nil, nil)
+
+	require.NoError(t, err)
+	require.True(t, unit.started)
+	require.True(t, unit.enabled)
+}
+
+// unpinnedSync syncs only once the unit started the namespace.
+type unpinnedSync struct {
+	fakeBackend
+	unit *startedUnit
+}
+
+func (b *unpinnedSync) Sync(ctx context.Context, legs []gateway.Leg, services []gateway.Service, pins []gateway.Pin, sticky []gateway.Sticky) ([]gateway.LegState, error) {
+	if !b.unit.started {
+		return nil, gateway.ErrNotPinned
+	}
+	return b.fakeBackend.Sync(ctx, legs, services, pins, sticky)
 }

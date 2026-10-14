@@ -470,6 +470,7 @@ export interface LeaseView {
 export interface LegView {
   node: string
   addr: string
+  mac?: string
   up: boolean
   problem?: string
 }

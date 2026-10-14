@@ -102,11 +102,14 @@ var (
 			Legs: map[string]netip.Addr{"pve1": netip.MustParseAddr("10.50.0.250")}, LegMAC: "02:50:43:4f:00:01",
 			LegMACs: map[string]string{"pve1": "02:50:43:4f:00:01"}, Mark: 1, CreatedAt: t0, Scope: store.ScopeNode, Rev: 3,
 		},
-		Legs: []engine.LegView{{Node: "pve1", Addr: netip.MustParseAddr("10.50.0.250"), Up: true}}, Targets: 1, Routes: 1,
+		Legs: []engine.LegView{
+			{Node: "pve1", Addr: netip.MustParseAddr("10.50.0.250"), MAC: "02:50:43:4f:00:01", Up: true},
+			{Node: "pve2", Addr: netip.MustParseAddr("10.50.0.249"), MAC: "02:50:43:4f:01:01", Problem: "10.50.0.249 is answered by bc:24:11:00:00:09"},
+		}, Targets: 1, Routes: 1,
 	}}
 	managedAnswer = engine.ManagedView{
 		Enabled: true, Consent: "per-guest", AutoAllowed: true, TagHonoured: true, Subnet: netip.MustParsePrefix("10.203.118.0/24"),
-		Leg: &engine.LegView{Node: "pve1", Addr: netip.MustParseAddr("10.203.118.1"), Up: true},
+		Leg: &engine.LegView{Node: "pve1", Addr: netip.MustParseAddr("10.203.118.1"), MAC: "02:50:43:4f:ff:01", Up: true},
 		Attachments: []engine.AttachmentView{
 			{
 				Attachment: store.Attachment{Owner: "lxc/201", Identity: "mac:201", NIC: 1, MAC: "06:50:43:4f:76:02", Addr: netip.MustParseAddr("10.203.118.2"), Consent: "tag", Since: t0},

@@ -31,15 +31,27 @@ type fakeNetworks struct {
 	host      []resolve.HostIface
 	calls     []string
 	enableErr error
+	// nodes are the networks of the other nodes, and zones the SDN zones.
+	nodes map[string][]pve.NodeIface
+	zones []pve.SDNZone
 }
 
 func (f *fakeNetworks) NodeNetwork(_ context.Context, node string) ([]pve.NodeIface, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if cfg, ok := f.nodes[node]; ok {
+		return slices.Clone(cfg), nil
+	}
 	if node != testNode {
 		return nil, fmt.Errorf("node %s is not in this test", node)
 	}
 	return slices.Clone(f.config), nil
+}
+
+func (f *fakeNetworks) Zones(context.Context) ([]pve.SDNZone, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.zones), nil
 }
 
 func (f *fakeNetworks) VNets(context.Context) ([]pve.VNet, error) {
@@ -573,7 +585,7 @@ func TestAnAttachSavesTheNetworkAndEnablesTheUnitForTheFirst(t *testing.T) {
 		Legs: map[string]netip.Addr{testNode: netip.MustParseAddr("10.77.0.250")}, LegMAC: "02:50:43:4f:00:01", Mark: 1, CreatedAt: t0, Rev: 1,
 	}
 	require.Equal(t, want, v.Network)
-	require.Equal(t, []LegView{{Node: testNode, Addr: netip.MustParseAddr("10.77.0.250"), Problem: "the gateway has not reported the leg yet"}}, v.Legs)
+	require.Equal(t, []LegView{{Node: testNode, Addr: netip.MustParseAddr("10.77.0.250"), MAC: "02:50:43:4f:00:01", Problem: "the gateway has not reported the leg yet"}}, v.Legs)
 	stored, err := e.store.Networks()
 	require.NoError(t, err)
 	require.Equal(t, want, stored["vmbr1"])
@@ -674,7 +686,7 @@ func TestTheStateShowsTheNetworks(t *testing.T) {
 	require.Len(t, st.Networks, 1)
 	v := st.Networks[0]
 	require.Equal(t, "vmbr1", v.ID)
-	require.Equal(t, []LegView{{Node: testNode, Addr: netip.MustParseAddr("10.77.0.250"), Up: true}}, v.Legs)
+	require.Equal(t, []LegView{{Node: testNode, Addr: netip.MustParseAddr("10.77.0.250"), MAC: "02:50:43:4f:00:01", Up: true}}, v.Legs)
 	require.Equal(t, 1, v.Targets)
 	require.Equal(t, 1, v.Routes)
 

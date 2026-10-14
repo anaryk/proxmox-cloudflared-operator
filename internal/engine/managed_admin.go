@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -94,8 +96,22 @@ func (e *Engine) RevokeManaged(ctx context.Context, owner string) error {
 // when it is the first network of the node. The subnet is checked against
 // the routes of the nodes, the addresses of the guests and the attached
 // networks first. A network that is stored already is left as it is.
+//
+// On a cluster every other node gets a leg at the same address too, once
+// the agent of the node found pconet there, the node not on it, and nobody
+// at the address; the probes are asked before the cycle lock is taken. A
+// node that gets none is an event with why, and a later call gives a leg to
+// each node that has none yet, also of a network stored already.
 func (e *Engine) EnableManaged(ctx context.Context) error {
 	if err := e.networksHere(); err != nil {
+		return err
+	}
+	ln, err := e.legNodes()
+	if err != nil {
+		return err
+	}
+	answers, err := e.probeManaged(ctx, ln)
+	if err != nil {
 		return err
 	}
 	if err := e.acquireWriter(ctx); err != nil {
@@ -107,8 +123,11 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := f.nets[gateway.ManagedBridge]; ok {
-		return nil
+	if have, ok := f.nets[gateway.ManagedBridge]; ok {
+		if !ln.clustered {
+			return nil
+		}
+		return e.addManagedLegs(ctx, f, ln, have, answers)
 	}
 	if e.d.Vnet == nil {
 		return fmt.Errorf("%w: this daemon cannot read the vnet %s, so the managed network is not stored", ErrRefused, gateway.ManagedBridge)
@@ -146,6 +165,10 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 		Legs:   map[string]netip.Addr{e.d.Node: subnet.Addr().Next()},
 		LegMAC: store.LegMACFor(store.NetworkManaged, mark), Mark: mark, Scope: store.ScopeNode, CreatedAt: e.d.Now(),
 	}
+	var said []string
+	if ln.clustered {
+		said = e.managedLegs(ctx, f, ln, &n, answers)
+	}
 	if err := e.d.Store.SaveNetwork(n, 0); err != nil {
 		if first {
 			e.disableNamespace(ctx)
@@ -157,8 +180,127 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	}
 	e.events.add(Event{At: e.d.Now(), Level: levelInfo, Kind: kindManaged, Subject: n.ID, Actor: ActorOf(ctx),
 		Message: fmt.Sprintf("the managed network is enabled: %s with the subnet %s, the leg %s on node %s, mark %d", n.ID, subnet, n.Legs[e.d.Node], e.d.Node, mark)})
+	e.managedEvents(ctx, said)
 	e.Trigger()
 	return nil
+}
+
+// probeManaged asks the agent of every other node that has no leg of the
+// managed network whether pconet is there and its first address free. On
+// a node alone it asks nothing.
+func (e *Engine) probeManaged(ctx context.Context, ln legNodes) (map[string]nodeAnswer, error) {
+	if !ln.clustered {
+		return nil, nil
+	}
+	settings, err := e.d.Store.Settings()
+	if err != nil {
+		return nil, fmt.Errorf("reading the settings: %w", err)
+	}
+	nets, err := e.d.Store.Networks()
+	if err != nil {
+		return nil, fmt.Errorf("reading the networks: %w", err)
+	}
+	first := settings.Managed.Subnet.Addr().Next()
+	have, stored := nets[gateway.ManagedBridge]
+	if stored {
+		first = have.Prefix.Addr().Next()
+	}
+	addrs := map[string]netip.Addr{}
+	for node := range e.writes.agentNodes() {
+		if _, has := have.Legs[node]; node == e.d.Node || !ln.known[node] || stored && has {
+			continue
+		}
+		addrs[node] = first
+	}
+	return e.probeNodes(ctx, resolve.Segment{Bridge: gateway.ManagedBridge}, addrs), nil
+}
+
+// managedLegs gives n the leg of each other node that has none whose agent
+// found pconet there, the node not on it and nobody at the first address,
+// and returns what is said of each other node: the leg it got, or why it
+// got none.
+func (e *Engine) managedLegs(ctx context.Context, f networkFacts, ln legNodes, n *store.Network, answers map[string]nodeAnswer) []string {
+	first := n.Prefix.Addr().Next()
+	var said []string
+	for _, node := range slices.Sorted(maps.Keys(ln.known)) {
+		if _, has := n.Legs[node]; has || node == e.d.Node {
+			continue
+		}
+		got, asked := answers[node]
+		why := ""
+		if !asked {
+			why = e.unasked([]string{node})[node]
+		} else {
+			why = e.managedLegWhy(ctx, f, node, first, got)
+		}
+		if why != "" {
+			said = append(said, fmt.Sprintf("the managed network has no leg on node %s: %s", node, why))
+			continue
+		}
+		n.Legs[node] = first
+		said = append(said, fmt.Sprintf("the managed network has a leg on node %s now: %s", node, first))
+	}
+	return said
+}
+
+// managedLegWhy says why node gets no leg of the managed network at addr by
+// what its agent answered; empty when it gets one.
+func (e *Engine) managedLegWhy(ctx context.Context, f networkFacts, node string, addr netip.Addr, got nodeAnswer) string {
+	if got.why != "" {
+		return got.why
+	}
+	g, err := e.onNode(ctx, f, node)
+	if err != nil {
+		return err.Error()
+	}
+	g = g.withAnswer(got.answer)
+	seg := resolve.Segment{Bridge: gateway.ManagedBridge}
+	if !g.isBridge(seg.Bridge) {
+		return fmt.Sprintf("%s is no bridge or vnet of node %s", seg.Bridge, node)
+	}
+	c := g.candidate(seg)
+	who, taken := g.taken(c)[addr]
+	switch {
+	case c.Direct:
+		return fmt.Sprintf("node %s has an address of its own on %s", node, seg.Bridge)
+	case taken:
+		return fmt.Sprintf("%s is %s", addr, who)
+	case got.answer.NotProbed != "":
+		return fmt.Sprintf("%s was not probed on %s: %s", addr, g.where(seg), clip(got.answer.NotProbed))
+	case len(got.answer.AnsweredBy) > 0:
+		return fmt.Sprintf("%s is in use on %s: %s answered", addr, g.where(seg), strings.Join(got.answer.AnsweredBy, ", "))
+	}
+	return ""
+}
+
+// addManagedLegs gives the managed network stored a leg on each other node
+// that has none and may.
+func (e *Engine) addManagedLegs(ctx context.Context, f networkFacts, ln legNodes, have store.Network, answers map[string]nodeAnswer) error {
+	n := have
+	n.Legs = maps.Clone(have.Legs)
+	said := e.managedLegs(ctx, f, ln, &n, answers)
+	if len(n.Legs) > len(have.Legs) {
+		if err := e.d.Store.SaveNetwork(n, have.Rev); err != nil {
+			if errors.Is(err, store.ErrRevision) {
+				return fmt.Errorf("%w: the managed network changed meanwhile; enable it again", ErrRefused)
+			}
+			return fmt.Errorf("saving the network %s: %w", n.ID, err)
+		}
+		e.Trigger()
+	}
+	e.managedEvents(ctx, said)
+	return nil
+}
+
+// managedEvents records what was said of the legs of the managed network.
+func (e *Engine) managedEvents(ctx context.Context, said []string) {
+	for _, msg := range said {
+		level := levelInfo
+		if strings.Contains(msg, " has no leg ") {
+			level = levelWarn
+		}
+		e.events.add(Event{At: e.d.Now(), Level: level, Kind: kindManaged, Subject: gateway.ManagedBridge, Actor: ActorOf(ctx), Message: msg})
+	}
 }
 
 // recordUnknown records a report of an unknown MAC and says whether it has

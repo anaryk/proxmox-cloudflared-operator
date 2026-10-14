@@ -560,7 +560,7 @@ func (s *managedStep) legView() *LegView {
 	if !ok {
 		return nil
 	}
-	views := networkViews(map[string]store.Network{s.net.ID: s.net}, nil, nil, s.c.e.LegStates(), s.c.e.d.Node)
+	views := networkViews(map[string]store.Network{s.net.ID: s.net}, storedMappings{}, nil, legsSeen{node: s.c.e.d.Node, local: s.c.e.LegStates()})
 	if len(views) == 0 || len(views[0].Legs) == 0 {
 		return &LegView{Node: s.c.e.d.Node, Addr: addr}
 	}
