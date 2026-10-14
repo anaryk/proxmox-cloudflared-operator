@@ -110,6 +110,22 @@ type initStep struct {
 }
 
 func (r *initRun) steps() []initStep {
+	if r.b.Kind == store.ApplianceAgent {
+		// An agent keeps no settings, draws no writer, is in no registry of
+		// its own and holds no credential: those are the controller's.
+		return []initStep{
+			{"bootstrap", func(context.Context) error { return r.b.Remove() }},
+			{"identity", r.checkIdentity},
+			{"store", r.prepareStore},
+			{"install", r.saveInstall},
+			{"token", r.saveToken},
+			{"node addresses", r.saveNodeAddrs},
+			{"manifest", r.saveManifest},
+			{"proxmox", r.checkToken},
+			{"service", r.restart},
+			{"finish", r.finish},
+		}
+	}
 	return []initStep{
 		{"bootstrap", func(context.Context) error { return r.b.Remove() }},
 		{"identity", r.checkIdentity},
@@ -222,6 +238,17 @@ func (r *initRun) prepareStore(context.Context) error {
 		return fmt.Errorf("reading the install: %w", err)
 	}
 	switch {
+	case r.b.Kind == store.ApplianceAgent && found && inst.ID != r.b.InstallID:
+		return fmt.Errorf("the volume holds install %s, and this agent joins install %s: "+
+			"pco appliance uninstall --vmid %d on the node removes the container", inst.ID, r.b.InstallID, r.b.VMID)
+	case r.b.Kind == store.ApplianceAgent && found:
+		r.resumed = true
+	case r.b.Kind == store.ApplianceAgent && r.b.Mode == ModeRepair:
+		return fmt.Errorf("the volume holds no install to repair: the agent is installed again with a new join token")
+	case r.b.Kind == store.ApplianceAgent:
+		r.install = store.Install{ID: r.b.InstallID, CreatedAt: r.d.Now()}
+		r.d.Info("agent: lxc/%d joins install %s", r.b.VMID, r.b.InstallID)
+		return nil
 	case r.b.Mode == ModeInstall && found:
 		began, err := r.pendingInstall()
 		if err != nil {
@@ -397,6 +424,8 @@ func (r *initRun) applianceInstall(inst store.Install) store.Install {
 		MACs:      slices.Clone(r.b.MACs),
 		Endpoints: slices.Clone(r.b.Endpoints),
 		CAFile:    filepath.Join(r.local, CAFile),
+		Kind:      r.b.Kind,
+		Storage:   r.b.Storage,
 	}
 	return inst
 }

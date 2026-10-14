@@ -68,6 +68,11 @@ type Bootstrap struct {
 	GateTag         string
 	// Manifest is the installer's manifest, stored as manifest.json.
 	Manifest json.RawMessage
+	// Kind is store.ApplianceController or store.ApplianceAgent; none is a
+	// combined appliance. An agent names the install it joins in InstallID
+	// and holds no Cloudflare token. Storage is a controller's.
+	Kind    string
+	Storage *store.ApplianceStorage
 
 	path string // the file it was read from
 }
@@ -86,6 +91,8 @@ type bootstrapFile struct {
 	CloudflareToken string           `json:"cloudflareToken"`
 	GateTag         string           `json:"gateTag"`
 	Manifest        json.RawMessage  `json:"manifest"`
+	Kind            string                  `json:"kind,omitempty"`
+	Storage         *store.ApplianceStorage `json:"storage,omitempty"`
 }
 
 type bootstrapToken struct {
@@ -171,8 +178,10 @@ func (f bootstrapFile) bootstrap() (Bootstrap, error) {
 		CloudflareToken: store.NewSecret(f.CloudflareToken),
 		GateTag:         f.GateTag,
 		Manifest:        f.Manifest,
+		Kind:            f.Kind,
+		Storage:         f.Storage,
 	}
-	for _, check := range []func(*Bootstrap, bootstrapFile) error{checkMode, checkGuest, checkMACs, checkEndpoints, checkNodeAddrs, checkSecrets, checkRest} {
+	for _, check := range []func(*Bootstrap, bootstrapFile) error{checkMode, checkKind, checkGuest, checkMACs, checkEndpoints, checkNodeAddrs, checkSecrets, checkRest} {
 		if err := check(&b, f); err != nil {
 			return Bootstrap{}, err
 		}
@@ -190,8 +199,34 @@ func checkMode(b *Bootstrap, _ bootstrapFile) error {
 	case b.InstallID == "":
 	case !installID.MatchString(b.InstallID):
 		return fmt.Errorf("installId %q: want 12 lower-case hex characters", b.InstallID)
-	case b.Mode == ModeInstall:
+	case b.Mode == ModeInstall && b.Kind != store.ApplianceAgent:
 		return errors.New("installId goes with mode repair or recover; mode install makes a new one")
+	}
+	return nil
+}
+
+// checkKind refuses a kind pco does not know, and what does not go with it:
+// an agent joins an install it is told, holds no Cloudflare token and records
+// no storage.
+func checkKind(b *Bootstrap, f bootstrapFile) error {
+	switch b.Kind {
+	case "", store.ApplianceController, store.ApplianceAgent:
+	default:
+		return fmt.Errorf("kind %q: want controller or agent, or none for a combined appliance", b.Kind)
+	}
+	switch {
+	case b.Storage != nil && b.Storage.ID == "":
+		return errors.New("the storage names no storage")
+	case b.Kind != store.ApplianceAgent:
+		return nil
+	case b.Mode == ModeRecover:
+		return errors.New("an agent is installed or repaired, never recovered: it holds nothing of the install to recover")
+	case b.InstallID == "":
+		return errors.New("an agent joins an install: installId names it")
+	case f.CloudflareToken != "":
+		return errors.New("an agent holds no Cloudflare token: the controller hands it what it runs")
+	case b.Storage != nil:
+		return errors.New("only a controller records its storage")
 	}
 	return nil
 }
@@ -294,6 +329,8 @@ func (b Bootstrap) Encode() ([]byte, error) {
 		CloudflareToken: b.CloudflareToken.Reveal(),
 		GateTag:         b.GateTag,
 		Manifest:        b.Manifest,
+		Kind:            b.Kind,
+		Storage:         b.Storage,
 	}
 	data, err := json.Marshal(f)
 	if err != nil {
