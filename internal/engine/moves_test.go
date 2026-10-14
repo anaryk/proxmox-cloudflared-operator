@@ -9,6 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -144,6 +147,36 @@ func TestANewControllerRollsAMoveForwardOnceItsRulesAreRolledOut(t *testing.T) {
 		require.Equal(t, pinned1, w.recordTunnel(t, "www.example.com"))
 		require.Equal(t, pinned1, w.recordTunnel(t, "web2.example.com"))
 	})
+}
+
+// The rules of a move are rolled out only once every node of the tunnel
+// moved to reaches every route of the owner: a ready connector on a node
+// that does not reach the target serves nothing, so the records stay where
+// they are until it does.
+func TestAMoveRollsOutOnlyToNodesThatReachItsRoutes(t *testing.T) {
+	pinned1, _ := planner.PinnedTunnelName(testInstall, "pve1")
+	w := servedAlone(t)
+	w.res.setUnreachable("pve.example.com", "connection refused")
+	one := 1
+	now := w.clock.now()
+	require.NoError(t, w.store.SaveNode(store.NodeEntry{Name: "pve2", Since: now, State: store.NodeActive, StateSince: now, Index: &one}))
+	*w.listed = append(*w.listed, members.Member{Name: "pve2", ID: 2, Online: true})
+	w.acts["pve2"] = &agentAct{kind: pki.KindHost, started: now.Add(-time.Hour)}
+
+	w.untilMove(t, model.ManualPrefix+"pve", store.MoveRulesAdded, 10)
+	for range 20 {
+		w.tick(5 * time.Second)
+		m, ok := w.moveOf(t, model.ManualPrefix+"pve")
+		require.True(t, ok)
+		require.Equal(t, store.MoveRulesAdded, m.Step, "not rolled out while this node does not reach it")
+		require.Equal(t, tunnelName, w.recordTunnel(t, "pve.example.com"))
+	}
+
+	w.res.mu.Lock()
+	delete(w.res.unreachable, "pve.example.com")
+	w.res.mu.Unlock()
+	w.untilMove(t, model.ManualPrefix+"pve", store.MoveCNAMEsSwitched, 20, "pve.example.com")
+	require.Equal(t, pinned1, w.recordTunnel(t, "pve.example.com"))
 }
 
 // A move given up once its rules were rolled out does not drop them: its

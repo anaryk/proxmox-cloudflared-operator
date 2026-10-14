@@ -310,7 +310,9 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 		delete(mem.diverged, owner)
 	}
 	pinHost := placed{kind: store.PlacementPinned, node: host, why: fmt.Sprintf(whyHosted, host)}
-	if cross && c.cover.lost() && host != "" && c.fleet.node(host).fresh || cross && c.cover.lost() && host == c.e.d.Node {
+	if cross && c.cover.lost() && hostReaches {
+		// Without coverage no replica proves another node's guest; its
+		// node serves it alone, once it reaches it.
 		pinHost.why = whyCoverage
 		return pinHost, ""
 	}

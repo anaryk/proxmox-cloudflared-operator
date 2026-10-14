@@ -232,6 +232,37 @@ func TestAStoppedAgentPinsEveryCrossNodeRouteAndWithdrawsNothing(t *testing.T) {
 	}
 }
 
+// Coverage lost pins the route of another node's guest to that node only
+// while the node reaches it: a node that fails its own guest's route
+// serves it no better than the replicas do, so the route is held as it is
+// until the node reaches it.
+func TestCoverageLostPinsARouteOnlyToANodeThatReachesIt(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].noWatch = true
+	w.acts["pve2"].fail = map[string]string{"db.example.com": "not reached"}
+
+	var st State
+	for range 12 {
+		st = w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+	require.True(t, hasProblem(st, "node pve3 has no pco agent with a running watch"), st.Problems)
+	require.Equal(t, TunnelPinned, route(st, "www.example.com").Placement.Kind, "pve1 reaches its guest's route")
+	require.Equal(t, TunnelShared, route(st, "db.example.com").Placement.Kind, "pve2 does not reach its guest's route")
+	for _, ev := range w.placementEvents() {
+		require.False(t, strings.HasPrefix(ev, "qemu/102: ") && strings.Contains(ev, " moves from "), ev)
+	}
+
+	w.acts["pve2"].fail = nil
+	for range 12 {
+		st = w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+	require.Equal(t, TunnelPinned, route(st, "db.example.com").Placement.Kind)
+	require.Equal(t, "pve2", route(st, "db.example.com").Placement.Node)
+}
+
 // An agent that restarts every 50 seconds for ten minutes: its first
 // restart is forgiven, the second pins the routes, they stay pinned for as
 // long as it flaps, and no route moves twice.

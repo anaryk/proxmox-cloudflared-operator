@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -110,11 +111,14 @@ func (c *cycleRun) moving(owner string, cur placed, stored bool, want placed) (p
 			return cur, nil
 		}
 		c.moves[owner] = m
+		delete(c.e.place.addedAt, owner)
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
 			Message: fmt.Sprintf("%s moves from %s to %s: %s", owner, m.From, m.To, want.why)})
 	}
 	from, to := c.placedOf(m.From, cur.why), c.placedOf(m.To, want.why)
-	if want.same(from) && m.Step != store.MoveCNAMEsSwitched {
+	if !want.same(to) && m.Step != store.MoveCNAMEsSwitched {
+		// Wanted back where it came from, or elsewhere: the move is given
+		// up, and one to where it is wanted now starts once it is.
 		var on bool
 		if m, on = c.giveUp(owner, m); !on {
 			return from, nil
@@ -187,32 +191,70 @@ func (c *cycleRun) advanceMoves() {
 	}
 }
 
-// rolledOutTo says whether the tunnel a move goes to serves its rules: its
+// rolledOutTo says whether the tunnel a move goes to serves its rules:
+// every node that runs it reaches every route of the owner, its
 // configuration was verified in this cycle, and Cloudflare confirmed that
 // its connectors run it, or every node that runs it has a ready connector
-// of it and rolloutWait passed since the rules were added.
+// of it and rolloutWait passed since this process saw the rules added. A
+// ready connector on a node that does not reach the target serves nothing.
 func (c *cycleRun) rolledOutTo(m store.Move) bool {
 	i := slices.IndexFunc(c.tunnels, func(t reconcile.TunnelState) bool { return t.Name == m.To && t.Verified && t.ID != "" })
 	if i < 0 {
 		return false
 	}
 	t := c.tunnels[i]
-	if r, ok := c.e.rolledOut[t.ID]; ok && r.Version >= t.Version {
-		return true
-	}
-	if c.now.Sub(m.At) < rolloutWait {
-		return false
-	}
 	nodes := c.replicas()
 	if node, pinned := planner.PinnedTunnelNode(c.install.ID, m.To); pinned {
 		nodes = []string{node}
+	}
+	routes := c.routesOf(m.Owner)
+	for _, n := range nodes {
+		if !c.allReach(n, routes) {
+			return false
+		}
+	}
+	if len(nodes) == 0 || len(routes) == 0 {
+		return false
+	}
+	if r, ok := c.e.rolledOut[t.ID]; ok && r.Version >= t.Version {
+		return true
+	}
+	if c.now.Sub(c.addedAt(m.Owner)) < rolloutWait {
+		return false
 	}
 	for _, n := range nodes {
 		if !c.readyOn(n, t.ID) {
 			return false
 		}
 	}
-	return len(nodes) > 0
+	return true
+}
+
+// addedAt is when this process first saw the rules of an owner's move
+// added, by its own clock: the time stored with the move was written by
+// whichever controller started it, and read back without the clock's
+// monotonic reading.
+func (c *cycleRun) addedAt(owner string) time.Time {
+	mem := &c.e.place
+	if mem.addedAt == nil {
+		mem.addedAt = map[string]time.Time{}
+	}
+	since, ok := mem.addedAt[owner]
+	if !ok {
+		since, mem.addedAt[owner] = c.now, c.now
+	}
+	return since
+}
+
+// routesOf are the routes of an owner among the winners.
+func (c *cycleRun) routesOf(owner string) []model.Route {
+	var out []model.Route
+	for _, rt := range c.claims.Winners {
+		if rt.Owner() == owner {
+			out = append(out, rt)
+		}
+	}
+	return out
 }
 
 // readyOn says whether node runs a ready connector of a tunnel, as its last

@@ -48,9 +48,11 @@ type placementMemory struct {
 	// seq says nothing of it.
 	listedAt map[string]map[string]uint64
 	listedIn agentproto.Epoch
-	// movesRead says that this process read the moves stored, and aborted
-	// those a controller before it had not switched the records of.
+	// movesRead says that this process read the moves stored, and gave up
+	// those a controller before it had only added the rules of; addedAt is,
+	// by owner, when this process first saw the rules of its move added.
 	movesRead bool
+	addedAt   map[string]time.Time
 	// tokens are the run tokens of tunnels the agents of other nodes run,
 	// by tunnel id; emptySince is since when each pinned tunnel serves
 	// nothing.
