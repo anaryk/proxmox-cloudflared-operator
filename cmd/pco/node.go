@@ -248,8 +248,10 @@ func (a *app) nodeForgetCmd() *cobra.Command {
 			"it. What the disk holds that pco cannot rotate is listed. With --compromised it runs as root\n" +
 			"on the controller. The question needs a terminal; a script passes --yes.\n\n" +
 			"An appliance agent's container holds less: the run tokens of its tunnels and its own Proxmox\n" +
-			"token, which only audits. --compromised for one is refused while that token is there:\n" +
-			"pco appliance uninstall --vmid <vmid> on its node removes the container and the token first.\n" +
+			"token, which holds the reading role PCO alone. --compromised for one is refused while that\n" +
+			"token is there: pco appliance uninstall --vmid <vmid> on its node removes the container and the\n" +
+			"token first. A token removed by hand while the container runs is taken as gone: the removed\n" +
+			"entry makes the agent endpoint refuse the container's certificate, so it gets no new secret.\n" +
 			"Then the secrets of the tunnels are rotated, whatever cluster.rotateOnForget says; the\n" +
 			"credentials, the controller's Proxmox secret and the CA stay, as the container never held them.\n\n" + askHelp,
 		Example: "  # A node that was destroyed\n" +

@@ -42,8 +42,9 @@ pco-agents alone, and its token may read its own storage. It serves the node it 
 itself. `--kind` agent installs the agent of one other node, with the join token pco cluster
 join-token `--node` `<node>` made on the controller, read from `--join-file` or with `--join` -
 (never an argument): the token is pushed onto the agent's volume, which removes it once the
-controller answered; the agent's token only audits, pco@pve and the controller's token may
-put cards on it, and its address goes into the controller's ipset. An agent is refused
+controller answered; the agent's token holds role PCO on / alone, the reading privileges of
+every pco token, pco@pve and the controller's token may put cards on it, and its address
+goes into the controller's ipset. An agent is refused
 beside a combined appliance (pco appliance convert turns that into the controller), on a
 node an agent or the controller serves, and with `--ha`.
 

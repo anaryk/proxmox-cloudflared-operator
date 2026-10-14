@@ -735,8 +735,10 @@ container serves its node alone: it is bound to the node it was installed on.
    `pco appliance install --kind agent --storage <storage> --join-file /root/<node>.join`, or
    `--join -` to give it on standard input. The token is never an argument, an environment
    variable or a line of the journal: it goes onto the agent's state volume with `pct push`,
-   mode 0600, and the agent removes it once the controller answered. The agent's token only
-   audits; `pco@pve` and the controller's token may put cards on the agent's container (role
+   mode 0600, and the agent removes it once the controller answered. The agent's token holds
+   role `PCO` on `/` and nothing more: the reading privileges every pco token has, which on
+   Proxmox VE 8.4 include `VM.Monitor`, as the guest agent is read under it there. `pco@pve` and
+   the controller's token may put cards on the agent's container (role
    `PCOManaged` on `/vms/<vmid>`), for the legs of the networks the controller attaches there;
    the agent's address goes into the controller's ipset `pco-agents`.
 4. The agent joins: it makes a key on its volume and sends the controller the token's secret, a
@@ -801,7 +803,9 @@ secret, as for a host node. On the node, `pco appliance uninstall --vmid <vmid>`
 container, its token and its address in the controller's ipset, and says to forget the node.
 `--compromised` for an agent container is refused while its Proxmox token is still there; once
 the uninstall removed it, the secrets of its tunnels are rotated whatever `cluster.rotateOnForget`
-says. The credentials, the controller's Proxmox secret and the CA stay, as an agent container
+says. A token removed by hand while the container still runs is taken as gone too: the container
+can then read nothing of Proxmox, and the removed entry makes the endpoint refuse its
+certificate, so it receives no new secret. The credentials, the controller's Proxmox secret and the CA stay, as an agent container
 never holds them.
 
 ## Limits of this release
@@ -809,8 +813,9 @@ never holds them.
 - A controller container also serves the node it runs on, with its own connectors and legs, so
   that node runs no agent container; an HA controller that the HA manager moves serves the node
   it was installed on from wherever it runs. See [A cluster of appliances](#a-cluster-of-appliances).
-- The managed network on an agent container, and the DHCP server of the managed network there,
-  are not run: the managed network is the controller's node's.
+- An agent container runs no DHCP server of the managed network: guests on the managed network
+  get their leases on the controller's node. That matters only for a managed network that spans
+  nodes, which the managed network of this release does not.
 - Nine legs, `net1` to `net9`, admin-added cards counted, and a VLAN attached on a VLAN-aware
   bridge only. The managed network of the appliance needs the iptables backend of the Proxmox
   firewall, the datacenter firewall on and `pve-firewall` running on the node, and `filtered`

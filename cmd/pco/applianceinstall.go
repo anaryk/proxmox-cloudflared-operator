@@ -82,8 +82,9 @@ const installLong = "Install the pco appliance on this Proxmox VE node: an unpri
 	"itself. --kind agent installs the agent of one other node, with the join token pco cluster\n" +
 	"join-token --node <node> made on the controller, read from --join-file or with --join -\n" +
 	"(never an argument): the token is pushed onto the agent's volume, which removes it once the\n" +
-	"controller answered; the agent's token only audits, pco@pve and the controller's token may\n" +
-	"put cards on it, and its address goes into the controller's ipset. An agent is refused\n" +
+	"controller answered; the agent's token holds role PCO on / alone, the reading privileges of\n" +
+	"every pco token, pco@pve and the controller's token may put cards on it, and its address\n" +
+	"goes into the controller's ipset. An agent is refused\n" +
 	"beside a combined appliance (pco appliance convert turns that into the controller), on a\n" +
 	"node an agent or the controller serves, and with --ha.\n\n" +
 	"--ha makes the controller a Proxmox HA resource: the node that runs it arms its watchdog and\n" +

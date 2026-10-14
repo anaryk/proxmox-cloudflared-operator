@@ -21,8 +21,10 @@ it. What the disk holds that pco cannot rotate is listed. With `--compromised` i
 on the controller. The question needs a terminal; a script passes `--yes`.
 
 An appliance agent's container holds less: the run tokens of its tunnels and its own Proxmox
-token, which only audits. `--compromised` for one is refused while that token is there:
-pco appliance uninstall `--vmid` `<vmid>` on its node removes the container and the token first.
+token, which holds the reading role PCO alone. `--compromised` for one is refused while that
+token is there: pco appliance uninstall `--vmid` `<vmid>` on its node removes the container and the
+token first. A token removed by hand while the container runs is taken as gone: the removed
+entry makes the agent endpoint refuse the container's certificate, so it gets no new secret.
 Then the secrets of the tunnels are rotated, whatever cluster.rotateOnForget says; the
 credentials, the controller's Proxmox secret and the CA stay, as the container never held them.
 
