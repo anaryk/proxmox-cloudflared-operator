@@ -256,3 +256,39 @@ func tunnelNames(plan Plan) []string {
 	}
 	return out
 }
+
+// A hostname that moves between tunnels has its rule in the tunnel it moves
+// from and in the one it moves to, while its record points at its
+// placement. A route that is not served has no rule to keep; its block is in
+// every tunnel of the account anyway.
+func TestBuildKeepsTheRuleOfAMoveInBothTunnels(t *testing.T) {
+	plan := Build(BuildInput{
+		Winners: []model.Route{
+			winner(t, "app.shop.cz", "qemu/1"),
+			winner(t, "gone.shop.cz", "qemu/2"),
+		},
+		Targets: map[string]ResolvedTarget{
+			"app.shop.cz":  verified(originAddr),
+			"gone.shop.cz": {Addr: netip.MustParseAddr(originAddr), Withdrawn: true},
+		},
+		Placements: map[string]PlacementInput{"app.shop.cz": pinned("pve3")},
+		Also:       map[string]PlacementInput{"app.shop.cz": {Kind: PlacementShared}, "gone.shop.cz": pinned("pve3")},
+		Zones:      []Zone{shopZone},
+		Writer:     buildWriter,
+	})
+
+	require.Equal(t, []TunnelPlan{
+		{
+			AccountID: "acc1", CredentialID: "cred1", Name: tunnelName,
+			Rules: withSentinel(httpRule("app.shop.cz", originAddr), blockRule("gone.shop.cz")),
+		},
+		{
+			AccountID: "acc1", CredentialID: "cred1", Name: tunnelName + "-pve3", Kind: PlacementPinned, Node: "pve3",
+			Rules: withSentinel(httpRule("app.shop.cz", originAddr), blockRule("gone.shop.cz")),
+		},
+	}, plan.Tunnels)
+	require.Equal(t, []RecordPlan{
+		pinnedRecordFor(shopZone, "app.shop.cz", "pve3"),
+		recordFor(shopZone, "gone.shop.cz"),
+	}, plan.Records)
+}

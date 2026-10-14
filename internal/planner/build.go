@@ -154,6 +154,10 @@ type BuildInput struct {
 	// Placements say, by hostname, which tunnel of its account serves a
 	// route; a hostname absent here is served through the shared tunnel.
 	Placements map[string]PlacementInput
+	// Also says, by hostname, a second tunnel of its account that serves
+	// the same rule without a record pointing at it: the tunnel a move
+	// takes the hostname from or to, until the move is done.
+	Also map[string]PlacementInput
 }
 
 // Plan is the desired Cloudflare state.
@@ -268,6 +272,10 @@ func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 		}
 		b.rules[tunnel] = append(b.rules[tunnel], rule)
 		b.live[tunnel] = true
+		if also, ok := b.alsoIn(zone, rt.Hostname); ok && also != tunnel {
+			b.rules[also] = append(b.rules[also], rule)
+			b.live[also] = true
+		}
 		b.addRecord(zone, rt.Hostname, tunnel)
 		st.Service = rule.Service
 		st.State = StateActive

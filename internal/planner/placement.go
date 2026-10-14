@@ -40,7 +40,11 @@ func compareTunnelKeys(a, b tunnelKey) int {
 // its placement. A placement that names no tunnel this install can have is
 // an error, which says why.
 func (b *builder) tunnelOf(zone Zone, host string) (tunnelKey, error) {
-	p := b.in.Placements[host]
+	return b.tunnelFor(zone, b.in.Placements[host])
+}
+
+// tunnelFor is the tunnel a placement names in the account of zone.
+func (b *builder) tunnelFor(zone Zone, p PlacementInput) (tunnelKey, error) {
 	switch p.Kind {
 	case "", PlacementShared:
 		return tunnelKey{account: zone.AccountID, name: TunnelName(b.in.Writer.InstallID)}, nil
@@ -52,6 +56,17 @@ func (b *builder) tunnelOf(zone Zone, host string) (tunnelKey, error) {
 		return tunnelKey{account: zone.AccountID, name: name, node: p.Node}, nil
 	}
 	return tunnelKey{}, fmt.Errorf("placement kind %q is not known", p.Kind)
+}
+
+// alsoIn returns the second tunnel that serves the rule of host while it
+// moves; false when there is none, or the placement names no tunnel.
+func (b *builder) alsoIn(zone Zone, host string) (tunnelKey, bool) {
+	p, ok := b.in.Also[host]
+	if !ok {
+		return tunnelKey{}, false
+	}
+	key, err := b.tunnelFor(zone, p)
+	return key, err == nil
 }
 
 // tunnels returns one plan per tunnel that serves a rule or has a record,
