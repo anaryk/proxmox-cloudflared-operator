@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { StoreProvider } from '../api/store'
-import type { NodeView, State, TrafficView } from '../api/types.gen'
+import type { NodeView, State, TrafficView, TunnelView } from '../api/types.gen'
 import { ToastProvider } from '../components/Toast'
 import cluster from '../fixtures/cluster.json'
 import { eventsOf } from '../pages/Overview'
@@ -13,7 +13,7 @@ import { collapse, expandAll, focusRoutes, foldedReplicas, foldReplicas, replica
 import { FlowDrawer } from './FlowDrawer'
 import FlowMap from './FlowMap'
 import { layout } from './layout'
-import { buildChains, buildModel, type FlowEdge, type FlowNode, pinnedEdgeId, replicaNodeId, replicaOf, replicaState } from './model'
+import { buildChains, buildModel, type FlowEdge, type FlowNode, pinnedEdgeId, replicaNodeId, replicaOf, replicaState, tunnelNodeId, tunnelOfEdge } from './model'
 import { createMotion, dotCap } from './motion'
 import { extrasOf } from './panel'
 import { trafficFor } from './testdata/scale'
@@ -100,6 +100,19 @@ describe('the model of a cluster', () => {
     expect(replicaOf('replica:acc1:pve2')).toEqual({ account: 'acc1', node: 'pve2', pinned: false })
     expect(replicaOf('replica:acc1:pve2:pinned')).toEqual({ account: 'acc1', node: 'pve2', pinned: true })
     expect(replicaOf('connector:acc1')).toBeUndefined()
+    // The account is up to the first separator, the node the rest, and a
+    // pinned replica ends in its marker: a node named with the separator,
+    // or named pinned, reads back as it is.
+    expect(replicaOf(replicaNodeId('acc1', 'pve:2', true))).toEqual({ account: 'acc1', node: 'pve:2', pinned: true })
+    expect(replicaOf(replicaNodeId('acc1', 'pve:2'))).toEqual({ account: 'acc1', node: 'pve:2', pinned: false })
+    expect(replicaOf(replicaNodeId('acc1', 'pinned'))).toEqual({ account: 'acc1', node: 'pinned', pinned: false })
+    expect(replicaOf('replica:acc1')).toBeUndefined()
+    const tunnels = [
+      { accountId: 'acc1', kind: 'shared', name: 'shared' },
+      { accountId: 'acc1', kind: 'pinned', node: 'pve:2', name: 'pinned' },
+    ] as TunnelView[]
+    expect(tunnelOfEdge({ tunnels }, pinnedEdgeId('acc1', 'pve:2'))?.name).toBe('pinned')
+    expect(tunnelOfEdge({ tunnels }, tunnelNodeId('acc1'))?.name).toBe('shared')
     expect(replicaState(undefined)).toBe('unknown')
     expect(replicaState({ state: 'active', replicaReady: false } as NodeView)).toBe('not ready')
     expect(replicaState({ state: 'down', replicaReady: false } as NodeView)).toBe('down')
@@ -282,6 +295,8 @@ describe('the map, the drawer and the extras of a cluster', () => {
 
   test('a focus on a replica follows the events of its account', () => {
     expect(eventsOf('replica:acc1:pve2')).toEqual({ account: ['acc1'] })
+    expect(eventsOf('replica:acc1:pve:2:pinned')).toEqual({ account: ['acc1'] })
+    expect(eventsOf('edge:acc1:pve2')).toEqual({ account: ['acc1'] })
     expect(eventsOf('replicas:edge:acc1')).toEqual({})
   })
 })

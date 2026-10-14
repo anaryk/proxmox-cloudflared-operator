@@ -82,21 +82,35 @@ export const connectorNodeId = (account: string): string => `connector:${account
 export const pinnedEdgeId = (account: string, node: string): string => `edge:${account}:${node}`
 export const replicaNodeId = (account: string, node: string, pinned = false): string => `replica:${account}:${node}${pinned ? ':pinned' : ''}`
 
+// accountAndRest reads an id of kind back: the account, up to the first
+// separator after the kind, as a Cloudflare account id is hex and has none,
+// and the rest, which is a node name and is taken whole.
+function accountAndRest(id: string, kind: string): { account: string; rest: string } | undefined {
+  if (!id.startsWith(`${kind}:`)) return undefined
+  const tail = id.slice(kind.length + 1)
+  const at = tail.indexOf(':')
+  return at < 0 ? { account: tail, rest: '' } : { account: tail.slice(0, at), rest: tail.slice(at + 1) }
+}
+
 // tunnelOfEdge is the tunnel an edge card of the map stands for: the
 // account's tunnel, or the one pinned to the node its id names.
 export function tunnelOfEdge(st: Pick<State, 'tunnels'>, id: string): TunnelView | undefined {
-  const [kind, account, node] = id.split(':')
-  if (kind !== 'edge' || !account) return undefined
+  const got = accountAndRest(id, 'edge')
+  if (!got?.account) return undefined
+  const { account, rest: node } = got
   if (node) return st.tunnels.find((t) => t.kind === 'pinned' && t.accountId === account && t.node === node)
   return st.tunnels.find((t) => t.accountId === account && t.kind !== 'pinned')
 }
 
 // replicaOf reads a replica's id back: the account of its tunnel, its
-// node, and whether the tunnel is pinned to it.
+// node, and whether the tunnel is pinned to it, which the id says with a
+// last segment of its own.
 export function replicaOf(id: string): { account: string; node: string; pinned: boolean } | undefined {
-  const [kind, account, node, pinned] = id.split(':')
-  if (kind !== 'replica' || !account || !node) return undefined
-  return { account, node, pinned: pinned === 'pinned' }
+  const got = accountAndRest(id, 'replica')
+  if (!got?.account || !got.rest) return undefined
+  const pinned = got.rest.endsWith(':pinned')
+  const node = pinned ? got.rest.slice(0, -':pinned'.length) : got.rest
+  return node ? { account: got.account, node, pinned } : undefined
 }
 
 // The state a replica card is drawn in: ready, or why not.

@@ -43,9 +43,12 @@ export function eventsOf(focus: string | undefined): EventFilter {
     case 'tunnel':
     case 'edge':
     case 'connector':
-      return { account: [value.split(':')[0] ?? value] }
-    case 'replica':
-      return { account: [value.split(':')[0] ?? value] }
+    case 'replica': {
+      // The account comes first and has no separator, being hex; what
+      // follows it is a node name.
+      const end = value.indexOf(':')
+      return { account: [end < 0 ? value : value.slice(0, end)] }
+    }
     case 'zone':
     case 'address':
       return { text: value }
