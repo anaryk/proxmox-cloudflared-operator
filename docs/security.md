@@ -1129,6 +1129,30 @@ CA's key somewhere else, such as from a copy of a backup, is refused, because it
 one the node's own enrolment holds. Against a rogue host node, the remedy is to forget it
 with `--compromised`, which rotates the CA.
 
+### What a compromised forget leaves open, and for how long
+
+`pco node forget <node> --compromised` rotates in an order, and each step leaves something
+open until the next one ends:
+
+1. Until you added new Cloudflare API tokens and removed the old ones, the old tokens work
+   for whoever holds the node's disk. Revoke them at Cloudflare as soon as they are removed:
+   pco cannot, and nothing else ends them.
+2. The tunnels get new secrets, and the new run tokens go out to the remaining nodes, **while
+   the old CA is still the one the install trusts**. Until the CA step, whoever holds the old
+   CA's key, which was on the node's disk, can issue a certificate in a node's name. What
+   keeps such a certificate from the controller is the enrolment pin above: the controller
+   takes, for each node, the certificate its enrolment holds and no other, so a certificate
+   made elsewhere is refused even though the CA signed it. A node whose enrolment the
+   attacker could write, which needs write access to the cluster filesystem, is not covered:
+   that is why `--compromised` is refused while the node is still in the corosync node list.
+3. Once every connector runs with the new secret, the connections made with the old one are
+   ended, and the CA is rotated. The old CA is taken for ten more minutes, so that every
+   node issues its certificate again; after that only certificates under the new CA are.
+
+The window of step 2 lasts as long as the rollout of the new run tokens, usually a minute
+per node. Keep it short: replace the API tokens and run `pco setup --repair` right after the
+forget, and follow it with `pco cluster status`.
+
 Appliance agents are on the other side of that line. They never hold the CA's key. An
 appliance agent pins the CA it got with its first certificate and the controller's server
 name, so it only follows a controller of its own install.
