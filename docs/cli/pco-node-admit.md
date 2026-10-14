@@ -6,7 +6,8 @@ container (pct exec `<vmid>` -- pco agent status), and they must be the beginnin
 enrolled. A node that stays joining because more shared routes would move to pinned tunnels
 than cluster.admissionMaxMoves allows is admitted all the same: every route it fails moves
 first. A contested node is not admitted: pco node forget ends that, and a new token enrols it
-again. `--renew` lets an appliance agent whose certificate expired renew it once.
+again. `--renew`, to let an appliance agent whose certificate expired renew it once, is refused
+until the appliance install can renew the certificate of an agent; a new join token enrols it.
 
 It asks the daemon through its socket, which answers only root and pco-web, the user of the
 web interface; the exit status is 2 when the daemon could not be asked.
@@ -32,7 +33,7 @@ pco node admit pve2
 ```text
     --fingerprint string   at least eight hex digits of the SHA-256 of the agent's certificate, as pco agent status shows it
 -h, --help                 help for admit
-    --renew                let an appliance agent whose certificate expired renew it once
+    --renew                let an appliance agent whose certificate expired renew it once (refused until the appliance install can)
 ```
 
 ## Global flags

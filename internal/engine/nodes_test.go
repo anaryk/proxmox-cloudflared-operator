@@ -275,6 +275,13 @@ func TestAdmitMatchesTheFingerprintOfTheEnrolledCertificate(t *testing.T) {
 		})
 	}
 
+	// The renewal of an appliance agent's certificate comes with the
+	// appliance install; until then it is refused, not taken and dropped.
+	_, err := e.eng.AdmitNode(t.Context(), "app1", "9F:86:D0:81", true)
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "not available until the appliance install")
+	require.False(t, e.eng.adminAdmitted("app1"))
+
 	v, err := e.eng.AdmitNode(t.Context(), "app1", "9F:86:D0:81", false)
 	require.NoError(t, err)
 	require.Equal(t, "app1", v.Name)

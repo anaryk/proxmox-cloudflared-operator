@@ -718,7 +718,8 @@ removes every other node from the install for `pco uninstall --cluster`, and ans
 `POST /v1/nodes/:name/admit {"fingerprint", "renew"}` admits a node that joins: an appliance
 agent by at least eight hex digits of the SHA-256 of its certificate, which must match the one
 enrolled, and a node that stays joining because more routes would move than
-`cluster.admissionMaxMoves` allows. `POST /v1/nodes/:name/drain {"force"}` takes a node out of
+`cluster.admissionMaxMoves` allows; `renew` is refused until the appliance install can renew the
+certificate of an agent. `POST /v1/nodes/:name/drain {"force"}` takes a node out of
 the shared tunnel's replicas, the last one only with `force`; `POST /v1/nodes/:name/undrain {}`
 ends an admin's drain, not one Proxmox's maintenance mode made. `POST /v1/nodes/:name/forget
 {"compromised"}` removes a node that is gone, closes its connections and rotates the shared

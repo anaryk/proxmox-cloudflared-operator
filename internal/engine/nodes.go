@@ -149,6 +149,10 @@ func (e *Engine) AdmitNode(ctx context.Context, name, fingerprint string, renew 
 	if renew && entryKind(n) != string(pki.KindAppliance) {
 		return e.entryView(n), fmt.Errorf("%w: node %s is a host node, which issues its own certificates; --renew is for an appliance agent", ErrRefused, name)
 	}
+	if renew {
+		return e.entryView(n), fmt.Errorf("%w: --renew is not available until the appliance install can renew the certificate of an agent; "+
+			"a new join token enrols node %s again", ErrRefused, name)
+	}
 	if n.State != store.NodeJoining {
 		return e.entryView(n), fmt.Errorf("%w: node %s is %s; it is admitted once its agent reports again", ErrRefused, name, n.State)
 	}

@@ -132,7 +132,8 @@ func (a *app) nodeAdmitCmd() *cobra.Command {
 			"enrolled. A node that stays joining because more shared routes would move to pinned tunnels\n" +
 			"than cluster.admissionMaxMoves allows is admitted all the same: every route it fails moves\n" +
 			"first. A contested node is not admitted: pco node forget ends that, and a new token enrols it\n" +
-			"again. --renew lets an appliance agent whose certificate expired renew it once.\n\n" + askHelp,
+			"again. --renew, to let an appliance agent whose certificate expired renew it once, is refused\n" +
+			"until the appliance install can renew the certificate of an agent; a new join token enrols it.\n\n" + askHelp,
 		Example: "  # An appliance agent, by its fingerprint\n" +
 			"  pco node admit pve3 --fingerprint 9f86d081884c7d65\n\n" +
 			"  # A host node that would move too many routes\n" +
@@ -153,7 +154,7 @@ func (a *app) nodeAdmitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&fingerprint, "fingerprint", "", "at least eight hex digits of the SHA-256 of the agent's certificate, as pco agent status shows it")
-	cmd.Flags().BoolVar(&renew, "renew", false, "let an appliance agent whose certificate expired renew it once")
+	cmd.Flags().BoolVar(&renew, "renew", false, "let an appliance agent whose certificate expired renew it once (refused until the appliance install can)")
 	return cmd
 }
 
