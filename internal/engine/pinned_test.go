@@ -85,8 +85,11 @@ func TestNoTokenGoesToANodeThatMayNotRunTheTunnel(t *testing.T) {
 	t.Run("an appliance agent", func(t *testing.T) {
 		w, pinned2 := pinnedDB(t)
 		n := entryOf(t, w.env, "pve2")
-		n.Kind = "appliance"
+		n.Kind, n.VMID = "appliance", 9302
 		require.NoError(t, w.store.SaveNode(n))
+		// An appliance agent is served only while Proxmox shows its
+		// container on its node.
+		addGuest(w.env, model.Guest{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 9302}, Name: "pco", Node: "pve2", Running: true, Pool: "pco"})
 		w.tick(time.Second)
 		tun, ok := w.tunnelIn(t, "pve2", pinned2)
 		require.False(t, ok && tun.Run)

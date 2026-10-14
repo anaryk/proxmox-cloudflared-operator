@@ -26,12 +26,13 @@ const (
 //
 // An appliance agent's report is its own word, and one agent, broken or
 // taken over, must not stop the controller of every node: only the agents
-// of admitted nodes with a fresh report vote, the agent of this node among
+// of the other admitted nodes with a fresh report vote, at least two of
 // them, and the controller holds only while more than half of them report
 // an epoch above its own. A silent agent stops voting once its report is
-// stale.
+// stale. The agent of this node is on the controller's own volume, which
+// came back with it, and does not vote; a node alone is never held here.
 func (c *cycleRun) agentsAhead() bool {
-	if !c.writerRead {
+	if !c.writerRead || !c.clustered() {
 		return false
 	}
 	ours := agentproto.Epoch{InstallID: c.install.ID, Generation: c.e.us.Generation, Nonce: c.e.us.Nonce}
@@ -58,18 +59,18 @@ func (c *cycleRun) agentsAhead() bool {
 			}
 		}
 	}
-	if voters == 0 || 2*above <= voters {
+	if voters < 2 || 2*above <= voters {
 		return false
 	}
 	c.holdBehind(c.problem(problemAgentsBehind, first, firstEp, ours.Generation, ours.Nonce))
 	return true
 }
 
-// votes says whether the report of node counts in agentsAhead: this node's,
-// or a fresh one of a node the registry holds admitted and active.
+// votes says whether the report of node counts in agentsAhead: a fresh one
+// of another node the registry holds admitted and active.
 func (c *cycleRun) votes(node string, rep NodeReport) bool {
 	if node == c.e.d.Node {
-		return true
+		return false
 	}
 	n, ok := c.nodes[node]
 	return ok && rep.Fresh && c.now.Sub(rep.ReceivedAt) < silentAfter &&

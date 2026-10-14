@@ -784,8 +784,8 @@ fences itself when it loses quorum, which resets every guest on that node.
 - On shared storage the relocated controller is the same volume; it draws its next epoch and goes
   on writing, and the agents follow the higher epoch.
 - On replicated storage the volume may be one replication interval old, which may undo recent
-  decisions, revocations included. When more than half of the agents with a fresh report follow
-  an epoch above the controller's, it only observes, with the line under
+  decisions, revocations included. When more than half of the agents with a fresh report, at least
+  two, follow an epoch above the controller's, it only observes, with the line under
   [Problems](problems.md#the-appliance-in-a-cluster), until `pco appliance recover`. One agent
   alone, broken or taken over, holds nobody. There is no opt-in to write anyway.
 - `pco doctor --cluster` says which applies (`controller ha`); the installer records the storage
