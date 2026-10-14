@@ -150,8 +150,13 @@ func (e *Engine) AdmitNode(ctx context.Context, name, fingerprint string, renew 
 		return e.entryView(n), fmt.Errorf("%w: node %s is a host node, which issues its own certificates; --renew is for an appliance agent", ErrRefused, name)
 	}
 	if renew {
-		return e.entryView(n), fmt.Errorf("%w: --renew is not available until the appliance install can renew the certificate of an agent; "+
-			"a new join token enrols node %s again", ErrRefused, name)
+		// An agent renews its certificate over the channel 60 days after it
+		// was issued; one that ended can no longer make the TLS handshake
+		// that a renewal rides on, and the controller takes no ended
+		// certificate.
+		return e.entryView(n), fmt.Errorf("%w: an agent container renews its certificate itself while it is valid; one that ended is enrolled "+
+			"again: pco node forget %s, then on its node pco appliance uninstall --vmid <its vmid> and an install with a new join token",
+			ErrRefused, name)
 	}
 	if n.State != store.NodeJoining {
 		return e.entryView(n), fmt.Errorf("%w: node %s is %s; it is admitted once its agent reports again", ErrRefused, name, n.State)
@@ -396,6 +401,21 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 	if err != nil {
 		return ForgetResult{}, fmt.Errorf("reading the settings: %w", err)
 	}
+	// An agent container holds no Cloudflare credential, no secret of the
+	// controller's Proxmox token and no key of the CA: what it held is its
+	// own Proxmox token, which its uninstall removes, and the run tokens of
+	// its tunnels, which the rotation of the forget ends.
+	agentCompromised := compromised && entryKind(n) == string(pki.KindAppliance)
+	if agentCompromised {
+		if err := e.agentTokenGone(n); err != nil {
+			return ForgetResult{}, err
+		}
+		if s.ObserveOnly {
+			return ForgetResult{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare, where the secrets of the tunnels "+
+				"are rotated; run pco apply first, then pco node forget %s --compromised", ErrRefused, name)
+		}
+		compromised = false
+	}
 	if compromised {
 		if err := e.stillInCluster(name); err != nil {
 			return ForgetResult{}, err
@@ -405,10 +425,14 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 				"is rotated; run pco apply first, then pco node forget %s --compromised", ErrRefused, name)
 		}
 	}
-	res := ForgetResult{Node: name, Compromised: compromised, Done: []string{}}
+	res := ForgetResult{Node: name, Compromised: compromised || agentCompromised, Done: []string{}}
 	before := n
 	n.State, n.StateSince, n.Drained = store.NodeRemoved, e.d.Now(), nil
-	rotates := !compromised && s.Cluster.RotatesOnForget()
+	rotates := !compromised && s.Cluster.RotatesOnForget() || agentCompromised
+	if agentCompromised {
+		res.Done = append(res.Done, fmt.Sprintf("agent %d held no credential, no secret of this controller and no key of the CA; "+
+			"its Proxmox token is gone, and the secrets of its tunnels are rotated whatever cluster.rotateOnForget says", n.VMID))
+	}
 	if rotates {
 		// Kept with the entry, so that the cycles finish what this call
 		// cannot, a controller that takes over included.
@@ -469,6 +493,25 @@ func compromisedText(compromised bool) string {
 		return " as compromised: every secret of the install is rotated"
 	}
 	return ""
+}
+
+// agentTokenGone refuses to treat an agent container as compromised while
+// its own Proxmox token is there, or while the access control cannot show
+// that it is gone: the controller cannot remove it, root's uninstall of the
+// container does.
+func (e *Engine) agentTokenGone(n store.NodeEntry) error {
+	d, err := e.AccessData()
+	if err != nil {
+		return fmt.Errorf("%w: %w; whether the Proxmox token of agent %d is gone cannot be told", ErrRefused, err, n.VMID)
+	}
+	name := fmt.Sprintf("vm%d", n.VMID)
+	for _, u := range d.Users {
+		if _, held := u.Tokens[name]; held {
+			return fmt.Errorf("%w: the Proxmox token %s!%s of agent %d is still there: pco appliance uninstall --vmid %d on node %s "+
+				"removes the container and its token first", ErrRefused, u.ID, name, n.VMID, n.VMID, n.Name)
+		}
+	}
+	return nil
 }
 
 // stillInCluster refuses to treat a node as compromised while it is in the

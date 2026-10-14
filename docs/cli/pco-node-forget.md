@@ -20,6 +20,12 @@ old one. pco cluster status follows it; a controller that takes over in the midd
 it. What the disk holds that pco cannot rotate is listed. With `--compromised` it runs as root
 on the controller. The question needs a terminal; a script passes `--yes`.
 
+An appliance agent's container holds less: the run tokens of its tunnels and its own Proxmox
+token, which only audits. `--compromised` for one is refused while that token is there:
+pco appliance uninstall `--vmid` `<vmid>` on its node removes the container and the token first.
+Then the secrets of the tunnels are rotated, whatever cluster.rotateOnForget says; the
+credentials, the controller's Proxmox secret and the CA stay, as the container never held them.
+
 It asks the daemon through its socket, which answers only root and pco-web, the user of the
 web interface; the exit status is 2 when the daemon could not be asked.
 

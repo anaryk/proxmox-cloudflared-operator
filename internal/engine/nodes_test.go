@@ -17,6 +17,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -275,11 +276,11 @@ func TestAdmitMatchesTheFingerprintOfTheEnrolledCertificate(t *testing.T) {
 		})
 	}
 
-	// The renewal of an appliance agent's certificate comes with the
-	// appliance install; until then it is refused, not taken and dropped.
+	// An agent renews its own certificate while it is valid; one that
+	// ended is enrolled again, which the refusal says how.
 	_, err := e.eng.AdmitNode(t.Context(), "app1", "9F:86:D0:81", true)
 	require.ErrorIs(t, err, ErrRefused)
-	require.ErrorContains(t, err, "not available until the appliance install")
+	require.ErrorContains(t, err, "pco node forget app1, then on its node pco appliance uninstall")
 	require.False(t, e.eng.adminAdmitted("app1"))
 
 	v, err := e.eng.AdmitNode(t.Context(), "app1", "9F:86:D0:81", false)
@@ -517,4 +518,47 @@ func TestForgetAsCompromisedIsRefusedInObserveOnlyMode(t *testing.T) {
 	_, found, err := w.store.CARotation()
 	require.NoError(t, err)
 	require.False(t, found)
+}
+
+// An agent container forgotten as compromised held the run tokens of its
+// tunnels and its own Proxmox token, nothing of the controller and no key of
+// the CA: its token must be gone, which root's uninstall does, and then the
+// tunnels' secrets are rotated whatever the setting says. No CA rotation.
+func TestAnAgentContainerForgottenAsCompromisedNeedsItsTokenGone(t *testing.T) {
+	w := threeNodes(t)
+	log := &callLog{}
+	w.useAPI(testToken, hookedAPI{API: w.cf, before: func(method string) { log.add("cf " + method) }})
+	n := entryOf(t, w.env, "pve3")
+	n.Kind, n.VMID = "appliance", 9303
+	require.NoError(t, w.store.SaveNode(n))
+	addGuest(w.env, model.Guest{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 9303}, Name: "pco", Node: "pve3", Running: true, Pool: "pco"})
+	w.acc.mu.Lock()
+	w.acc.users = append(w.acc.users, pve.User{ID: "pco@pve", Enabled: true, Tokens: map[string]bool{"vm9303": true, "vm120": true}})
+	w.acc.mu.Unlock()
+	no := false
+	w.settings(func(s *store.Settings) { s.Cluster.RotateOnForget = &no })
+	w.settle()
+
+	_, err := w.eng.ForgetNode(t.Context(), "pve3", true)
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "pco appliance uninstall --vmid 9303 on node pve3")
+	require.Equal(t, store.NodeActive, entryOf(t, w.env, "pve3").State, "nothing changed")
+
+	w.acc.mu.Lock()
+	w.acc.users[len(w.acc.users)-1].Tokens = map[string]bool{"vm120": true}
+	w.acc.mu.Unlock()
+	w.tick(time.Minute)
+
+	res, err := w.eng.ForgetNode(t.Context(), "pve3", true)
+
+	require.NoError(t, err)
+	require.True(t, res.Compromised)
+	require.Equal(t, store.NodeRemoved, entryOf(t, w.env, "pve3").State)
+	require.NotNil(t, entryOf(t, w.env, "pve3").Rotation, "the shared secret's rotation is kept although cluster.rotateOnForget is off")
+	w.tick(time.Second)
+	require.Contains(t, log.all(), "cf CleanUpConnections", "and the connections of its pinned tunnel end before it is deleted")
+	require.Contains(t, strings.Join(res.Done, "\n"), "agent 9303 held no credential")
+	_, found, err := w.store.CARotation()
+	require.NoError(t, err)
+	require.False(t, found, "an agent held no key of the CA")
 }
