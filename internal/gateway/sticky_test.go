@@ -1,10 +1,13 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"net"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -162,6 +165,104 @@ func TestAnEntryWaitsOnTheLegWhileItsPortIsAbsent(t *testing.T) {
 	require.NoError(t, ApplySticky(t.Context(), h.b, nil))
 	require.Equal(t, []string{"fdb del vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(), "gone with the lease")
 	require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "02:50:43:4f:ff:01", "the leg's own entry stays")
+}
+
+// A guest that starts makes its port before the port joins the bridge; the
+// kernel takes no entry for the bridge on it until then. Such a port is not
+// there yet for the entry, which stays parked: no error, and no difference
+// for Verify, which would have the keeper bring back what nobody changed.
+// Nothing opens meanwhile: the MAC stays pinned to the leg, where frames to
+// it end, and the guard admits from the port only the card's own pair.
+func TestAnEntryWaitsWhileItsPortIsNotOnTheBridgeYet(t *testing.T) {
+	for _, master := range []string{"", "fwbr101i1"} {
+		t.Run("master "+cmp.Or(master, "none"), func(t *testing.T) {
+			h := newHarness(t).node()
+			h.up(t)
+			guest := mac("06:50:43:4f:76:05")
+			sticky := []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "veth101i1", Addr: addr("10.203.118.10")}}
+			h.sync(t, []Leg{legM}, nil, nil, sticky)
+			h.sys.host.links["veth101i1"] = &fakeLink{link: link{name: "veth101i1", kind: "veth", up: true, master: master}}
+			h.reset()
+
+			h.sync(t, []Leg{legM}, nil, nil, sticky)
+			require.Empty(t, h.sys.changes(), "still parked on the leg")
+			require.True(t, parked(h, guest), "the MAC stays pinned to the leg")
+			require.Equal(t, []string{`"veth101i1" . 06:50:43:4f:76:05 . 10.203.118.10`}, guardElements(sticky)[setCards])
+			require.NoError(t, h.b.Verify(t.Context()))
+			require.NoError(t, ApplySticky(t.Context(), h.b, sticky))
+			require.Empty(t, h.sys.changes())
+			require.True(t, parked(h, guest))
+
+			h.sys.host.links["veth101i1"].master = ManagedBridge
+			require.ErrorIs(t, h.b.Verify(t.Context()), ErrChanged, "a port on the bridge without its entry is a difference")
+			require.NoError(t, ApplySticky(t.Context(), h.b, sticky))
+			require.Equal(t, []string{"sticky veth101i1 06:50:43:4f:76:05 vlan 0", "fdb del vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(),
+				"moved to its port once the port is on the bridge")
+			require.NoError(t, h.b.Verify(t.Context()))
+		})
+	}
+}
+
+// parked reports whether the guest's MAC has its sticky entry on the bridge
+// end of the managed leg.
+func parked(h *harness, guest net.HardwareAddr) bool {
+	return slices.ContainsFunc(h.sys.host.links["vethpco3"].fdb, func(e fdbEntry) bool { return stickyOf(e, guest, 0) })
+}
+
+// A port that leaves the bridge between its read and the entry's add, as
+// when its guest stops or starts again right then, is pending too: the Sync
+// goes on with the entry parked, and the next one or the port's event moves
+// it.
+func TestAPortThatLeavesTheBridgeWhileItsEntryIsAddedIsPending(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	guest := mac("06:50:43:4f:76:05")
+	sticky := []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap101i1"}}
+	h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.True(t, parked(h, guest))
+	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, master: ManagedBridge}}
+	h.sys.before = func(line string) {
+		if strings.HasPrefix(line, "sticky tap101i1") {
+			h.sys.host.links["tap101i1"].master = ""
+		}
+	}
+	h.reset()
+
+	h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "sticky tap101i1")
+	require.True(t, parked(h, guest), "still pinned to the leg")
+	require.NoError(t, h.b.Verify(t.Context()))
+}
+
+// A guest's port on a bridge other than pconet is no port that is late: Sync
+// fails on it and Verify names it.
+func TestAPortOnAnotherBridgeIsADifference(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	guest := mac("06:50:43:4f:76:05")
+	sticky := []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap101i1"}}
+	h.sync(t, []Leg{legM}, nil, nil, sticky)
+	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, master: "vmbr0"}}
+
+	err := h.b.Verify(t.Context())
+	var changed *ChangedError
+	require.True(t, errors.As(err, &changed), "%v", err)
+	require.Contains(t, strings.Join(changed.Differences, "\n"), "tap101i1 is a port of vmbr0, not of pconet")
+	_, err = h.b.Sync(t.Context(), []Leg{legM}, nil, nil, sticky)
+	require.ErrorContains(t, err, "tap101i1 is a port of vmbr0, not of pconet")
+	require.True(t, parked(h, guest), "the MAC stays pinned to the leg")
+}
+
+// An entry that cannot be added on a port of the bridge is an error still.
+func TestAnEntryThatCannotBeAddedOnAPortOfTheBridgeFails(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	h.sync(t, []Leg{legM}, nil, nil, nil)
+	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, master: ManagedBridge}}
+	h.sys.fail["sticky tap101i1"] = syscall.ENOBUFS
+
+	_, err := h.b.Sync(t.Context(), []Leg{legM}, nil, nil, []Sticky{{MAC: mac("06:50:43:4f:76:05"), Bridge: ManagedBridge, Port: "tap101i1"}})
+	require.ErrorIs(t, err, syscall.ENOBUFS)
 }
 
 // Without a managed leg there is nowhere to park: the entry waits for its

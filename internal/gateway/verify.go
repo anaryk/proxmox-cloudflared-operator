@@ -299,10 +299,19 @@ func (v *verifier) sticky(s Sticky) {
 	if s.Port == "" {
 		return
 	}
-	if _, ok := v.link(onHost, s.Port, false); ok {
+	l, ok := v.link(onHost, s.Port, false)
+	if v.err != nil {
+		return
+	}
+	switch portPlace(l, ok, s.Bridge) {
+	case portOnBridge:
 		v.fdb(s.Port, s.MAC, s.VLAN)
-	} else if park := v.b.parkingPort(s.Bridge); park != "" {
-		v.fdb(park, s.MAC, s.VLAN)
+	case portElsewhere:
+		v.differs("%s is a port of %s, not of %s", s.Port, l.master, s.Bridge)
+	default:
+		if park := v.b.parkingPort(s.Bridge); park != "" {
+			v.fdb(park, s.MAC, s.VLAN)
+		}
 	}
 }
 

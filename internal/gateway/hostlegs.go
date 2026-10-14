@@ -661,10 +661,11 @@ func managedMAC(mac net.HardwareAddr) bool {
 }
 
 // syncSticky keeps a static sticky entry of each managed guest's MAC on its
-// port, where the port exists, and parked on the bridge end of the managed
-// leg of its bridge where it does not: while a guest is stopped no other
-// port may take its MAC over, and the frames to it end in the namespace,
-// which drops them. The entry moves to the port when it appears. An entry
+// port, where the port is a port of the bridge, and parked on the bridge end
+// of the managed leg of its bridge where it is not: while a guest is stopped
+// no other port may take its MAC over, and the frames to it end in the
+// namespace, which drops them. The entry moves to the port when it joins the
+// bridge; a guest that starts makes its port a moment before. An entry
 // applied before and not given now is removed: only the ports of those and
 // the parking ports are read, as a Sync runs at every cycle and on link
 // events. With every, as Down has it, the sticky entries of managed MACs that
@@ -676,16 +677,33 @@ func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 		if s.Port == "" || len(s.MAC) != 6 {
 			continue
 		}
-		if _, ok, err := b.sys.link(onHost, s.Port); err != nil {
-			return fmt.Errorf("reading %s: %w", s.Port, err)
-		} else if !ok {
-			if s.Port = b.parkingPort(s.Bridge); s.Port == "" {
-				continue
-			}
-		}
-		if err := b.ensureFDB(s.Port, s.MAC, s.VLAN); err != nil {
+		port, err := b.stickyPort(s)
+		if err != nil {
 			return err
 		}
+		if port == "" {
+			continue
+		}
+		if err := b.ensureFDB(port, s.MAC, s.VLAN); err != nil {
+			// A port that left the bridge or went since it was read, its
+			// guest stopping or starting right then, is pending: the entry
+			// stays parked, and the next Sync or the port's event moves it.
+			again, rerr := b.stickyPort(s)
+			if rerr != nil {
+				return rerr
+			}
+			if again == port {
+				return err
+			}
+			b.log.Debug().Err(err).Str("port", port).Msg("the port of a managed guest changed while its sticky entry was added")
+			if port = again; port == "" {
+				continue
+			}
+			if err := b.ensureFDB(port, s.MAC, s.VLAN); err != nil {
+				return err
+			}
+		}
+		s.Port = port
 		placed = append(placed, s)
 	}
 	ports, err := b.stalePorts(sticky, every)
@@ -709,6 +727,44 @@ func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 		}
 	}
 	return nil
+}
+
+// stickyPort is where the entry of a guest's card goes: its port while that
+// is a port of the bridge, the parking port while the port is absent or not
+// on the bridge yet, "" for nowhere. A port on another bridge is an error.
+func (b *hostBackend) stickyPort(s Sticky) (string, error) {
+	l, ok, err := b.sys.link(onHost, s.Port)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", s.Port, err)
+	}
+	switch portPlace(l, ok, s.Bridge) {
+	case portOnBridge:
+		return s.Port, nil
+	case portElsewhere:
+		return "", fmt.Errorf("%s is a port of %s, not of %s", s.Port, l.master, s.Bridge)
+	}
+	return b.parkingPort(s.Bridge), nil
+}
+
+// The place of a guest's port for its sticky entry.
+const (
+	portPending   = iota // absent, or not on the bridge yet
+	portOnBridge         // a port of the bridge
+	portElsewhere        // a port of another bridge
+)
+
+// portPlace tells where a guest's port is. A guest that starts makes its port
+// a moment before Proxmox enslaves it; a card whose firewall was just turned
+// on has its port on its firewall bridge until the next cycle names
+// fwpr<vmid>p<n> as its port. Both are pending.
+func portPlace(l link, exists bool, bridge string) int {
+	switch {
+	case !exists || l.master == "" || strings.HasPrefix(l.master, "fwbr"):
+		return portPending
+	case l.master == bridge:
+		return portOnBridge
+	}
+	return portElsewhere
 }
 
 // parkingPort is the bridge end of the managed leg on a bridge, where the

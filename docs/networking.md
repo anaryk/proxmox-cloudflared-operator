@@ -576,7 +576,9 @@ all of them. Three things of pco's keep each guest to the card it was given, wha
   MAC go to that port only, whatever another port sends, so a guest that copies another's MAC
   does not take its traffic. While the guest's port is absent, as while it is stopped, the
   entry waits on the bridge end of the managed leg, `vethpco<mark>`, where frames to the MAC
-  end unanswered, and moves to the port as soon as it appears, within milliseconds. A card
+  end unanswered, and moves to the port as soon as the port joins `pconet`, within
+  milliseconds. A guest that starts makes its port a moment before Proxmox puts it on the
+  bridge; until then the entry stays where it waits, and that is no change pco reports. A card
   whose firewall flag changes moves its port from `tap<vmid>i<n>` to `fwpr<vmid>p<n>` or back,
   and the guest loses its network until the next cycle moves the entry.
 - **The source-MAC watch** on the leg, which has the guests read again when a MAC no lease

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -97,6 +98,8 @@ type fakeSystem struct {
 	// leftoverPin is an empty file where the pin would be, left by a pin
 	// that failed: no namespace, and not pinned.
 	leftoverPin bool
+	// before runs before each change is made, with its line.
+	before func(line string)
 }
 
 func newFakeSystem() *fakeSystem {
@@ -125,6 +128,9 @@ func (f *fakeSystem) net(s side) *fakeNet {
 
 func (f *fakeSystem) change(format string, args ...any) error {
 	line := fmt.Sprintf(format, args...)
+	if f.before != nil {
+		f.before(line)
+	}
 	for k, err := range f.fail {
 		if strings.HasPrefix(line, k) {
 			return err
@@ -407,6 +413,15 @@ func (f *fakeSystem) addSticky(port string, m net.HardwareAddr, vlan int) error 
 		return err
 	}
 	l := f.host.links[port]
+	if l == nil {
+		return syscall.ENODEV
+	}
+	if l.master == "" {
+		// The kernel's answer to an entry for the bridge on a link that is
+		// no port of one.
+		f.calls, f.order = f.calls[:len(f.calls)-1], f.order[:len(f.order)-1]
+		return syscall.EOPNOTSUPP
+	}
 	l.fdb = append(slices.DeleteFunc(l.fdb, func(e fdbEntry) bool { return macEqual(e.mac, m) && e.vlan == vlan }),
 		fdbEntry{mac: m, vlan: vlan, static: true, sticky: true})
 	return nil

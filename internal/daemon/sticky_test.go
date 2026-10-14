@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -33,7 +35,7 @@ type stickyRig struct {
 func newStickyRig(t *testing.T, portThere bool) *stickyRig {
 	t.Helper()
 	r := &stickyRig{gatewayRig: newGatewayRig(t), ports: map[string]bool{"veth101i1": portThere}}
-	r.g.portExists = func(name string) bool {
+	r.g.onBridge = func(name string) bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		return r.ports[name]
@@ -463,4 +465,20 @@ func TestTheSourceWatchForgetsALeaseThatWent(t *testing.T) {
 	require.True(t, r.s.isLease(hw("06:50:43:4f:76:02")), "read again no sooner than 30 seconds")
 	r.now = r.now.Add(20 * time.Second)
 	require.False(t, r.s.isLease(hw("06:50:43:4f:76:02")))
+}
+
+// The port of a guest that starts is there before it is a port of the
+// bridge; its entry waits for that.
+func TestTheBridgeOfAPortIsReadFromSysfs(t *testing.T) {
+	sysfs := t.TempDir()
+	for name, master := range map[string]string{"veth101i1": "", "tap102i1": "../pconet", "tap103i1": "../vmbr0"} {
+		require.NoError(t, os.Mkdir(filepath.Join(sysfs, name), 0o755))
+		if master != "" {
+			require.NoError(t, os.Symlink(master, filepath.Join(sysfs, name, "master")))
+		}
+	}
+	require.Empty(t, masterOf(sysfs, "veth101i1"), "not enslaved yet")
+	require.Equal(t, gateway.ManagedBridge, masterOf(sysfs, "tap102i1"))
+	require.Equal(t, "vmbr0", masterOf(sysfs, "tap103i1"))
+	require.Empty(t, masterOf(sysfs, "tap104i1"), "no such link")
 }

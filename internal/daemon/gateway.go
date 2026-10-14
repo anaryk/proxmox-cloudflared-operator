@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -44,11 +46,11 @@ type gatewayPart struct {
 	upMu   sync.Mutex
 	up     []gateway.Leg
 
-	// portExists says whether a link of the node is there; applySticky
-	// gives the backend the sticky entries between two syncs. present are
-	// the ports of the wanted entries that were there when the entries were
-	// last given, guarded by mu.
-	portExists  func(name string) bool
+	// onBridge says whether a link of the node is a port of the managed
+	// bridge; applySticky gives the backend the sticky entries between two
+	// syncs. present are the ports of the wanted entries that were on the
+	// bridge when the entries were last given, guarded by mu.
+	onBridge    func(name string) bool
 	applySticky func(ctx context.Context, b gateway.Backend, sticky []gateway.Sticky) error
 	present     map[string]bool
 	// dirty says that a port event was lost, to a full queue or a watch
@@ -60,13 +62,27 @@ type gatewayPart struct {
 }
 
 func newGatewayPart(b gateway.Backend, local string, now func() time.Time, log zerolog.Logger) *gatewayPart {
-	return &gatewayPart{b: b, local: local, now: now, log: log, portExists: linkExists, applySticky: gateway.ApplySticky}
+	return &gatewayPart{b: b, local: local, now: now, log: log, onBridge: onManagedBridge, applySticky: gateway.ApplySticky}
 }
 
-// linkExists says whether the node has a link of the name.
-func linkExists(name string) bool {
-	_, err := net.InterfaceByName(name)
-	return err == nil
+// sysClassNet is where the kernel shows the links of the node.
+const sysClassNet = "/sys/class/net"
+
+// onManagedBridge says whether a link of the node is a port of the managed
+// bridge. A guest that starts makes its port a moment before the port joins
+// the bridge, and its entry can only go on it then.
+func onManagedBridge(name string) bool {
+	return masterOf(sysClassNet, name) == gateway.ManagedBridge
+}
+
+// masterOf returns the bridge a link is a port of, as sysfs shows it; "" for
+// none, or no such link.
+func masterOf(sysfs, name string) string {
+	target, err := os.Readlink(filepath.Join(sysfs, name, "master"))
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(target)
 }
 
 // start takes the cache of the gateway, which the last sync wrote and which
@@ -185,11 +201,12 @@ func (g *gatewayPart) sync(ctx context.Context, want gateway.Cache) ([]gateway.L
 	return states, nil
 }
 
-// stickyPorts are the ports of the wanted sticky entries that are there now.
+// stickyPorts are the ports of the wanted sticky entries that are on the
+// bridge now.
 func (g *gatewayPart) stickyPorts() map[string]bool {
 	out := map[string]bool{}
 	for _, s := range g.wanted.Sticky {
-		if s.Port != "" && g.portExists(s.Port) {
+		if s.Port != "" && g.onBridge(s.Port) {
 			out[s.Port] = true
 		}
 	}
@@ -197,7 +214,7 @@ func (g *gatewayPart) stickyPorts() map[string]bool {
 }
 
 // keepSticky gives the wanted sticky entries again when a port of a managed
-// guest appeared or went since they were last given, or a port event was
+// guest joined the bridge or left it since they were last given, or a port event was
 // lost: joined, the ports the port watch saw join the managed bridge, and
 // any other change the keeper's check finds
 // there now. A guest that starts makes its port anew, without the entry its

@@ -179,7 +179,7 @@ seconds and whenever nftables reports a change, and loads it again when it is go
 changed. [Security](security.md) describes both. With a network behind a leg the keeper
 checks the gateway the same way, every 30 seconds and on every link or route change the
 kernel reports, and gives a managed guest's port its sticky entry the moment the port
-appears; with the managed network the daemon also runs the DHCP server on its leg and
+joins `pconet`; with the managed network the daemon also runs the DHCP server on its leg and
 listens there for a card no lease knows ([Networking](networking.md)).
 
 Three kinds of change wait for one more thing: a new service address, a card on the managed
