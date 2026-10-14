@@ -142,6 +142,9 @@ func (c *cycleRun) targetsFor(node string) []agentproto.Target {
 					break
 				}
 			}
+			if t.Attestation == nil && !t.Resolve {
+				c.carry(node, t, macs)
+			}
 		}
 		c.giveService(t)
 	}

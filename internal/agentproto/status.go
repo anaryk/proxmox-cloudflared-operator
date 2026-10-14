@@ -59,11 +59,17 @@ type TargetReport struct {
 	Attested bool       `json:"attested,omitempty"`
 	// AttestedBy is the node whose attestation the level stands on, when
 	// Attested.
-	AttestedBy  string    `json:"attestedBy,omitempty"`
-	OK          bool      `json:"ok"`
-	Reason      string    `json:"reason,omitempty"`
-	VerifiedAt  time.Time `json:"verifiedAt,omitzero"`
-	InEgressSet bool      `json:"inEgressSet"`
+	AttestedBy string `json:"attestedBy,omitempty"`
+	// Attestation is the one the snapshot gave, that the address stands
+	// on: while the level is port through it, and while it is held over a
+	// silence of the controller, stale or not. A controller that takes over
+	// gives it back to this node alone while the attesting node has not
+	// reported to it.
+	Attestation *Attestation `json:"attestation,omitempty"`
+	OK          bool         `json:"ok"`
+	Reason      string       `json:"reason,omitempty"`
+	VerifiedAt  time.Time    `json:"verifiedAt,omitzero"`
+	InEgressSet bool         `json:"inEgressSet"`
 	// Result is the resolving node's resolve.Result, in its own form.
 	Result json.RawMessage `json:"result,omitempty"`
 }

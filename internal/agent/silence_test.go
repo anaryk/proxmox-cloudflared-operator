@@ -287,6 +287,28 @@ func TestALongSilenceShowsTheAttestationStaleAndWithdrawsNothing(t *testing.T) {
 	})
 }
 
+// A replica says which attestation it serves a guest of another node on,
+// fresh or held over, so that a controller that takes over can give it
+// back; it says none for an address it does not serve on one.
+func TestAReplicaReportsTheAttestationItServesOn(t *testing.T) {
+	e, _, s := silenceEnv(t)
+	e.serve(s)
+	st := e.reverify()
+	require.Equal(t, s.Targets[0].Attestation, report(st, "www.example.com").Attestation)
+
+	for range 40 {
+		e.clock.advance(10 * time.Second)
+		st = e.reverify()
+	}
+	r := report(st, "www.example.com")
+	require.Contains(t, r.Reason, "attestation stale")
+	require.Equal(t, s.Targets[0].Attestation, r.Attestation, "held over, stale")
+
+	e.clock.advance(resolve.MaxHoldOver)
+	st = e.reverify()
+	require.Nil(t, report(st, "www.example.com").Attestation)
+}
+
 // A controller that answers and leaves the attesting node out of its
 // heartbeat says something: that node is gone from what it hears. That is
 // no silence, and nothing is held over.

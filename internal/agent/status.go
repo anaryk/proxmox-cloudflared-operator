@@ -111,6 +111,10 @@ func (p *pass) reports() ([]agentproto.TargetReport, map[string]egress.Target) {
 			if node, stale := p.stale[t.Key]; stale {
 				r.Level, r.Reason = string(resolve.LevelObserved), fmt.Sprintf(reasonAttestationStale, node)
 			}
+			if _, stale := p.stale[t.Key]; (r.Attested || stale) && t.Attestation != nil {
+				at := *t.Attestation
+				r.Attestation = &at
+			}
 			switch b := served.Binding; {
 			case b != nil:
 				r.VerifiedAt = b.VerifiedAt

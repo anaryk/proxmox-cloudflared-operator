@@ -147,7 +147,7 @@ func (w *world) statusOf(node string, act *agentAct) agentproto.Status {
 	if act.kind == pki.KindHost && !act.noWatch {
 		st.WatchRunningSince = act.started
 	}
-	snap, served := w.r.lastOf(node)
+	snap, served := w.r.lastHeld(node)
 	if served {
 		st.EpochSeen, st.SeqApplied = snap.Epoch, snap.Seq
 		for _, tun := range snap.Tunnels {
@@ -168,6 +168,9 @@ func (w *world) statusOf(node string, act *agentAct) agentproto.Status {
 			}
 			if why, bad := act.fail[t.Key]; bad {
 				r.OK, r.InEgressSet, r.Level, r.Reason = false, false, "observed", why
+			} else if t.Attestation != nil && !t.Resolve {
+				at := *t.Attestation
+				r.Attested, r.AttestedBy, r.Attestation = true, at.Node, &at
 			}
 			if network, onLeg := act.legs[t.Key]; onLeg {
 				w.onLeg(&r, t, network)
@@ -246,6 +249,19 @@ func (f *fakeRemote) reportStatus(node string, at time.Time, st agentproto.Statu
 		f.reports = map[string]NodeReport{}
 	}
 	f.reports[node] = NodeReport{Status: st, ReceivedAt: at, Fresh: true}
+}
+
+// lastHeld is the last snapshot any round served to node, which its agent
+// keeps through the rounds that serve it none; false when none did.
+func (f *fakeRemote) lastHeld(node string) (agentproto.Snapshot, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.served) - 1; i >= 0; i-- {
+		if s, ok := f.served[i][node]; ok {
+			return s, true
+		}
+	}
+	return agentproto.Snapshot{}, false
 }
 
 // lastOf is the snapshot last served to node; false when none was.

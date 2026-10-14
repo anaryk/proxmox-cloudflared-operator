@@ -218,6 +218,10 @@ What this leaves open, by design:
   it afresh, and one that answers and leaves the guest's node out of its heartbeat is no
   silence: the address is withdrawn at once. An agent restarted during the silence has heard
   nothing yet and holds nothing over: it withdraws such addresses until a controller answers.
+  A controller that takes over gives each replica back the address and attestation it reported
+  it served such a guest on, to that replica alone, while the guest's node, neither down nor
+  gone, has not reported to it yet and it has not judged coverage, about a minute after its
+  wait for the agents; from then on the guest's node's own word, or the coverage rule, decides.
   A MAC cloned onto a third node meanwhile is blocked by the guest's node and by the node
   it was cloned onto, through their own watches, and not by the other replicas, until a
   controller is back. On a host that takes a cluster without quorum for longer than a takeover.

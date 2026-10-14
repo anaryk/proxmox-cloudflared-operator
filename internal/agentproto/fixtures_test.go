@@ -159,6 +159,7 @@ func fullStatus() Status {
 				Level:       "port",
 				Attested:    true,
 				AttestedBy:  "node1",
+				Attestation: &att,
 				OK:          true,
 				Reason:      "the forwarding table of node1 names the port of the guest",
 				VerifiedAt:  t0.Add(-5 * time.Second),

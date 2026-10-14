@@ -22,6 +22,19 @@
       "level": "port",
       "attested": true,
       "attestedBy": "node1",
+      "attestation": {
+        "node": "node1",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 101
+        },
+        "nic": 1,
+        "mac": "bc:24:11:aa:bb:01",
+        "bridge": "vmbr0",
+        "vlan": 20,
+        "port": "tap101i1",
+        "since": "2026-10-05T11:00:00Z"
+      },
       "ok": true,
       "reason": "the forwarding table of node1 names the port of the guest",
       "verifiedAt": "2026-10-05T11:59:55Z",

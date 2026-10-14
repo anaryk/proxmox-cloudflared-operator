@@ -10,6 +10,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -28,6 +29,11 @@ const (
 	// migrateGrace is how long a moved MAC waits for a sign that its guest
 	// migrates before the address is blocked on every node.
 	migrateGrace = 10 * time.Second
+	// carryOverFor is how long after its wait for the agents a controller
+	// that took over gives a replica back the attestation it served a guest
+	// of another node on, while that node has not reported to it: as long
+	// as an agent shows a held-over attestation before it calls it stale.
+	carryOverFor = resolve.DefaultMaxProofAge
 
 	problemConflictBlocked = "%s is blocked on every node: its MAC %s was seen on %s of %s"
 )
@@ -303,6 +309,82 @@ func (c *cycleRun) attests(node string, st agentproto.Status, a agentproto.Attes
 		return false
 	}
 	return attestsCard(a, cd.nic)
+}
+
+// carry gives node back, for a target of a guest of another node, the
+// address, the MAC and the attestation it reported it served the target on,
+// with coverage, when a controller that took over has not heard the guest's
+// node yet: the node must be neither down nor gone, coverage not judged yet
+// in this process, and its wait for the agents over by at most
+// carryOverFor. It is node's own word given back to node alone, and only
+// what nothing contradicts: the replica reached the address at the address
+// the snapshot names, if it names one, on an attestation of the guest's own
+// card by the guest's node, which no other node attests, and the address is
+// not blocked. It never admits a target the replica did not serve, and the
+// replica checks all of it again on the wire. Once the guest's node
+// reports, its own attestation, or its lack of one, decides; once coverage
+// is judged, the coverage rule does.
+func (c *cycleRun) carry(node string, t *agentproto.Target, macs []string) {
+	host := t.HostingNode
+	hf, known := c.fleet.nodes[host]
+	switch {
+	case host == "" || host == node || host == c.e.d.Node || !known:
+		return
+	case c.cover.ready || c.now.Sub(c.since()) > takeoverHold+carryOverFor:
+		return
+	case c.spokeSince(host, c.since()):
+		// A status the node sent, even one not taken, is its word: it is
+		// not silent.
+		return
+	case hf.entry.State == store.NodeDown || !c.nodeOnline(host):
+		return
+	}
+	rf := c.fleet.node(node)
+	tr, ok := rf.targets[t.Key]
+	switch {
+	case !rf.heard || !rf.fresh || !rf.host || !ok:
+		return
+	case !tr.OK || tr.Attestation == nil || !tr.Addr.IsValid():
+		return
+	case t.Addr.IsValid() && t.Addr != tr.Addr:
+		return
+	}
+	if _, blocked := c.e.place.blocks[tr.Addr]; blocked {
+		return
+	}
+	at := *tr.Attestation
+	mac := normalMAC(at.MAC)
+	cd, published := c.fleet.cards[mac]
+	switch {
+	case at.Node != host || mac == "" || !slices.Contains(macs, mac) || !published:
+		return
+	case cd.node != host || cd.ref != (cardRef{at.Guest, at.NIC}) || !attestsCard(at, cd.nic):
+		return
+	case len(c.fleet.elsewhere[cd.ref]) > 0:
+		return
+	}
+	if !t.Addr.IsValid() && !slices.Contains(c.addrsOf(cd.ref.guest), tr.Addr) {
+		// An address no binding or placement of the guest holds is the
+		// replica's alone to say: nothing vouches for it.
+		return
+	}
+	t.Addr, t.MACs, t.Attestation, t.Covered = tr.Addr, []string{mac}, &at, true
+}
+
+// spokeSince says whether a status of node was received at or after since,
+// whether or not it was taken.
+func (c *cycleRun) spokeSince(node string, since time.Time) bool {
+	r, ok := c.reportsNow()[node]
+	return ok && !r.ReceivedAt.Before(since)
+}
+
+// nodeOnline says whether the members file lists node online; a node it
+// does not list counts as online, as the registry has it.
+func (c *cycleRun) nodeOnline(node string) bool {
+	if m, ok := c.listedMembers()[node]; ok {
+		return m.Online
+	}
+	return true
 }
 
 // normalMAC is mac lower case with colons; empty when it is not a MAC.
