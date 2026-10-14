@@ -232,7 +232,7 @@ func TestAConflictIsReportedWhileItHoldsAndBlocksTheAddressAtOnce(t *testing.T) 
 	s.Guests = []model.Guest{{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 102}, Node: testNode, Running: true, NICs: []model.NIC{{Index: 0, MAC: testMAC, Bridge: "vmbr0"}}}}
 	e.apply(verified(s, "10.0.0.11:8080"))
 	log := &callLog{}
-	e.egr.log = log
+	e.egr.logTo(log)
 	owner := &model.GuestRef{VMID: 102}
 
 	f.see(egress.Observation{Kind: egress.Conflict, MAC: testMAC, Bridge: "vmbr0", Port: "fwpr102p0", From: "tap101i0", Owner: owner, At: t0})
@@ -271,7 +271,7 @@ func TestAMoveIsReportedForAWhileAndBlocksTheAddressAtOnce(t *testing.T) {
 	f.see(learned(testMAC, "tap101i0", t0))
 	e.status(t, func(st agentproto.Status) bool { return len(st.Attestations) == 1 })
 	log := &callLog{}
-	e.egr.log = log
+	e.egr.logTo(log)
 
 	f.see(egress.Observation{Kind: egress.Moved, MAC: testMAC, Bridge: "vmbr0", From: "tap101i0", Port: "eno1", At: t0.Add(time.Second)})
 
@@ -279,6 +279,9 @@ func TestAMoveIsReportedForAWhileAndBlocksTheAddressAtOnce(t *testing.T) {
 	require.Empty(t, st.Attestations, "what moved is attested no more")
 	require.Equal(t, agentproto.Observation{Kind: agentproto.ObservationMoved, MAC: testMAC, Bridge: "vmbr0", From: "tap101i0", Port: "eno1", At: t0.Add(time.Second)}, st.Observations[0])
 	e.agent.Wait()
+	// The observation is in the status as the watch hands it over; the
+	// address leaves the filter in the same handling, a moment later.
+	require.Eventually(t, func() bool { return len(log.all()) > 0 }, 5*time.Second, time.Millisecond)
 	require.Equal(t, "egress remove 10.0.0.11", log.all()[0])
 	e.said(t, "guest qemu/101: its MAC bc:24:11:00:00:01 left its own port tap101i0 for eno1 on bridge vmbr0; the address is verified again before it is reached")
 
@@ -501,7 +504,7 @@ func TestAMoveOrAConflictOfAMACNoLongerPublishedSaysNothing(t *testing.T) {
 	s.Targets = s.Targets[1:]
 	e.apply(s)
 	log := &callLog{}
-	e.egr.log = log
+	e.egr.logTo(log)
 
 	f.see(egress.Observation{Kind: egress.Moved, MAC: testMAC, Bridge: "vmbr0", From: "tap101i0", Port: "eno1", At: t0.Add(time.Second)})
 	f.see(egress.Observation{Kind: egress.Conflict, MAC: testMAC, Bridge: "vmbr0", Port: "tap102i0", Owner: &model.GuestRef{Kind: model.KindQEMU, VMID: 102}, At: t0.Add(2 * time.Second)})

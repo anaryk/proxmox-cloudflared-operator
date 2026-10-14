@@ -81,7 +81,7 @@ func TestOnlyTheTunnelsOfThisNodeKeepATargetInItsSet(t *testing.T) {
 func TestAnAddressThatLostItsProofLeavesTheFilterAtOnce(t *testing.T) {
 	e := newEnv(t)
 	log := &callLog{}
-	e.egr.log = log
+	e.egr.logTo(log)
 	s := verified(e.snapshot("www.example.com -> :8080"), "10.0.0.11:8080")
 	e.apply(s)
 	e.res.stop("www.example.com", "identity check failed: 10.0.0.11 answered by bc:24:11:ff:ff:01")
@@ -278,7 +278,7 @@ func TestTheSetOfAnEarlierReleaseIsTakenOver(t *testing.T) {
 func TestABlockTakesAnAddressOutAtOnceAndKeepsItOut(t *testing.T) {
 	e := newEnv(t)
 	log := &callLog{}
-	e.egr.log = log
+	e.egr.logTo(log)
 	e.apply(verified(e.snapshot("www.example.com -> :8080"), "10.0.0.11:8080"))
 	from := len(log.all())
 	resolved := 0

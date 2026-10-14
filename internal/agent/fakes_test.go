@@ -425,6 +425,13 @@ type fakeEgress struct {
 	log     *callLog
 }
 
+// logTo makes the fake note its calls in l from now on.
+func (f *fakeEgress) logTo(l *callLog) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.log = l
+}
+
 func (f *fakeEgress) Live(context.Context) (egress.Live, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
