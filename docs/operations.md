@@ -712,7 +712,10 @@ defence against a restored store: if the one agent that remembers a later epoch 
 one that cannot report, the controller writes after the minute, and stops as soon as that agent
 reports. The silent nodes are `unknown`, nothing is withdrawn for them, and the controller
 names them (`.members lists <n> nodes online that have sent no status (<nodes>) ...`). After a
-restore, check that every node's agent reports before you trust the first writes.
+restore, check that every node's agent reports before you trust the first writes. Service
+addresses and managed cards wait longer: an admitted node that has never reported to the new
+controller holds every new one until it reports or you `pco node forget` it, since what its
+gateway maps is not known.
 
 The engine has a deadline of 75 seconds per cycle, and pings the watchdog of systemd every 15
 seconds only while a cycle runs that began less than 75 seconds ago, or while it waits for the
