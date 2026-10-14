@@ -17,18 +17,32 @@ const (
 		"were last told, as after a restore or a relocation on replicated storage; nothing is written until pco appliance recover draws above it"
 )
 
-// agentsAhead holds a controller without a lease, the appliance's, when an
-// agent follows an epoch above the one this controller writes under: its
+// agentsAhead holds a controller without a lease, the appliance's, when the
+// agents follow an epoch above the one this controller writes under: its
 // store went back, and whatever it would write may undo what the agents
 // were told since. The host's lease does this for its own.
+//
+// An appliance agent's report is its own word, and one agent, broken or
+// taken over, must not stop the controller of every node: only the agents
+// of admitted nodes with a fresh report vote, the agent of this node among
+// them, and the controller holds only while more than half of them report
+// an epoch above its own. A silent agent stops voting once its report is
+// stale.
 func (c *cycleRun) agentsAhead() bool {
 	if !c.writerRead {
 		return false
 	}
 	ours := agentproto.Epoch{InstallID: c.install.ID, Generation: c.e.us.Generation, Nonce: c.e.us.Nonce}
 	reports := c.reportsNow()
+	voters, above, first := 0, 0, ""
+	var firstEp agentproto.Epoch
 	for _, node := range slices.Sorted(maps.Keys(reports)) {
-		ep := reports[node].Status.EpochSeen
+		rep := reports[node]
+		if !c.votes(node, rep) {
+			continue
+		}
+		voters++
+		ep := rep.Status.EpochSeen
 		if ep.InstallID != c.install.ID || ep.Generation == 0 {
 			continue
 		}
@@ -36,11 +50,28 @@ func (c *cycleRun) agentsAhead() bool {
 			continue
 		}
 		if order, same := ep.Order(ours); order > 0 || order == 0 && !same {
-			c.holdBehind(c.problem(problemAgentsBehind, node, ep, ours.Generation, ours.Nonce))
-			return true
+			above++
+			if first == "" {
+				first, firstEp = node, ep
+			}
 		}
 	}
-	return false
+	if voters == 0 || 2*above <= voters {
+		return false
+	}
+	c.holdBehind(c.problem(problemAgentsBehind, first, firstEp, ours.Generation, ours.Nonce))
+	return true
+}
+
+// votes says whether the report of node counts in agentsAhead: this node's,
+// or a fresh one of a node the registry holds admitted and active.
+func (c *cycleRun) votes(node string, rep NodeReport) bool {
+	if node == c.e.d.Node {
+		return true
+	}
+	n, ok := c.nodes[node]
+	return ok && rep.Fresh && c.now.Sub(rep.ReceivedAt) < silentAfter &&
+		(n.Node.State == store.NodeActive || n.Node.State == store.NodeDraining)
 }
 
 // agentMoved says why the appliance agent of entry n is served nothing: its
