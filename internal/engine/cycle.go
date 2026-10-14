@@ -193,6 +193,9 @@ func (c *cycleRun) run() State {
 	c.showNetworks()
 	if !c.leaseHeld {
 		c.saveMemory()
+	} else if r := c.e.d.Remote; r != nil {
+		// A controller that may not write serves no agent a snapshot.
+		r.Serve(nil)
 	}
 	c.noteRogueConnectors()
 	c.sayWaiting()

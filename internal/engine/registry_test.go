@@ -341,7 +341,36 @@ func TestANodeWithoutTheLeaseServesNoSnapshot(t *testing.T) {
 
 	e.cycle()
 
-	require.Empty(t, r.served)
+	require.Empty(t, r.last())
+}
+
+// A controller that loses the lease serves nothing more: what it served is
+// taken back with the first cycle that holds.
+func TestAControllerThatLosesTheLeaseServesNothingMore(t *testing.T) {
+	e, r, l := leasedCluster(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeActive, StateSince: t0})
+	r.report("pve2", e.clock.now(), t0.Add(-time.Hour))
+	e.cycle()
+	require.Contains(t, r.last(), "pve2")
+
+	l.set(func(st *lease.State) { st.Holder = false })
+	e.clock.advance(time.Second)
+	e.cycle()
+
+	require.Empty(t, r.last())
+}
+
+// The registry is written only while the lease holds: one that went invalid
+// after the cycle was let through writes no entry.
+func TestTheRegistryIsWrittenOnlyWhileTheLeaseHolds(t *testing.T) {
+	e, r, l := leasedCluster(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeJoining, StateSince: t0})
+	e.clock.advance(time.Second)
+	r.report("pve2", e.clock.now(), t0)
+	l.set(func(st *lease.State) { st.Valid = false })
+
+	e.cycle()
+
+	require.Equal(t, store.NodeJoining, entryOf(t, e, "pve2").State)
+	require.Nil(t, entryOf(t, e, "pve2").Index)
 }
 
 // A new controller writes nothing for up to a minute while an agent of a

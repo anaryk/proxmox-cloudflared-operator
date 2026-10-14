@@ -115,6 +115,11 @@ func (c *cycleRun) registryStep() {
 		if sameEntry(before, *n) {
 			continue
 		}
+		if !c.e.leaseHolds() {
+			// The lease went while the step ran: nothing more is written.
+			*n = before
+			return
+		}
 		rev, err := c.e.d.Store.SaveNodeIf(*n, c.nodes[n.Name].Rev)
 		switch {
 		case errors.Is(err, store.ErrRevision):
