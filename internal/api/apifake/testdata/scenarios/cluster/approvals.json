@@ -1,0 +1,29 @@
+[
+  {
+    "owner": "qemu/101",
+    "guest": {
+      "kind": "qemu",
+      "vmid": 101,
+      "name": "web-1"
+    },
+    "identity": "uuid:101",
+    "current": "uuid:101",
+    "matches": true
+  },
+  {
+    "owner": "lxc/300",
+    "guest": {
+      "kind": "lxc",
+      "vmid": 300
+    },
+    "identity": "uuid:300",
+    "matches": false,
+    "macs": [
+      "bc:24:11:00:03:00",
+      "bc:24:11:00:03:01"
+    ],
+    "addresses": [
+      "10.0.0.1"
+    ]
+  }
+]

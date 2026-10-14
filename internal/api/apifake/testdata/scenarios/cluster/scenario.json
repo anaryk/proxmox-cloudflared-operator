@@ -1,0 +1,4 @@
+{
+  "about": "populated on a cluster of three nodes: pve1 the controller, pve2 a replica with a route pinned to it, pve3 an appliance agent waiting for admission",
+  "now": "2026-10-01T12:00:02Z"
+}

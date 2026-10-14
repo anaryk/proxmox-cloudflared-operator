@@ -184,6 +184,9 @@ export function fixtures() {
     // the populated scenario of the fake daemon: a route in every state, a
     // rejected wildcard and a manual route among them
     'scenario-populated': scenario('populated'),
+    // the same on a cluster of three nodes: a lease, the nodes, replicas and
+    // placements of the routes, a block, a route pinned to a node
+    cluster: scenario('cluster'),
     // engine.Event, engine.Hello, engine.TrafficView
     events,
     hello: { boot: last.boot, version: version.version, seq: last.seq, digest: populated.digest, pollInterval: version.pollInterval },

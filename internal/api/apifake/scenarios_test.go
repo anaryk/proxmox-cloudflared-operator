@@ -18,7 +18,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/annotation"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -51,6 +53,7 @@ func madeScenarios(t *testing.T) map[string]files {
 		"rogue":        rogueScenario(t, populated),
 		"untagged":     untaggedScenario(t, populated, 0),
 		"tagged-empty": untaggedScenario(t, populated, 3),
+		"cluster":      clusterScenario(populated),
 	}
 	// Every scenario is as of the end of the golden's cycle, those without a
 	// cycle too: their times, as the check of a token's, move from there.
@@ -421,6 +424,98 @@ func rogueScenario(t *testing.T, populated files) files {
 	}
 	sortState(st)
 	st.Digest = engine.DigestOf(*st)
+	return f
+}
+
+// clusterScenario is populated on a cluster of three nodes, as the
+// controller shows it: pve1 holds the lease, taken over from pve2 an hour
+// ago; pve2 is a replica of the shared tunnel, with a route pinned to it, a
+// route moving back to the shared tunnel and an address blocked on every
+// node; pve3 is an appliance agent that waits for admission. The guests of
+// pve2 are proven on it, so their ports are attested there.
+func clusterScenario(populated files) files {
+	f := populated.copied()
+	f.About = "populated on a cluster of three nodes: pve1 the controller, pve2 a replica with a route pinned to it, pve3 an appliance agent waiting for admission"
+	st := &f.State
+	at := st.At
+	hour := at.Add(-time.Hour)
+	shared, pinned := "pco-abc123", "pco-abc123-pve2"
+	st.Lease = &engine.LeaseView{Holder: "pve1", Address: netip.MustParseAddr("10.10.0.1"), Previous: "pve2", Generation: 7, Nonce: "k3x9",
+		AcquiredAt: hour, RefreshAge: 3 * time.Second, Valid: true}
+	st.Cluster = &engine.ClusterView{Controller: "pve1", Generation: 7, Members: []string{"pve1", "pve2", "pve3"}, Quorate: true,
+		Coverage: engine.CoverageView{Covered: true, Since: hour},
+		Blocks: []engine.BlockView{{Address: netip.MustParseAddr("10.0.0.60"), Guest: "lxc/230", MAC: "bc:24:11:00:00:e6", Node: "pve2", Port: "tap140i0",
+			Since: at.Add(-3 * time.Minute), LastReport: at.Add(-10 * time.Second)}},
+	}
+	index := func(i int) *int { return &i }
+	st.Nodes = []engine.NodeView{
+		{Name: "pve1", State: string(agentproto.Active), StateSince: hour, Kind: string(pki.KindHost), Index: index(0), AgentAddress: netip.MustParseAddr("10.10.0.1"),
+			Controller: true, Build: "1.4.0", Protocol: "1", StatusAge: time.Second, WatchRunning: true, Covered: true, ReplicaReady: true,
+			Verified: 9, Failing: 1, CertExpires: at.Add(80 * 24 * time.Hour)},
+		{Name: "pve2", State: string(agentproto.Active), StateSince: at.Add(-50 * time.Minute), Kind: string(pki.KindHost), Index: index(1), AgentAddress: netip.MustParseAddr("10.10.0.2"),
+			Build: "1.4.0", Protocol: "1", StatusAge: 4 * time.Second, WatchRunning: true, Covered: true, ReplicaReady: true,
+			Verified: 10, Failing: 1, Pinned: 1, CertExpires: at.Add(61 * 24 * time.Hour), ClockSkew: 300 * time.Millisecond},
+		{Name: "pve3", State: string(agentproto.Joining), StateSince: at.Add(-2 * time.Minute), Kind: string(pki.KindAppliance), VMID: 9301, AgentAddress: netip.MustParseAddr("10.0.0.93"),
+			Build: "1.4.0", Protocol: "1", StatusAge: 4 * time.Second, Covered: true, ClockSkew: 300 * time.Millisecond,
+			JoinUses: []engine.JoinUseView{{At: at.Add(-2 * time.Minute), Source: netip.MustParseAddr("10.0.0.93"), VMID: 9301, MACs: []string{"bc:24:11:00:93:01"}}}},
+	}
+	replica := func(node, level string, attested bool) engine.ReplicaView {
+		return engine.ReplicaView{Node: node, Level: level, Attested: attested, OK: true, InSet: true}
+	}
+	for i := range st.Routes {
+		r := &st.Routes[i]
+		switch r.State {
+		case planner.StateActive, planner.StateUnreachable, planner.StateWithdrawn:
+		default:
+			continue
+		}
+		if r.Path == nil {
+			// A manual route to an address: resolved by the controller, verified by the replica.
+			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared}
+			r.Replicas = []engine.ReplicaView{replica("pve1", "manual", false), replica("pve2", "manual", false)}
+			continue
+		}
+		switch r.Hostname {
+		case "git.example.com":
+			r.Path.Node = "pve2"
+			r.Placement = &engine.PlacementView{Tunnel: pinned, Kind: engine.TunnelPinned, Node: "pve2", Why: "pve1 does not reach it while pve2 does"}
+			r.Replicas = []engine.ReplicaView{replica("pve2", "port", false)}
+		case "grafana.example.com":
+			r.Path.Node = "pve2"
+			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared,
+				Move: &engine.MoveView{From: pinned, To: shared, Step: store.MoveRolledOut, Since: at.Add(-2 * time.Minute)}}
+			r.Replicas = []engine.ReplicaView{replica("pve1", "port", true), replica("pve2", "port", false)}
+		case "monitor.example.com":
+			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared}
+			r.Replicas = []engine.ReplicaView{
+				{Node: "pve1", Reason: reasonNotAnswering}, {Node: "pve2", Reason: "no answer on port 8443 from 10.10.0.2"},
+			}
+		default:
+			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared}
+			r.Replicas = []engine.ReplicaView{replica("pve1", r.Level, false), replica("pve2", r.Level, r.Level == string(resolve.LevelPort))}
+		}
+	}
+	st.Tunnels = append(st.Tunnels, engine.TunnelView{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: pinned,
+		Kind: engine.TunnelPinned, Node: "pve2", ID: "00000000-0000-4000-8000-000000000020", Version: 2, Exists: true, Verified: true}})
+	st.Problems = append(st.Problems, "10.0.0.60 is blocked on every node: its MAC bc:24:11:00:00:e6 was seen on tap140i0 of pve2")
+	for i := range f.Guests {
+		if f.Guests[i].Ref == "qemu/110" || f.Guests[i].Ref == "lxc/205" {
+			f.Guests[i].Node = "pve2"
+		}
+	}
+	f.Settings.Settings.Cluster = store.ClusterSettings{AgentNetwork: netip.MustParsePrefix("10.10.0.0/24")}
+	sortState(st)
+	st.Digest = engine.DigestOf(*st)
+	f.Events = append(f.Events,
+		engine.Event{At: hour, Level: "info", Kind: "lease", Subject: "pve1", Node: "pve1", Message: "the lease is held by pve1 at epoch 7.k3x9; pve2 held it before"},
+		engine.Event{At: at.Add(-50 * time.Minute), Level: "info", Kind: "node", Subject: "pve2", Node: "pve2", Message: "node pve2 is active: every shared route it serves is reached"},
+		engine.Event{At: at.Add(-10 * time.Minute), Level: "info", Kind: "placement", Subject: "git.example.com", Route: "git.example.com", Guest: "qemu/110", Node: "pve2",
+			Message: "git.example.com is pinned to pve2: pve1 does not reach it while pve2 does"},
+		engine.Event{At: at.Add(-3 * time.Minute), Level: "warn", Kind: "block", Subject: "10.0.0.60", Guest: "lxc/230", Node: "pve2",
+			Message: "10.0.0.60 is blocked on every node: its MAC bc:24:11:00:00:e6 was seen on tap140i0 of pve2"},
+		engine.Event{At: at.Add(-2 * time.Minute), Level: "info", Kind: "enrol", Subject: "pve3", Node: "pve3", Security: true,
+			Message: "node pve3 enrolled from 10.0.0.93 as container 9301 with its join token; it waits for pco node admit"},
+	)
 	return f
 }
 

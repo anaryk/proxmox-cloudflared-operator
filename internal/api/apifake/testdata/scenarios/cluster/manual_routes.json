@@ -1,0 +1,14 @@
+[
+  {
+    "id": "status",
+    "rev": 2,
+    "hostname": "status.example.com",
+    "target": {
+      "kind": "address",
+      "scheme": "http",
+      "addr": "10.0.5.20",
+      "port": 9000
+    },
+    "options": {}
+  }
+]
