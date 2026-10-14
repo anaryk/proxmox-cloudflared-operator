@@ -398,6 +398,7 @@ func (c *cycleRun) inspect() bool {
 	if !c.refresh() || !c.collect() {
 		return false
 	}
+	c.catchUp()
 	c.managed()
 	if !c.load() || !c.guardVanished() || !c.syncCredentials() {
 		return false

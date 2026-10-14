@@ -20,6 +20,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
@@ -262,6 +263,10 @@ type Engine struct {
 	// earlier release, whose engine kept it.
 	egress   []egress.Target
 	verified map[tunnelRef][]egress.Target
+	// caughtUp is the epoch whose store catchUp found to give nothing twice,
+	// and cardless, by MAC, the epoch that said a lease has no card.
+	caughtUp agentproto.Epoch
+	cardless map[string]agentproto.Epoch
 	// moving are the verifications of addresses whose MAC moved that the
 	// agent runs, which Run waits for.
 	moving sync.WaitGroup
