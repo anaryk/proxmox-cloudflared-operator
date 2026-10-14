@@ -21,6 +21,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
@@ -809,6 +810,11 @@ type env struct {
 	quorum    func() (bool, time.Time)
 	cluster   func() (store.ClusterIdentity, error)
 	holdCycle func(context.Context)
+	// The agents of the other nodes, the members file and the maintenance
+	// mode of the nodes; nil gives the engines none.
+	remote      Remote
+	members     func() members.Members
+	maintenance func(context.Context) (map[string]pve.Maintenance, error)
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -895,6 +901,9 @@ func (e *env) newEngineWith(conns agent.Connectors) *Engine {
 		Quorum:      e.quorum,
 		Cluster:     e.cluster,
 		HoldCycle:   e.holdCycle,
+		Remote:      e.remote,
+		Members:     e.members,
+		Maintenance: e.maintenance,
 	}
 	if e.acc != nil {
 		d.Access = e.acc

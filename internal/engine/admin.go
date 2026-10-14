@@ -18,7 +18,7 @@ import (
 // and the request is not used up by a cycle that read the settings before it,
 // and then asks for a cycle.
 func (e *Engine) Apply(ctx context.Context, confirmDeletes bool, offer string) (ApplyResult, error) {
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return ApplyResult{}, err
 	}
 	defer e.release()
@@ -150,7 +150,7 @@ func (e *Engine) Adopt(ctx context.Context, name string) error {
 	if !e.inTheWay(host) {
 		return fmt.Errorf("%w: no record of someone else holds %s, and none of ours lost its marker there", ErrNotFound, host)
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.Trigger()

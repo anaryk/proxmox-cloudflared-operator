@@ -82,7 +82,7 @@ func (e *Engine) settingsView(s store.Settings, rev int, notes []string) Setting
 // returns the settings as saved and the names of those that take effect
 // only once the daemon is restarted.
 func (e *Engine) SaveSettings(ctx context.Context, rev int, s store.Settings) (SettingsView, []string, error) {
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return SettingsView{}, nil, err
 	}
 	defer e.release()

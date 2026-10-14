@@ -146,12 +146,12 @@ func TestACycleHeldInPrepareReadsTheConnectors(t *testing.T) {
 	e := published(t)
 	tun := e.tunnels()[0].ID
 	e.conn.setReady(tun, false)
-	require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: "pve2", Since: t0}))
+	require.NoError(t, e.store.DeleteNode(testNode))
 
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 
-	require.True(t, hasProblem(st, "the node registry names pve2"), st.Problems)
+	require.True(t, hasProblem(st, "node pve1 is not registered"), st.Problems)
 	require.Len(t, st.Connectors, 1)
 	require.Equal(t, tun, st.Connectors[0].TunnelID)
 	require.False(t, st.Connectors[0].Ready, "read in this cycle")
@@ -171,4 +171,31 @@ func TestADesiredStateTheAgentCannotKeepHoldsDNS(t *testing.T) {
 	require.True(t, hasProblem(st, "DNS and further changes are held"), st.Problems)
 	require.Empty(t, e.records(), "no record is written")
 	require.Empty(t, e.conn.ensures())
+}
+
+// The verifications of an agent end before an agent of another install
+// takes its place: one still running could give the egress filter its set
+// after the new agent gave it its own.
+func TestTheVerificationsOfAReplacedAgentEnd(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	f := e.eng.fleet
+	ctx := f.movedContext(t.Context())
+	require.NoError(t, ctx.Err())
+
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	_, err = f.agentOf(inst)
+	require.NoError(t, err)
+	require.NoError(t, ctx.Err(), "the same install keeps its agent")
+
+	inst.ID = "def456"
+	_, err = f.agentOf(inst)
+	require.NoError(t, err)
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the verifications of the agent replaced did not end")
+	}
+	require.NoError(t, f.movedContext(t.Context()).Err(), "the new agent's run")
 }

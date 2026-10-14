@@ -21,10 +21,9 @@ const (
 	problemOtherCluster = "this store was made in cluster %s (%s); pco promote here makes this cluster its writer"
 	// problemClusterUnknown is a cluster whose identity cannot be read.
 	problemClusterUnknown = "the identity of this cluster cannot be read (%v); nothing is written"
-	// problemAwaitReports names the nodes whose agents have not reported
-	// since this tenure began: the first write waits for every one of them,
-	// as one may remember an epoch the store does not.
-	problemAwaitReports = "waiting for the agents of %s to report before the first write of this tenure; nothing is written"
+	// problemAgentEpochUnread is an epoch file of the local agent that
+	// cannot be read, which may hold an epoch above the store's.
+	problemAgentEpochUnread = "the epoch the agent of this node follows cannot be read (%v); nothing is written"
 )
 
 // sameCluster holds every write of a store that was made in another
@@ -97,23 +96,34 @@ func sameWriterEpoch(a, b planner.Writer) bool {
 
 // agentsReported hands the lease the epoch every agent follows, and before
 // the first write of the tenure holds the cycle until every node that is
-// neither down nor removed has reported since the tenure began. An agent
-// that follows an epoch leader.json does not explain makes the controller
-// behind: the store went back, or a second controller writes. An agent that
-// lost what it remembered cannot say so, but another one can, which is why
-// the first write waits for all of them.
+// neither down nor removed has reported since the tenure began, for at most
+// takeoverHold. An agent that follows an epoch leader.json does not explain
+// makes the controller behind: the store went back, or a second controller
+// writes. An agent that lost what it remembered cannot say so, but another
+// one can, which is why the first write waits for all of them. A node whose
+// agent does not report within the hold is unknown, and is not waited for:
+// a cluster whose agent channel is down on one node must not lose its
+// controller; what that agent reports later still stops the writes.
 func (c *cycleRun) agentsReported() bool {
 	l := c.e.d.Lease
-	if ep, found, err := c.e.d.Store.AgentEpoch(); err == nil && found {
+	ep, found, err := c.e.d.Store.AgentEpoch()
+	switch {
+	case err != nil:
+		// What the agent of this node remembers cannot be told: it may be
+		// an epoch above the store's.
+		c.hold(c.problem(problemAgentEpochUnread, err))
+		return false
+	case found:
 		l.ReportedEpoch(agentproto.Epoch(ep))
 	}
-	reports := c.e.fleet.Reports(c.ctx, 0, nil)
+	reports := c.reportsNow()
 	for _, name := range slices.Sorted(maps.Keys(reports)) {
-		if ep := reports[name].Status.EpochSeen; ep.Nonce != "" {
+		if ep := reports[name].Status.EpochSeen; ep.Generation > 0 {
 			l.ReportedEpoch(ep)
 		}
 	}
-	if c.e.tenureWrote {
+	if c.e.tenureWrote || l.State().Behind != "" {
+		// Behind holds the cycle next, by its own line.
 		return true
 	}
 	nodes, err := c.e.d.Store.Nodes()
@@ -122,8 +132,11 @@ func (c *cycleRun) agentsReported() bool {
 		return false
 	}
 	if missing := unreported(nodes, reports, c.e.tenureAt); len(missing) > 0 {
-		c.hold(c.problem(problemAwaitReports, strings.Join(missing, ", ")))
-		return false
+		if left := takeoverHold - c.now.Sub(c.e.tenureAt); left > 0 {
+			c.hold(c.problem(problemTakeoverHold, strings.Join(missing, ", "), left.Round(time.Second)))
+			return false
+		}
+		c.e.d.Log.Warn().Strs("nodes", missing).Msg("the agents of these nodes did not report within the takeover hold; they are unknown")
 	}
 	c.e.tenureWrote = true
 	return true
@@ -201,4 +214,13 @@ func leaseSaid(st lease.State) string {
 		return leaseFenced
 	}
 	return leaseHeld
+}
+
+// NoteAgentEpoch hands the lease the epoch an agent reported, as its status
+// arrives, so that a report above the store's stops the writes before the
+// next cycle; the cycles hand it every report again.
+func (e *Engine) NoteAgentEpoch(ep agentproto.Epoch) {
+	if e.d.Lease != nil && ep.Generation > 0 {
+		e.d.Lease.ReportedEpoch(ep)
+	}
 }

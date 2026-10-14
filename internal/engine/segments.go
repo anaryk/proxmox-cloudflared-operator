@@ -85,7 +85,7 @@ func (e *Engine) AcknowledgeSegment(ctx context.Context, bridge string, vlan int
 	if err := checkSegment(bridge, vlan); err != nil {
 		return err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.release()
@@ -112,7 +112,7 @@ func (e *Engine) RevokeSegment(ctx context.Context, bridge string, vlan int) err
 	if err := checkSegment(bridge, vlan); err != nil {
 		return err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.release()

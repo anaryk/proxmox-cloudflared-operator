@@ -364,15 +364,14 @@ func TestUnregisteredNodeRefusesToRun(t *testing.T) {
 		require.Empty(t, e.conn.ensures())
 		require.Empty(t, e.conn.prunes())
 	})
-	t.Run("another node besides", func(t *testing.T) {
+	t.Run("another node besides runs", func(t *testing.T) {
 		e := newEnv(t)
 		require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: "pve2", Since: t0}))
 
 		st := e.cycle()
 
-		require.Equal(t, []string{"the node registry names pve2 besides pve1; pco runs on one registered node only"}, st.Problems)
-		require.Zero(t, e.inv.refreshes())
-		require.Empty(t, e.cf.Calls())
+		require.Empty(t, st.Problems)
+		require.NotZero(t, e.inv.refreshes())
 	})
 }
 

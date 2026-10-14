@@ -53,7 +53,7 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 		return view, err
 	}
 
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return CredentialView{}, err
 	}
 	defer e.Trigger()
@@ -127,7 +127,7 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 // accounts. A token Cloudflare rejects reaches nothing and is removed. When
 // Cloudflare cannot tell, nothing is removed.
 func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.Trigger()

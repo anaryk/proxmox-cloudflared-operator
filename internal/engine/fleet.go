@@ -49,11 +49,23 @@ type Fleet interface {
 type LocalFleet struct {
 	deps agent.Deps
 
+	// making is held while an agent is made, and mu guards the rest.
+	making   sync.Mutex
 	mu       sync.Mutex
 	a        *agent.Agent
 	install  string
 	watching bool
 	attached bool
+	// verifying ends with the agent a: the verifications of addresses
+	// whose MAC moved run under it, so that an agent replaced by one of
+	// another install gives the egress filter no set after the new one.
+	verifying context.Context
+	stopOld   context.CancelFunc
+	// alsoEvent and alsoChanged are told what the agent's events and
+	// changes tell the engine, as the client of a node of a cluster sends
+	// them to the controller.
+	alsoEvent   func(agent.Event)
+	alsoChanged func()
 }
 
 var errNoAgent = errors.New("the agent of this node is not running: the install is not known yet")
@@ -113,8 +125,18 @@ func (f *LocalFleet) attach(e *Engine) error {
 	}
 	f.attached = true
 	f.deps.Node, f.deps.Store, f.deps.Now, f.deps.Log = e.d.Node, e.d.Store, e.d.Now, e.d.Log
-	f.deps.Event = e.agentEvent
-	f.deps.Changed = e.Trigger
+	f.deps.Event = func(ev agent.Event) {
+		e.agentEvent(ev)
+		if also := f.also().event; also != nil {
+			also(ev)
+		}
+	}
+	f.deps.Changed = func() {
+		e.Trigger()
+		if also := f.also().changed; also != nil {
+			also()
+		}
+	}
 	f.deps.After = func(d time.Duration) (<-chan time.Time, func() bool) { return e.after(d) }
 	f.deps.Timeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 		return e.timeout(ctx, d)
@@ -147,24 +169,72 @@ func (f *LocalFleet) made() *agent.Agent {
 	return a
 }
 
-// agentOf returns the agent of the install, made when there is none of it.
-func (f *LocalFleet) agentOf(inst store.Install) (*agent.Agent, error) {
+// Also has the fleet tell event and changed of every event and change of
+// its agent besides the engine. Either may be nil.
+func (f *LocalFleet) Also(event func(agent.Event), changed func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.alsoEvent, f.alsoChanged = event, changed
+}
+
+type alsoHooks struct {
+	event   func(agent.Event)
+	changed func()
+}
+
+func (f *LocalFleet) also() alsoHooks {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return alsoHooks{f.alsoEvent, f.alsoChanged}
+}
+
+// agentOf returns the agent of the install, made when there is none of it.
+// An agent of another install is replaced once the verifications it runs
+// ended, which may tell the engine what they found: the fleet's lock is not
+// held while they end.
+func (f *LocalFleet) agentOf(inst store.Install) (*agent.Agent, error) {
+	f.making.Lock()
+	defer f.making.Unlock()
+	f.mu.Lock()
 	if f.a != nil && f.install == inst.ID {
-		return f.a, nil
+		a := f.a
+		f.mu.Unlock()
+		return a, nil
 	}
-	d := f.deps
+	d, old, stop := f.deps, f.a, f.stopOld
+	f.mu.Unlock()
 	d.InstallID, d.Kind = inst.ID, kindOf(inst)
 	a, err := agent.New(d)
 	if err != nil {
 		return nil, err
 	}
+	if old != nil {
+		stop()
+		old.Wait()
+	}
+	verifying, stopNew := context.WithCancel(context.Background())
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.watching {
 		a.Watching(true)
 	}
 	f.a, f.install = a, inst.ID
+	f.verifying, f.stopOld = verifying, stopNew
 	return a, nil
+}
+
+// movedContext is ctx, ended as well when the agent of this moment is
+// replaced.
+func (f *LocalFleet) movedContext(ctx context.Context) context.Context {
+	f.mu.Lock()
+	verifying := f.verifying
+	f.mu.Unlock()
+	if verifying == nil {
+		return ctx
+	}
+	merged, cancel := context.WithCancel(ctx)
+	context.AfterFunc(verifying, cancel)
+	return merged
 }
 
 // current is the agent, or nil before the install is known.
@@ -238,7 +308,7 @@ func (e *Engine) Moved(ctx context.Context, addr netip.Addr) {
 		return
 	}
 	e.moving.Add(1)
-	a.Moved(ctx, addr)
+	a.Moved(e.fleet.movedContext(ctx), addr)
 	go func() {
 		defer e.moving.Done()
 		a.Wait()

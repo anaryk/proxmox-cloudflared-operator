@@ -28,7 +28,7 @@ func (e *Engine) ApproveManaged(ctx context.Context, owner, identity string, acc
 	if err != nil {
 		return store.Consent{}, err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return store.Consent{}, err
 	}
 	defer e.release()
@@ -66,7 +66,7 @@ func (e *Engine) RevokeManaged(ctx context.Context, owner string) error {
 	if _, err := guestOwner(owner); err != nil {
 		return err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.release()
@@ -98,7 +98,7 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	if err := e.networksHere(); err != nil {
 		return err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.release()

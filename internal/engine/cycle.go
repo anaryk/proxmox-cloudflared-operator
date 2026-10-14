@@ -160,6 +160,11 @@ type cycleRun struct {
 	// read it; leaseHeld says that the lease let the cycle write nothing.
 	cluster   store.ClusterIdentity
 	leaseHeld bool
+	// nodes are the entries of the node registry as this cycle read and
+	// wrote them, by name, and reports what the agents reported, read once
+	// by the cycle.
+	nodes   map[string]store.NodeRev
+	reports map[string]NodeReport
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -181,6 +186,7 @@ func (c *cycleRun) run() State {
 			c.hold(why)
 		}
 		c.reconcile()
+		c.publishRemote()
 	}
 	c.watchTunnels()
 	c.showRollouts()
@@ -196,6 +202,9 @@ func (c *cycleRun) run() State {
 	c.notePending(c.adoptWaits)
 	c.st.Waiting = c.offer.waiting(c.st.Routes)
 	c.st.Offer = offerOf(c.st.Waiting)
+	if views := c.nodeViews(); views != nil {
+		c.st.Nodes = views
+	}
 	c.st.FinishedAt = c.e.d.Now()
 	c.e.lastVerdict = cmp.Or(c.gateVerdict, verdictNoRun)
 	return c.st.normalized()
@@ -263,7 +272,7 @@ func (c *cycleRun) prepare() bool {
 	}
 	c.install = inst
 	c.st.Profile = inst.ProfileName()
-	if !c.registered() {
+	if !c.readRegistry() {
 		return false
 	}
 	node, err := c.e.fleet.agentOf(inst)
@@ -289,35 +298,8 @@ func (c *cycleRun) prepare() bool {
 		c.problem("%s", c.e.setAside)
 		c.e.setAside = ""
 	}
-	return true
-}
-
-// registered checks that the node registry names this node and no other:
-// until the cluster milestone exactly one node may run pco.
-func (c *cycleRun) registered() bool {
-	nodes, err := c.e.d.Store.Nodes()
-	if err != nil {
-		c.hold(c.storeProblem("reading the node registry", err))
-		return false
-	}
-	self := false
-	var others []string
-	for _, n := range nodes {
-		if n.Name == c.e.d.Node {
-			self = true
-		} else {
-			others = append(others, n.Name)
-		}
-	}
-	switch {
-	case !self:
-		c.hold(c.problem(problemNotRegistered, c.e.d.Node))
-		return false
-	case len(others) > 0:
-		slices.Sort(others)
-		c.hold(c.problem("the node registry names %s besides %s; pco runs on one registered node only",
-			strings.Join(others, ", "), c.e.d.Node))
-		return false
+	if !c.storeHold {
+		c.registryStep()
 	}
 	return true
 }

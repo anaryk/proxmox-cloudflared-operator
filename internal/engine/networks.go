@@ -871,7 +871,7 @@ func (e *Engine) Attach(ctx context.Context, r AttachRequest) (NetworkView, erro
 	if err := e.networksHere(); err != nil {
 		return NetworkView{}, err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return NetworkView{}, err
 	}
 	defer e.release()
@@ -1015,7 +1015,7 @@ func (e *Engine) Detach(ctx context.Context, id string, rev int64, served []stri
 	if id == "" {
 		return fieldError("id", "name the network to detach, as vmbr1 or vmbr1.20")
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.release()

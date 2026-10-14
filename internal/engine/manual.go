@@ -100,7 +100,7 @@ func (e *Engine) writeManual(ctx context.Context, v ManualRouteView, rev int, do
 	if err != nil {
 		return ManualRouteView{}, err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return ManualRouteView{}, err
 	}
 	defer e.release()
@@ -134,7 +134,7 @@ func (e *Engine) writeManual(ctx context.Context, v ManualRouteView, rev int, do
 // DeleteManualRoute removes the manual route id, which was read at revision
 // rev; a route that has another revision now is refused with ErrRefused.
 func (e *Engine) DeleteManualRoute(ctx context.Context, id string, rev int) error {
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.release()

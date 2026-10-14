@@ -22,6 +22,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
@@ -151,6 +152,16 @@ type Deps struct {
 	// the daemon rather than of the cycle: the test suites hold a cycle
 	// there to see what a hung engine does.
 	HoldCycle func(ctx context.Context)
+
+	// Remote is the agents of the other nodes of a cluster, which the
+	// controller serves their snapshots through; nil where the engine
+	// drives its own node alone. Members is the last read of the members
+	// file, by which a node is down; nil where there is none to read.
+	// Maintenance reads which nodes Proxmox has in maintenance mode; nil
+	// where it is not read.
+	Remote      Remote
+	Members     func() members.Members
+	Maintenance func(ctx context.Context) (map[string]pve.Maintenance, error)
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -354,6 +365,11 @@ type Engine struct {
 	// progress is what the watchdog of the daemon and the heartbeat read of
 	// the cycles.
 	progress progressBook
+	// registry is what the registry step keeps between cycles, guarded by
+	// the cycle lock; taken is what the controller took of the events of
+	// every agent, which has a lock of its own.
+	registry registryMemory
+	taken    takenEvents
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.

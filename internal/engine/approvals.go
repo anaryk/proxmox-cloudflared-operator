@@ -84,7 +84,7 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string, macs 
 		return Approval{}, err
 	}
 	addrs = slices.CompactFunc(slices.SortedFunc(slices.Values(addrs), netip.Addr.Compare), func(x, y netip.Addr) bool { return x == y })
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return Approval{}, err
 	}
 	defer e.release()
@@ -209,7 +209,7 @@ func (e *Engine) RevokeGuest(ctx context.Context, owner string) error {
 	if _, err := guestOwner(owner); err != nil {
 		return err
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
+	if err := e.acquireWriter(ctx); err != nil {
 		return err
 	}
 	defer e.release()

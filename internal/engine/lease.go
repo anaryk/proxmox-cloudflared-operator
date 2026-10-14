@@ -287,3 +287,36 @@ func (e *Engine) leaseHolds() bool {
 	st := e.d.Lease.State()
 	return st.Holder && st.Valid && st.Behind == ""
 }
+
+// acquireWriter takes the cycle lock for an admin action that writes the
+// store, as acquireAdmin does, on the controller only: on the host the node
+// must hold the lease and its gate must let a write through, so that a node
+// that does not hold it, or holds it fenced, writes nothing of the store
+// beside the controller.
+func (e *Engine) acquireWriter(ctx context.Context) error {
+	if err := e.acquireAdmin(ctx); err != nil {
+		return err
+	}
+	if err := e.controllerOnly(ctx); err != nil {
+		e.release()
+		return err
+	}
+	return nil
+}
+
+// controllerOnly is why this node may not write the store now; nil where
+// there is no lease, or this node holds it and its gate lets a write
+// through.
+func (e *Engine) controllerOnly(ctx context.Context) error {
+	if e.d.Lease == nil {
+		return nil
+	}
+	if st := e.d.Lease.State(); !st.Holder {
+		rec, _, found, err := e.d.Store.Leader()
+		if err == nil && found && rec.Node != "" && rec.Node != e.d.Node && rec.ReleasedAt.IsZero() {
+			return fmt.Errorf("%w: this node is not the controller; node %s holds the lease", ErrRefused, rec.Node)
+		}
+		return fmt.Errorf("%w: this node is not the controller, and no node holds the lease now", ErrRefused)
+	}
+	return e.leaseRefused(ctx)
+}
