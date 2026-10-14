@@ -653,6 +653,36 @@ func TestACardThatFailedWaitsBehindTheOthers(t *testing.T) {
 	require.Equal(t, waitAttachBatch, waitingWhy(st, "lxc/101"))
 }
 
+// The next cycle is asked for at once only while the guests left to attach
+// grow fewer: cards that keep failing wait for the cycles of the interval.
+func TestTheNextCycleIsAskedForOnlyWhileFewerGuestsAreLeft(t *testing.T) {
+	m := newManagedEnv(t)
+	m.settings(func(s *store.Settings) { s.Managed.Consent = store.ConsentAuto })
+	var guests []model.Guest
+	for i := range attachesPerCycle + 3 {
+		guests = append(guests, unconsented(managedGuest(101+i, fmt.Sprintf("web-%d", i+1), fmt.Sprintf("w%d.example.com -> :8080", i+1))))
+	}
+	m.inv.set(snapshot(guests...))
+	m.warm()
+	drainTrigger(m.eng.trigger)
+	m.cfg.set(func(f *fakeConfigurer) {
+		for _, g := range guests {
+			f.addErr[g.Ref.String()] = errors.New("locked")
+		}
+	})
+
+	m.next()
+	require.Len(t, m.eng.trigger, 1, "the first cycle that leaves guests asks for the next")
+	drainTrigger(m.eng.trigger)
+
+	m.next()
+	require.Empty(t, m.eng.trigger, "as many are left as before")
+
+	m.cfg.set(func(f *fakeConfigurer) { f.addErr = map[string]error{} })
+	m.next()
+	require.Len(t, m.eng.trigger, 1, "fewer are left")
+}
+
 func drainTrigger(ch chan struct{}) {
 	for len(ch) > 0 {
 		<-ch

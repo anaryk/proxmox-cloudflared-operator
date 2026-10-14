@@ -261,12 +261,12 @@ type managedStep struct {
 	unverified map[string]string
 	// migrated are the owners whose attachment is on another node.
 	migrated map[string]bool
-	// adds counts the cards this cycle tried to add; deferred says that a
-	// guest was left to the next cycle for attachesPerCycle, and progressed
-	// that a card was added or sent.
-	adds       int
-	deferred   bool
-	progressed bool
+	// adds counts the cards this cycle tried to add, done those it added or
+	// sent, and deferred the guests it left to the next cycle for
+	// attachesPerCycle.
+	adds     int
+	done     int
+	deferred int
 }
 
 // attachesPerCycle bounds the cards one cycle adds: each is a qm set or pct
@@ -363,10 +363,23 @@ func (s *managedStep) run() ManagedView {
 	s.noteAuto()
 	s.fill()
 	s.events()
-	if s.deferred && s.progressed {
-		c.e.Trigger()
-	}
+	s.askAgain()
 	return s.v
+}
+
+// askAgain asks for the next cycle at once while guests are left to attach
+// and they are fewer than when it last did: cards that keep failing wait
+// for the cycles of the interval.
+func (s *managedStep) askAgain() {
+	e := s.c.e
+	left := s.adds - s.done + s.deferred
+	switch {
+	case s.deferred == 0:
+		e.attachLeft = 0
+	case e.attachLeft == 0 || left < e.attachLeft:
+		e.attachLeft = left
+		e.Trigger()
+	}
 }
 
 // attachOrder returns the decisions with the attaches of the guests whose
@@ -827,7 +840,7 @@ func (s *managedStep) attach(d managednet.Decision) {
 		return
 	}
 	if s.adds >= attachesPerCycle {
-		s.deferred = true
+		s.deferred++
 		s.wait(owner, waitAttachBatch)
 		return
 	}
@@ -862,7 +875,7 @@ func (s *managedStep) attach(d managednet.Decision) {
 		c.e.addFailed[owner] = true
 	} else {
 		delete(c.e.addFailed, owner)
-		s.progressed = true
+		s.done++
 	}
 	if errors.Is(err, managednet.ErrSent) {
 		s.sentTo(owner, g, fmt.Sprintf("the card net%d of %s on the managed network is written by the agent of node %s", att.NIC, s.name(owner), g.Node))

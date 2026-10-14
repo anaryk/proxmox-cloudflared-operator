@@ -366,10 +366,11 @@ One cycle adds no more than four cards, whatever the consent: each is a `qm set`
 of a few seconds, and a node with many guests that switches to `auto` would otherwise run one
 cycle for minutes while `pco status` and the web UI show the state from before it. The guests
 beyond the four wait with `waits for the next cycle: one cycle adds no more than 4 cards`, and
-while a cycle adds a card and leaves guests waiting, the next one starts as soon as it ends, so
-that a node with 40 such guests has them
-attached within ten short cycles. A card that could not be added waits behind the guests that
-have not been tried yet.
+while the guests left without their card grow fewer from one such cycle to the next, the next
+one starts as soon as it ends, so that a node with 40 such guests has them attached within ten
+short cycles. Cards that keep failing leave as many guests as before, and those wait for the
+cycles of the poll interval. A card that could not be added waits behind the guests that have
+not been tried yet.
 
 What consent does not lift: the admission of the guest's routes, the hostname policy, the
 claims and the identity level stay what they are. A card on the managed network is a way to

@@ -335,8 +335,10 @@ type Engine struct {
 	pendingCards map[string]bool
 	exhausted    bool
 	// addFailed are the owners whose card could not be added in the last
-	// cycle that tried; guarded by the cycle lock.
-	addFailed map[string]bool
+	// cycle that tried, and attachLeft the guests left to attach when a
+	// cycle last asked for the next at once; guarded by the cycle lock.
+	addFailed  map[string]bool
+	attachLeft int
 	// attachedSaid are the owners whose card this process said is attached;
 	// vnetRead is what the step last read of the vnet, and impacts what it
 	// last read of the firewall of each guest it would attach, both kept
