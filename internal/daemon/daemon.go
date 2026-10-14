@@ -367,7 +367,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	wd := newWatchdog(deps.Notifier, eng.Healthy, deps.Now, log)
 	beside := []func(context.Context){watch, keep, traffic.run, ports, sources.keep, wd.run, cp.run}
 	if cfg.profile() == store.ProfileHost {
-		web := newWebKeeper(cfg, deps, client, eng.NoteWeb, log)
+		web := newWebKeeper(cfg, deps, client, hl.d.PVEDir, eng.NoteWeb, log)
 		env.Web = web.facts
 		beside = append(beside, func(ctx context.Context) { web.keep(ctx, deps.WebEvery) })
 	}

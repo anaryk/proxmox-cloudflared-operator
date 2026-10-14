@@ -20,6 +20,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
@@ -50,7 +51,7 @@ type webKeeper struct {
 	setup func() (setup.WebSetup, error)
 	node  string
 	fqdn  func() string
-	addrs func(ctx context.Context) ([]netip.Addr, error) // of the node in the cluster status
+	addrs func(ctx context.Context) ([]netip.Addr, error) // of this node, as ownAddrs reads them
 
 	dir, env   string // the certificate of the web interface and the environment file of its unit
 	ca, caKey  string // the cluster CA
@@ -68,12 +69,16 @@ type webKeeper struct {
 }
 
 // newWebKeeper returns the keeper of the node the daemon runs on.
-func newWebKeeper(cfg Config, deps Deps, client *pve.Client, note func(string), log zerolog.Logger) *webKeeper {
+func newWebKeeper(cfg Config, deps Deps, client *pve.Client, pveDir string, note func(string), log zerolog.Logger) *webKeeper {
+	membersFile := filepath.Join(pveDir, filepath.Base(members.MembersFile))
+	readMembers := func() (members.Members, error) { return members.Read(membersFile, deps.Now()) }
 	return &webKeeper{
-		setup:   func() (setup.WebSetup, error) { return setup.ReadWebSetup(cfg.Paths.Local) },
-		node:    cfg.Node,
-		fqdn:    webcert.NodeFQDN,
-		addrs:   func(ctx context.Context) ([]netip.Addr, error) { return nodeAddrs(ctx, client, cfg.Node) },
+		setup: func() (setup.WebSetup, error) { return setup.ReadWebSetup(cfg.Paths.Local) },
+		node:  cfg.Node,
+		fqdn:  webcert.NodeFQDN,
+		addrs: func(ctx context.Context) ([]netip.Addr, error) {
+			return ownAddrs(ctx, cfg.Node, readMembers, client.ClusterStatus)
+		},
 		dir:     cmp.Or(deps.WebDir, webcert.Dir),
 		env:     cmp.Or(deps.WebEnv, webcert.EnvFile),
 		ca:      cmp.Or(deps.ClusterCA, webcert.ClusterCA),
@@ -88,20 +93,44 @@ func newWebKeeper(cfg Config, deps Deps, client *pve.Client, note func(string), 
 	}
 }
 
-// nodeAddrs returns the address the cluster status lists for this node, as
-// setup reads it.
-func nodeAddrs(ctx context.Context, client *pve.Client, node string) ([]netip.Addr, error) {
-	st, err := client.ClusterStatus(ctx)
+// ownAddrs returns the address of this node, which its leaf names. A member
+// of a cluster reads it from the members file pmxcfs keeps on the node
+// itself; the cluster status would do as well only while this node's API
+// answers it, and the client falls back on other nodes, whose answer marks
+// themselves as the local node. A node that stands alone has no address in
+// that file, and no other node to fall back on: its address is the one the
+// cluster status gives the node that answered, when that is this node. No
+// address of its own is an error, so that no leaf is made without one.
+func ownAddrs(
+	ctx context.Context, node string,
+	readMembers func() (members.Members, error),
+	status func(context.Context) (pve.ClusterStatus, error),
+) ([]netip.Addr, error) {
+	m, err := readMembers()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading the members file: %w", err)
 	}
-	var out []netip.Addr
+	if m.Self != node {
+		return nil, fmt.Errorf("the members file names this node %s, the daemon runs as %s", m.Self, node)
+	}
+	if !m.Standalone {
+		for _, n := range m.Nodes {
+			if n.Name == node && n.IP.IsValid() {
+				return []netip.Addr{n.IP}, nil
+			}
+		}
+		return nil, fmt.Errorf("the members file gives no address for %s", node)
+	}
+	st, err := status(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading the cluster status: %w", err)
+	}
 	for _, n := range st.Nodes {
-		if (n.Local || n.Name == node) && n.Addr.IsValid() {
-			out = append(out, n.Addr)
+		if n.Local && n.Name == node && n.Addr.IsValid() {
+			return []netip.Addr{n.Addr}, nil
 		}
 	}
-	return out, nil
+	return nil, fmt.Errorf("the cluster status was not answered by %s, or gives it no address", node)
 }
 
 // tryRestartWeb restarts pco-web.service if it runs, without waiting for it.
@@ -249,7 +278,7 @@ func (k *webKeeper) names(ctx context.Context) (webcert.Names, error) {
 	}
 	addrs, err := k.addrs(ctx)
 	if err != nil {
-		return webcert.Names{}, fmt.Errorf("reading the cluster status: %w", err)
+		return webcert.Names{}, fmt.Errorf("finding the address of this node: %w", err)
 	}
 	return webcert.NodeNames(k.node, k.fqdn(), addrs, env.Listen, env.Hosts)
 }
