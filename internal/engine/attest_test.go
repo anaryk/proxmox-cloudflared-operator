@@ -14,6 +14,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -446,6 +447,48 @@ func TestABlockEndsOnceItsGuestIsGoneFromACompleteInventory(t *testing.T) {
 		w := blocked(t, func(snap *inventory.Snapshot) { snap.Complete = false })
 		require.Contains(t, w.eng.place.blocks, dbAddr)
 	})
+}
+
+// A controller that loses the lease and takes it again under a new epoch is
+// a new controller: what another controller stored meanwhile is read, a
+// move that one had only added the rules of is given up, and what this
+// process remembered of the tenure before is dropped, timers and all.
+func TestALeaseTakenAgainUnderANewEpochStartsOver(t *testing.T) {
+	pinned3, _ := planner.PinnedTunnelName(testInstall, "pve3")
+	w := threeNodes(t)
+	w.settle()
+	w.eng.place.addedAt = map[string]time.Time{"qemu/103": t0}
+	w.eng.place.unresolvedSince = map[string]time.Time{"old.example.com": t0}
+	w.eng.place.pointedAt["www.example.com"] = "nowhere"
+
+	w.lease.set(func(st *lease.State) { st.Holder, st.Valid, st.Waiting = false, false, "the lock is held by pve2" })
+	w.tick(time.Second)
+	now := w.clock.now()
+	require.NoError(t, w.store.SaveBlock(store.Block{Addr: dbAddr, Guest: db, MAC: dbCard, Node: "pve3", Port: "tap140i0", Why: "conflict", Since: now, LastReport: now}))
+	require.NoError(t, w.store.SaveMove(store.Move{Owner: "qemu/103", From: tunnelName, To: pinned3, Step: store.MoveRulesAdded, At: now}))
+	next := planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "n2"}
+	require.NoError(t, w.store.SaveWriter(next))
+	w.lease.set(func(st *lease.State) {
+		st.Holder, st.Valid, st.Waiting = true, true, ""
+		st.Writer, st.Record.Writer = next, next
+	})
+	w.cf.Deny("dns.read")
+	st := w.tick(time.Second)
+	w.cf.Allow("dns.read")
+
+	require.Equal(t, 2, st.Lease.Generation)
+	require.True(t, hasProblem(st, "10.0.0.22 is blocked on every node: its MAC "+dbCard+" was seen on tap140i0 of pve3"), st.Problems)
+	require.Contains(t, w.eng.place.blocks, dbAddr)
+	s, _ := w.r.lastOf("pve2")
+	require.Contains(t, s.Blocks, agentproto.Block{Addr: dbAddr, Reason: agentproto.BlockConflict})
+	_, ok := w.moveOf(t, "qemu/103")
+	require.False(t, ok, "the move another controller had only added the rules of is given up")
+	require.True(t, slices.ContainsFunc(w.placementEvents(), func(ev string) bool {
+		return strings.Contains(ev, "the move of qemu/103 from "+tunnelName+" to "+pinned3+" is given up: its rules were not rolled out when this controller took over")
+	}), w.placementEvents())
+	require.NotContains(t, w.eng.place.addedAt, "qemu/103")
+	require.NotContains(t, w.eng.place.unresolvedSince, "old.example.com")
+	require.NotContains(t, w.eng.place.pointedAt, "www.example.com", "where a record pointed under the last tenure is not known")
 }
 
 // A block ends only on a fresh attestation of the guest's card by its

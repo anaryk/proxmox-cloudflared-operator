@@ -69,6 +69,22 @@ type placementMemory struct {
 	unresolvedSince map[string]time.Time
 }
 
+// newTenure drops what the memory kept under an epoch this process no
+// longer writes under, as the lease is taken again under a new one. The
+// blocks and the moves are read from the store again, since another
+// controller may have written them meanwhile, and the timers that let a
+// move go on, a route be pinned or promoted, an address be held or a tunnel
+// be deleted start over: what they counted was seen under the last tenure,
+// and nothing was seen between. What the agents reported of themselves,
+// the refusals said once and the coverage this process saw stand.
+func (m *placementMemory) newTenure() {
+	m.blocks, m.moved = nil, nil
+	m.movesRead, m.addedAt = false, nil
+	m.diverged, m.reaching, m.waiting = nil, nil, nil
+	m.pointedAt, m.unresolvedSince = nil, nil
+	m.emptySince = nil
+}
+
 // coverageView is coverage as one cycle judges it.
 type coverageView struct {
 	// ready says that every node that is neither down nor removed reported

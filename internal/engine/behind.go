@@ -85,7 +85,9 @@ func (c *cycleRun) recordCluster() {
 // startTenure begins the store's record of what this tenure writes when the
 // lease is of an epoch this process has not written under yet: a read that
 // finds one of those objects at a lower revision, or gone, says that the
-// store went back under the writer.
+// store went back under the writer. What the placement of routes kept of
+// the tenure before is dropped with it: another controller may have
+// written the store between the two.
 func (c *cycleRun) startTenure(st lease.State) {
 	e := c.e
 	if sameWriterEpoch(e.tenure, st.Writer) {
@@ -93,6 +95,7 @@ func (c *cycleRun) startTenure(st lease.State) {
 	}
 	e.d.Store.StartTenure()
 	e.tenure, e.tenureAt, e.tenureWrote = st.Writer, c.now, false
+	e.place.newTenure()
 }
 
 // sameWriterEpoch says whether two writers are of one epoch.
