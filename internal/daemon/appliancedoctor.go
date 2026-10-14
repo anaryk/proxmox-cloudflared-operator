@@ -22,7 +22,7 @@ import (
 // of the cluster: its own agent, the install's CA, what the engine knows,
 // and the agents of the other nodes, asked over the agent channel. A
 // container reads neither the members file nor corosync.conf, and not every
-// node runs an agent container: the checks that go by them find nothing.
+// node runs an agent container: the checks that go by them say so.
 type applianceDoctorCluster struct {
 	st  *store.Store
 	eng *engine.Engine
@@ -34,11 +34,11 @@ var _ doctor.ClusterSource = applianceDoctorCluster{}
 func (d applianceDoctorCluster) Agent() (agentproto.AgentView, error) { return d.eng.AgentView() }
 
 func (applianceDoctorCluster) Members() (members.Members, error) {
-	return members.Members{}, nil
+	return members.Members{}, doctor.ErrNotChecked
 }
 
 func (applianceDoctorCluster) Corosync() (members.Corosync, error) {
-	return members.Corosync{}, nil
+	return members.Corosync{}, doctor.ErrNotChecked
 }
 
 func (d applianceDoctorCluster) CAExpires() (time.Time, error) { return caExpires(d.st) }
@@ -74,7 +74,10 @@ func (d applianceDoctorCluster) ApplianceFacts(ctx context.Context) (doctor.Appl
 	isHA := func(vmid int) bool {
 		return slices.ContainsFunc(ha, func(r pve.HAResource) bool { return r.Ref == model.GuestRef{Kind: model.KindLXC, VMID: vmid} })
 	}
-	f := doctor.ApplianceFacts{VMID: inst.Appliance.VMID, HA: isHA(inst.Appliance.VMID), Storage: inst.Appliance.Storage}
+	f := doctor.ApplianceFacts{VMID: inst.Appliance.VMID, Node: inst.Appliance.Node, HA: isHA(inst.Appliance.VMID), Storage: inst.Appliance.Storage}
+	if i := slices.IndexFunc(res, func(r pve.Resource) bool { return r.Kind == model.KindLXC && r.VMID == f.VMID }); i >= 0 {
+		f.RunsOn = res[i].Node
+	}
 	for _, j := range jobs {
 		if j.Guest.VMID == f.VMID {
 			f.Replication = append(f.Replication, j.ID)
@@ -135,11 +138,11 @@ type agentContainerCluster struct {
 func (a agentContainerCluster) Agent() (agentproto.AgentView, error) { return a.view(), nil }
 
 func (agentContainerCluster) Members() (members.Members, error) {
-	return members.Members{}, nil
+	return members.Members{}, doctor.ErrNotChecked
 }
 
 func (agentContainerCluster) Corosync() (members.Corosync, error) {
-	return members.Corosync{}, nil
+	return members.Corosync{}, doctor.ErrNotChecked
 }
 
 func (agentContainerCluster) CAExpires() (time.Time, error) { return time.Time{}, nil }

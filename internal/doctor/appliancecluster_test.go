@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -36,6 +38,8 @@ func TestTheControllerOfAnApplianceInstallChecksItsContainers(t *testing.T) {
 			"controller ha", LevelWarn, "only observes until pco appliance recover"},
 		{"HA on storage of its own", ApplianceFacts{VMID: 120, HA: true, Storage: &store.ApplianceStorage{ID: "local-zfs"}}, "controller ha", LevelWarn,
 			"cannot be relocated"},
+		{"relocated", ApplianceFacts{VMID: 120, Node: "pve1", RunsOn: "pve2", HA: true, Storage: &store.ApplianceStorage{ID: "ceph", Shared: true}},
+			"controller ha", LevelWarn, "lxc/120 runs on pve2 and serves node pve1"},
 		{"an agent at home", ApplianceFacts{VMID: 120, Agents: []AgentContainer{home}}, "agent container pve2", LevelOK, "agent 9301 runs on pve2"},
 		{"a moved agent", ApplianceFacts{VMID: 120, Agents: []AgentContainer{{Node: "pve2", VMID: 9301, Found: true, RunsOn: "pve3"}}},
 			"agent container pve2", LevelFail, "agent 9301 runs on pve3, enrolled for pve2"},
@@ -57,4 +61,12 @@ func TestTheControllerOfAnApplianceInstallChecksItsContainers(t *testing.T) {
 	require.Empty(t, applianceClusterChecks(t.Context(), &fakeCluster{}), "a host's cluster has none of these")
 	out := applianceClusterChecks(t.Context(), fakeApplianceCluster{fakeCluster: &fakeCluster{}, err: errors.New("no answer")})
 	require.Equal(t, LevelWarn, findingOf(t, out, "controller ha").Level)
+}
+
+// In an appliance the members file and corosync.conf are not there to read:
+// the checks that go by them say they were not made.
+func TestTheChecksOfTheClusterFilesAreNotMadeInAnAppliance(t *testing.T) {
+	require.Equal(t, LevelOK, checkChannel(engine.State{}, members.Members{}, ErrNotChecked).Level)
+	require.Contains(t, checkChannel(engine.State{}, members.Members{}, ErrNotChecked).Detail, "not checked in the appliance")
+	require.Contains(t, checkAgentAddress(nil, members.Corosync{}, ErrNotChecked).Detail, "not checked in the appliance")
 }

@@ -21,7 +21,11 @@ type ApplianceFacts struct {
 	// VMID is the controller's container; HA says it is an HA resource, and
 	// Storage is what its install recorded of its state volume, with the
 	// replication jobs of its container now.
-	VMID        int
+	VMID int
+	// Node is the node the controller was installed on, which it serves,
+	// and RunsOn the node it runs on now.
+	Node        string
+	RunsOn      string
 	HA          bool
 	Storage     *store.ApplianceStorage
 	Replication []string
@@ -71,6 +75,10 @@ func checkControllerHA(f ApplianceFacts) Finding {
 		}
 	}
 	switch {
+	case f.RunsOn != "" && f.Node != "" && f.RunsOn != f.Node:
+		return warn(check, fmt.Sprintf("lxc/%d runs on %s and serves node %s, which it was installed on: the legs and the DHCP "+
+			"of the managed network of %s are on the bridges of %s now, and the guests of %s that only %s's bridges reach go unserved",
+			f.VMID, f.RunsOn, f.Node, f.Node, f.RunsOn, f.Node, f.Node), fmt.Sprintf("ha-manager migrate ct:%d %s, or pct migrate it back", f.VMID, f.Node))
 	case !f.HA:
 		return ok(check, fmt.Sprintf("lxc/%d is no HA resource, on %s: a lost controller is restored from its export and promoted", f.VMID, where))
 	case len(f.Replication) > 0:

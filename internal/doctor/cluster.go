@@ -3,6 +3,7 @@ package doctor
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -36,6 +37,11 @@ const (
 	cloudflareSilent = 10 * time.Minute
 	pinnedEmptyWarn  = 10 * time.Minute
 )
+
+// ErrNotChecked is the answer of a ClusterSource that has no such file to
+// read, as an appliance has neither the members file nor corosync.conf: the
+// checks that go by them say they were not made, rather than pass.
+var ErrNotChecked = errors.New("a container reads neither the members file nor corosync.conf of the cluster")
 
 // ClusterSource is what the checks of a cluster read beyond the state of
 // the engine: the agent of this node, what Proxmox says of the cluster, the
@@ -242,6 +248,9 @@ func checkMembers(nodes []engine.NodeView, c engine.ClusterView) Finding {
 // this controller no status: the agent channel does not reach it from them.
 func checkChannel(st engine.State, mem members.Members, err error) Finding {
 	const check = "agent channel"
+	if errors.Is(err, ErrNotChecked) {
+		return ok(check, "not checked in the appliance: "+err.Error())
+	}
 	if err != nil {
 		return warn(check, "the members of the cluster could not be read: "+err.Error(), "pvecm status")
 	}
@@ -269,6 +278,9 @@ func checkChannel(st engine.State, mem members.Members, err error) Finding {
 // the agent channel then competes with corosync for that network.
 func checkAgentAddress(nodes []engine.NodeView, cs members.Corosync, err error) Finding {
 	const check = "agent address"
+	if errors.Is(err, ErrNotChecked) {
+		return ok(check, "not checked in the appliance: "+err.Error())
+	}
 	if err != nil {
 		return warn(check, "corosync.conf could not be read: "+err.Error(), "pvecm status")
 	}
