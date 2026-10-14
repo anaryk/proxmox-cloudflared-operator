@@ -55,6 +55,29 @@ func TestAVerifiedConfigurationAddsNothingToTheSet(t *testing.T) {
 	require.Equal(t, egressTargets("10.0.0.11:8080"), got)
 }
 
+// Only the configurations of the tunnels this node may run keep a target in
+// its set: the shared one and the one pinned to this node. One pinned to
+// another node, or a tunnel the install does not name, vouches for nothing
+// here.
+func TestOnlyTheTunnelsOfThisNodeKeepATargetInItsSet(t *testing.T) {
+	keep := func(name, kind string) []egress.Target {
+		e := newEnv(t)
+		e.apply(e.snapshot("www.example.com -> :8080", "api.example.com -> :9090"))
+		s := e.snapshot("www.example.com -> :8080")
+		s.Tunnels = append(s.Tunnels, agentproto.Tunnel{
+			AccountID: "acc1", TunnelID: "t9", Name: name, Kind: kind,
+			Verified: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.11:9090")},
+		})
+		e.apply(s)
+		got, _ := e.egr.last()
+		return got
+	}
+	require.Equal(t, egressTargets("10.0.0.11:8080", "10.0.0.11:9090"), keep("pco-"+testInstall+"-"+testNode, agentproto.TunnelPinned))
+	require.Equal(t, egressTargets("10.0.0.11:8080"), keep("pco-"+testInstall+"-pve2", agentproto.TunnelPinned))
+	require.Equal(t, egressTargets("10.0.0.11:8080"), keep("pco-"+testInstall+"-pve2", agentproto.TunnelShared))
+	require.Equal(t, egressTargets("10.0.0.11:8080"), keep("pco-other1", agentproto.TunnelShared))
+}
+
 func TestAnAddressThatLostItsProofLeavesTheFilterAtOnce(t *testing.T) {
 	e := newEnv(t)
 	log := &callLog{}

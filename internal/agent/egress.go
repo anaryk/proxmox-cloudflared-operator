@@ -13,6 +13,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
@@ -123,7 +124,7 @@ func (p *pass) egressSet() []egress.Target {
 			set = append(set, et)
 		}
 	}
-	sent := sentTargets(p.s)
+	sent := p.sentTargets()
 	withdrawn := p.withdrawnAddrs()
 	for _, t := range p.a.set {
 		// A target whose proof only fell below its minimum is still proven
@@ -179,11 +180,18 @@ func (p *pass) withdrawnAddrs() map[netip.Addr]bool {
 	return out
 }
 
-// sentTargets are the targets the tunnel configurations last verified at
-// Cloudflare send a connector to.
-func sentTargets(s agentproto.Snapshot) map[egress.Target]bool {
+// sentTargets are the targets the configurations last verified at Cloudflare
+// of the tunnels this node may run send a connector to: the shared tunnel of
+// the install and the one pinned to this node, by name. The configuration of
+// a tunnel pinned to another node vouches for nothing on this one.
+func (p *pass) sentTargets() map[egress.Target]bool {
+	shared := planner.TunnelName(p.a.d.InstallID)
+	own, _ := planner.PinnedTunnelName(p.a.d.InstallID, p.a.d.Node)
 	out := map[egress.Target]bool{}
-	for _, t := range s.Tunnels {
+	for _, t := range p.s.Tunnels {
+		if t.Name != shared && (own == "" || t.Name != own) {
+			continue
+		}
 		for _, ap := range t.Verified {
 			out[egress.Target{Addr: ap.Addr().Unmap(), Port: ap.Port()}] = true
 		}
