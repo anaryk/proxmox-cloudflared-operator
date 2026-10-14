@@ -80,3 +80,13 @@ func (w *world) standaloneLease(t *testing.T, dir string) {
 	}
 	w.lockDir = filepath.Join(pve, "priv", "lock", "pco-leader")
 }
+
+// inCluster makes the node one of a cluster of one: the members file names
+// the cluster.
+func (w *world) inCluster(t *testing.T) {
+	t.Helper()
+	members := `{"nodename": "` + testNode + `", "version": 3,
+"cluster": {"name": "lab", "version": 1, "nodes": 1, "quorate": 1},
+"nodelist": {"` + testNode + `": {"id": 1, "online": 1, "ip": "10.254.77.11"}}}`
+	require.NoError(t, os.WriteFile(filepath.Join(w.deps.Lease.PVEDir, ".members"), []byte(members), 0o600))
+}

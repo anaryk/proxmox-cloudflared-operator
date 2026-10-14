@@ -8,7 +8,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // watchdogAfter is WatchdogSec of pco.service: systemd restarts the daemon
@@ -160,4 +163,42 @@ func TestTheHeartbeatsLeaseIsValidOnlyWhileTheEngineMakesProgress(t *testing.T) 
 
 	ok, _ = newEnv(t).eng.LeaseValid(now)
 	require.False(t, ok, "no lease")
+}
+
+// progressAccess is the access control of Proxmox, which notes what the loop
+// of Run was doing while it was read.
+type progressAccess struct {
+	*fakeAccess
+	eng     **Engine
+	running []bool
+}
+
+func (a *progressAccess) ACL(ctx context.Context) ([]pve.ACLEntry, error) {
+	a.running = append(a.running, (*a.eng).Progress().Running)
+	return a.fakeAccess.ACL(ctx)
+}
+
+// The reads before a cycle, the first checks of the credentials at
+// Cloudflare and the access control of Proxmox, count as running: each has a
+// deadline of its own, so a slow answer is not taken for an engine that waits
+// past its due time, and the watchdog is not left without a ping.
+func TestTheReadsBeforeACycleCountAsRunning(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	acc := &progressAccess{fakeAccess: e.acc, eng: &e.eng}
+	e.eng.d.Access = acc
+	var checking []bool
+	e.eng.d.NewClient = func(c store.Credential) (cfapi.API, error) {
+		checking = append(checking, e.eng.Progress().Running)
+		return e.newClient(c)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	e.inv.hook(cancel)
+
+	require.NoError(t, e.eng.Run(ctx))
+
+	require.NotEmpty(t, checking)
+	require.True(t, checking[0], "the first check of the credential")
+	require.Equal(t, []bool{true}, acc.running, "the access control")
+	require.LessOrEqual(t, firstCheckTimeout+accessTimeout, 60*time.Second, "both fit in a running stretch")
 }

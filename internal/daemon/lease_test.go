@@ -17,8 +17,10 @@ import (
 )
 
 // A node that stands alone keeps the lease as a node of a cluster does: the
-// lock in the cluster filesystem, a new epoch at the first start, the lock
-// given back as the daemon stops.
+// lock in the cluster filesystem, a new epoch at the first start. It has
+// nobody to give it to, so a clean stop keeps the lock and the next start of
+// the same boot keeps the epoch; the start after a reboot takes its own lock
+// at once with one new epoch.
 func TestTheDaemonOfAStandaloneNodeHoldsTheLease(t *testing.T) {
 	w := newWorld(t)
 	r := w.start()
@@ -33,15 +35,39 @@ func TestTheDaemonOfAStandaloneNodeHoldsTheLease(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, testNode, rec.Node)
 	require.Equal(t, testNode+"/boot-1", rec.Incarnation)
+
+	require.NoError(t, r.stop())
+	require.DirExists(t, w.lockDir, "kept as the daemon stopped")
+	rec, _, _, err = w.store.Leader()
+	require.NoError(t, err)
 	require.True(t, rec.ReleasedAt.IsZero())
+
+	r = w.start()
+	st = r.await(func(st engine.State) bool { return st.Lease != nil && st.Lease.Valid })
+	require.Equal(t, 2, st.Lease.Generation, "a restart keeps the epoch")
+	require.NoError(t, r.stop())
+
+	w.deps.Lease.BootID = func() (string, error) { return "boot-2", nil }
+	r = w.start()
+	st = r.await(func(st engine.State) bool { return st.Lease != nil && st.Lease.Valid })
+	require.Equal(t, 3, st.Lease.Generation, "one new epoch for the new boot")
+	require.Zero(t, w.leaseFS.asked("unlock"), "its own lock, taken at once")
+}
+
+// A node of a cluster gives the lease back as the daemon stops, so that
+// another node takes it at once.
+func TestTheDaemonOfAClusterNodeGivesTheLeaseBack(t *testing.T) {
+	w := newWorld(t)
+	w.inCluster(t)
+	r := w.start()
+	r.await(func(st engine.State) bool { return st.Lease != nil && st.Lease.Valid })
 
 	require.NoError(t, r.stop())
 
 	require.NoDirExists(t, w.lockDir, "given back as the daemon stopped")
-	rec, _, _, err = w.store.Leader()
+	rec, _, _, err := w.store.Leader()
 	require.NoError(t, err)
 	require.False(t, rec.ReleasedAt.IsZero())
-	require.Equal(t, 2, rec.Generation)
 }
 
 // A daemon that ended without giving the lease back, as after kill -9, finds
@@ -107,7 +133,7 @@ func TestTheNodeIsEligibleAsTheRegistryAndTheStoreSay(t *testing.T) {
 		"not registered":     {why: "node " + testNode + " is not registered"},
 		"draining":           {entry: &store.NodeEntry{Name: testNode, Since: t0, State: store.NodeDraining}, why: "node " + testNode + " is draining"},
 		"set not to be":      {entry: &store.NodeEntry{Name: testNode, Since: t0, ControllerEligible: &no}, why: "node " + testNode + " was set not to be the controller"},
-		"of another cluster": {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("aa")}, why: "the store was made in another cluster"},
+		"of another cluster": {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("aa")}},
 		"of this cluster":    {entry: &store.NodeEntry{Name: testNode, Since: t0}, cluster: &store.ClusterIdentity{CASHA256: fingerprint("bb")}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -120,9 +146,7 @@ func TestTheNodeIsEligibleAsTheRegistryAndTheStoreSay(t *testing.T) {
 			if tc.entry != nil {
 				require.NoError(t, st.SaveNode(*tc.entry))
 			}
-			here := func() (store.ClusterIdentity, error) { return store.ClusterIdentity{CASHA256: fingerprint("bb")}, nil }
-
-			ok, why := eligibility(st, testNode, p, here, time.Now)()
+			ok, why := eligibility(st, testNode, p, time.Now)()
 
 			require.Equal(t, tc.why == "", ok, why)
 			require.Contains(t, why, tc.why)

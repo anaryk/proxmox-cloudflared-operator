@@ -107,7 +107,9 @@ type hostLease struct {
 	d      LeaseDeps
 	keeper *lease.Keeper
 	quorum *members.Quorum
-	log    zerolog.Logger
+	// alone says whether the node stands alone.
+	alone func() bool
+	log   zerolog.Logger
 	// guard is the engine whose agent says whether a live controller is
 	// heard; set before the keeper runs.
 	guard atomic.Pointer[engine.Engine]
@@ -132,6 +134,7 @@ func newHostLease(node string, st *store.Store, paths store.Paths, d LeaseDeps, 
 		quorum: members.NewQuorum(filepath.Join(d.PVEDir, filepath.Base(members.MembersFile)), d.Clocks.Now),
 		log:    log,
 	}
+	h.alone = h.standalone(st, node)
 	k, err := lease.New(lease.Config{
 		Node:        node,
 		Incarnation: node + "/" + boot,
@@ -140,8 +143,9 @@ func newHostLease(node string, st *store.Store, paths store.Paths, d LeaseDeps, 
 		Store:       leaderStore{st},
 		Quorum:      h.quorate,
 		Remembered:  remembered(st),
-		Eligible:    eligibility(st, node, paths, h.Cluster, d.Clocks.Now),
+		Eligible:    eligibility(st, node, paths, d.Clocks.Now),
 		Guard:       h.heardLive,
+		Standalone:  h.alone,
 		Exclusive:   lease.ProcessLock(d.ProcessLock),
 		Clocks:      d.Clocks,
 		Rand:        d.Rand,
@@ -191,6 +195,19 @@ func (h *hostLease) Cluster() (store.ClusterIdentity, error) {
 	}
 	m, _ := h.quorum.Last()
 	return store.ClusterIdentity{CASHA256: fp, Name: m.Cluster}, nil
+}
+
+// standalone says whether this node stands alone: the last read of the
+// members file names no cluster, and the registry no node but this one.
+func (h *hostLease) standalone(st *store.Store, node string) func() bool {
+	return func() bool {
+		m, at := h.quorum.Last()
+		if at.IsZero() || !m.Standalone {
+			return false
+		}
+		nodes, err := st.Nodes()
+		return err == nil && len(nodes) == 1 && nodes[0].Name == node
+	}
 }
 
 func (h *hostLease) heardLive() bool {
@@ -286,12 +303,16 @@ func (h *hostLease) end(eng *engine.Engine) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), releaseWait)
 	defer cancel()
-	held := h.keeper.State().Holder
+	held, alone := h.keeper.State().Holder, h.alone()
 	if err := h.keeper.Release(ctx); err != nil {
 		h.log.Warn().Err(err).Msg("releasing the lease failed; it expires by itself")
 	} else if held && eng != nil && !eng.Progress().DueAt.IsZero() {
 		// The engine ran: its events say that the lease went.
-		eng.NoteLease("released as the daemon stopped")
+		msg := "released as the daemon stopped"
+		if alone {
+			msg = "kept as the daemon stopped: this node stands alone, and its next start keeps the epoch"
+		}
+		eng.NoteLease(msg)
 	}
 	h.stop()
 	<-h.done
@@ -311,10 +332,12 @@ func holdingClients(newClient engine.ClientFactory, k interface{ State() lease.S
 
 // eligibility says whether this node may be the controller: its entry in
 // the registry exists and is not draining, removed or contested, and the
-// admin did not take it out; the store holds no object of a schema this
-// build does not read; and the store was made in this cluster. The schema
-// is read again at most every eligibleSchemaEvery.
-func eligibility(st *store.Store, node string, paths store.Paths, cluster func() (store.ClusterIdentity, error), now func() time.Time) func() (bool, string) {
+// admin did not take it out; and the store holds no object of a schema this
+// build does not read. A store made in another cluster does not keep the
+// node from the lease: the engine writes nothing under it until pco promote,
+// which needs the lease to read Cloudflare. The schema is read again at most
+// every eligibleSchemaEvery.
+func eligibility(st *store.Store, node string, paths store.Paths, now func() time.Time) func() (bool, string) {
 	var schemaAt time.Time
 	var schemaWhy string
 	return func() (bool, string) {
@@ -326,9 +349,6 @@ func eligibility(st *store.Store, node string, paths store.Paths, cluster func()
 		}
 		if schemaWhy != "" {
 			return false, schemaWhy
-		}
-		if why := clusterReason(st, cluster); why != "" {
-			return false, why
 		}
 		return true, ""
 	}
@@ -361,26 +381,6 @@ func schemaReason(paths store.Paths) string {
 		return fmt.Sprintf("the schema of the store cannot be read: %v", err)
 	case v > store.SchemaVersion():
 		return fmt.Sprintf("%s has schema %d, and this build reads up to %d", at, v, store.SchemaVersion())
-	}
-	return ""
-}
-
-func clusterReason(st *store.Store, cluster func() (store.ClusterIdentity, error)) string {
-	inst, found, err := st.Install()
-	switch {
-	case err != nil:
-		return fmt.Sprintf("the install cannot be read: %v", err)
-	case !found:
-		return "pco is not set up"
-	case inst.Cluster == nil:
-		return ""
-	}
-	here, err := cluster()
-	switch {
-	case err != nil:
-		return fmt.Sprintf("the identity of this cluster cannot be read: %v", err)
-	case here.CASHA256 != inst.Cluster.CASHA256:
-		return fmt.Sprintf("the store was made in another cluster (%s); pco promote makes this one its writer", inst.Cluster.CASHA256)
 	}
 	return ""
 }

@@ -14,28 +14,43 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-// holderWait is how long a promotion that made this cluster the store's
-// waits for the lease, which the keeper takes at its next poll.
-const holderWait = 20 * time.Second
+const (
+	// holderWait is how long a promotion waits for this node to hold the
+	// lease, which the keeper takes at its next poll.
+	holderWait = 20 * time.Second
+	// promoteReads bounds the reads of the sentinels at Cloudflare, and
+	// promoteWait a whole promotion: both inside the minute the command
+	// line waits for the answer.
+	promoteReads = 45 * time.Second
+	promoteWait  = 55 * time.Second
+)
+
+// PromoteRequest is what pco promote asks: without Confirm only the
+// differences; with it a new epoch, which Force draws also when nothing
+// differs, and Cluster names the cluster a store of another cluster was made
+// in, as the differences show it: its name, or its fingerprint.
+type PromoteRequest struct {
+	Confirm bool   `json:"confirm,omitempty"`
+	Force   bool   `json:"force,omitempty"`
+	Cluster string `json:"cluster,omitempty"`
+}
 
 // Promote makes this node the writer of a store the controller only
 // observes: one restored from an earlier copy, behind what the agents
-// remember, or made in another cluster. Without confirm it only says what
+// remember, or made in another cluster. Without Confirm it only says what
 // differs between the store and what the agents and Cloudflare say. With
-// it, the store is made this cluster's, and a new epoch is drawn above every
-// sentinel of the install at Cloudflare and every epoch an agent reported;
-// the settings are set to observe-only, so that what the controller would
-// change is shown before pco apply lets it. On the host only: the appliance
-// recovers with pco appliance recover.
-func (e *Engine) Promote(ctx context.Context, confirm bool) (PromoteResult, error) {
+// it, once this node holds the lease, the store is made this cluster's and a
+// new epoch is drawn above every sentinel of the install at Cloudflare and
+// every epoch an agent reported; the settings are set to observe-only, so
+// that what the controller would change is shown before pco apply lets it.
+// It refuses when there is nothing to promote, unless Force. On the host
+// only: the appliance recovers with pco appliance recover.
+func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult, error) {
 	if e.d.Lease == nil {
 		return PromoteResult{}, fmt.Errorf("%w: pco promote is for the host profile; an appliance draws a new epoch with pco appliance recover", ErrRefused)
 	}
-	if err := e.acquireAdmin(ctx); err != nil {
-		return PromoteResult{}, err
-	}
-	defer e.release()
-
+	ctx, cancel := e.timeout(ctx, promoteWait)
+	defer cancel()
 	inst, found, err := e.d.Store.Install()
 	switch {
 	case err != nil:
@@ -43,16 +58,21 @@ func (e *Engine) Promote(ctx context.Context, confirm bool) (PromoteResult, erro
 	case !found:
 		return PromoteResult{}, fmt.Errorf("%w: %s", ErrRefused, problemNotSetUp)
 	}
-	res := PromoteResult{Differences: e.differences(ctx, inst)}
-	if !confirm {
-		return res, nil
+	if !req.Confirm {
+		// Nothing is changed: the reads at Cloudflare need no cycle lock.
+		return PromoteResult{Differences: e.differences(ctx, inst, true)}, nil
 	}
+	if err := e.acquireAdmin(ctx); err != nil {
+		return PromoteResult{}, err
+	}
+	defer e.release()
 
-	// A store that went back takes no write until a tenure begins anew: the
-	// admin adopts it as it is.
-	e.d.Store.StartTenure()
-	e.tenure = planner.Writer{}
-	if err := e.adoptCluster(inst); err != nil {
+	res := PromoteResult{Differences: e.differences(ctx, inst, false)}
+	other, err := e.otherCluster(inst)
+	if err != nil {
+		return res, err
+	}
+	if err := e.promotable(res.Differences, other, req); err != nil {
 		return res, err
 	}
 	if err := e.awaitHolder(ctx); err != nil {
@@ -62,6 +82,16 @@ func (e *Engine) Promote(ctx context.Context, confirm bool) (PromoteResult, erro
 	if err != nil {
 		return res, err
 	}
+	// A store that went back takes no write until a tenure begins anew: the
+	// admin adopts it as it is. The engine holds on its own until the new
+	// epoch is drawn.
+	e.d.Store.StartTenure()
+	if other != nil {
+		inst.Cluster = other
+		if err := e.d.Store.SaveInstall(inst); err != nil {
+			return res, fmt.Errorf("making this cluster the store's: %w", err)
+		}
+	}
 	if err := e.d.Lease.Promote(ctx, seed); err != nil {
 		return res, fmt.Errorf("drawing a new epoch: %w", err)
 	}
@@ -70,7 +100,7 @@ func (e *Engine) Promote(ctx context.Context, confirm bool) (PromoteResult, erro
 	}
 	st := e.d.Lease.State()
 	e.d.Store.StartTenure()
-	e.tenure, e.tenureAt, e.tenureWrote = st.Writer, e.d.Now(), false
+	e.tenure, e.tenureAt, e.tenureWrote, e.wentBack = st.Writer, e.d.Now(), false, nil
 	res.Drawn, res.Generation, res.Nonce = true, st.Writer.Generation, st.Writer.Nonce
 	msg := fmt.Sprintf("promoted to generation %d; observe-only until pco apply", st.Writer.Generation)
 	e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: kindLease, Subject: e.d.Node, Message: msg, Actor: ActorOf(ctx)})
@@ -79,10 +109,52 @@ func (e *Engine) Promote(ctx context.Context, confirm bool) (PromoteResult, erro
 	return res, nil
 }
 
-// differences says what the store and the agents' reports, and Cloudflare,
-// say differently: the epoch of each agent, the nodes, the revisions the
-// tenure wrote, the cluster, the generation of the sentinels.
-func (e *Engine) differences(ctx context.Context, inst store.Install) []DifferenceView {
+// promotable refuses a promotion that has nothing to do, unless forced: the
+// store and the agents agree, the controller is not behind and the store did
+// not go back. A store of another cluster is promoted only with the name, or
+// the fingerprint, of the cluster it was made in typed by the admin.
+func (e *Engine) promotable(diffs []DifferenceView, other *store.ClusterIdentity, req PromoteRequest) error {
+	if other != nil {
+		inst, _, err := e.d.Store.Install()
+		if err != nil {
+			return fmt.Errorf("reading the install identity: %w", err)
+		}
+		rec := inst.Cluster
+		if req.Cluster == "" || (req.Cluster != rec.Name && req.Cluster != rec.CASHA256) {
+			return fmt.Errorf("%w: the store was made in cluster %s (%s); type its name, or its fingerprint when it has none, "+
+				"to make this cluster its writer", ErrRefused, clusterName(*rec), rec.CASHA256)
+		}
+		return nil
+	}
+	st := e.d.Lease.State()
+	if req.Force || len(diffs) > 0 || st.Behind != "" || e.storeWentBack() != nil {
+		return nil
+	}
+	return fmt.Errorf("%w: nothing differs between the store and the agents, and this controller is not behind: "+
+		"there is nothing to promote; --force draws a new epoch all the same", ErrRefused)
+}
+
+// otherCluster is the identity of the cluster this node is in when the store
+// was made in another one; nil when it was made here, or records none.
+func (e *Engine) otherCluster(inst store.Install) (*store.ClusterIdentity, error) {
+	read := e.d.Cluster
+	if read == nil || inst.Cluster == nil {
+		return nil, nil
+	}
+	here, err := read()
+	if err != nil {
+		return nil, fmt.Errorf("reading the identity of this cluster: %w", err)
+	}
+	if inst.Cluster.CASHA256 == here.CASHA256 {
+		return nil, nil
+	}
+	return &here, nil
+}
+
+// differences says what the store and the agents' reports, and Cloudflare
+// when sentinels, say differently: the epoch of each agent, the nodes, the
+// revisions the tenure wrote, the cluster, the generation of the sentinels.
+func (e *Engine) differences(ctx context.Context, inst store.Install, sentinels bool) []DifferenceView {
 	out := []DifferenceView{}
 	rec, _, found, err := e.d.Store.Leader()
 	stored := "none"
@@ -116,7 +188,7 @@ func (e *Engine) differences(ctx context.Context, inst store.Install) []Differen
 			}
 		}
 	}
-	if err := e.d.Store.WentBack(); err != nil {
+	if err := e.storeWentBack(); err != nil {
 		out = append(out, DifferenceView{Subject: "revisions", Store: err.Error(), Reported: "written by this controller"})
 	}
 	if read := e.d.Cluster; read != nil {
@@ -124,6 +196,15 @@ func (e *Engine) differences(ctx context.Context, inst store.Install) []Differen
 			out = append(out, DifferenceView{Subject: "cluster",
 				Store: clusterName(*inst.Cluster) + " (" + inst.Cluster.CASHA256 + ")", Reported: clusterName(here) + " (" + here.CASHA256 + ")"})
 		}
+	}
+	if !sentinels {
+		return out
+	}
+	if !e.d.Lease.State().Holder {
+		// Only the controller reads Cloudflare; the confirmed promotion
+		// reads the sentinels once this node holds the lease.
+		return append(out, DifferenceView{Subject: "sentinels at Cloudflare", Store: stored,
+			Reported: "read once confirmed: this node does not hold the lease yet"})
 	}
 	switch highest, err := e.highestSentinel(ctx, inst.ID); {
 	case err != nil:
@@ -145,27 +226,6 @@ func stateText(state string) string {
 		return ""
 	}
 	return ", " + state
-}
-
-// adoptCluster makes the cluster this node is in the store's, when the store
-// names another one: the admin said so by confirming a promotion.
-func (e *Engine) adoptCluster(inst store.Install) error {
-	read := e.d.Cluster
-	if read == nil || inst.Cluster == nil {
-		return nil
-	}
-	here, err := read()
-	if err != nil {
-		return fmt.Errorf("reading the identity of this cluster: %w", err)
-	}
-	if inst.Cluster.CASHA256 == here.CASHA256 {
-		return nil
-	}
-	inst.Cluster = &here
-	if err := e.d.Store.SaveInstall(inst); err != nil {
-		return fmt.Errorf("making this cluster the store's: %w", err)
-	}
-	return nil
 }
 
 // awaitHolder waits, for a while, until this node holds the lease: a node
@@ -216,6 +276,8 @@ func (e *Engine) promotionSeed(ctx context.Context, installID string) (int, erro
 // the sentinels of its tunnels, through every stored credential; 0 when
 // there is none.
 func (e *Engine) highestSentinel(ctx context.Context, installID string) (int, error) {
+	ctx, cancel := e.timeout(ctx, promoteReads)
+	defer cancel()
 	creds, err := e.d.Store.Credentials()
 	if err != nil {
 		return 0, fmt.Errorf("reading the credentials: %w", err)

@@ -355,14 +355,18 @@ account a new secret, which cuts every connector but pco's, and answers `{"tunne
 connector of the tunnel, so the daemon takes it from root alone: `pco-web` is refused with `only
 root may rotate the secret of a tunnel`.
 
-`POST /v1/promote {"confirm": true}` makes the node of the daemon the writer of a store it only
-observes, on the host: one restored from an earlier copy, behind what the agents remember, or
-made in another cluster. It answers `{"differences": [{"subject", "store", "reported"}],
-"drawn", "generation", "nonce"}`: without `confirm` only what differs between the store and
-what the agents and Cloudflare say, and nothing is drawn; with it, the epoch drawn above every
-sentinel of the install and every epoch an agent reported, and the settings are set to
-observe-only. A sentinel that cannot be read refuses it with `refused`, and so does the
-appliance, which draws an epoch with `pco appliance recover`. The daemon takes it from root
+`POST /v1/promote {"confirm": true, "force": false, "cluster": "<name>"}` makes the node of the
+daemon the writer of a store it only observes, on the host: one restored from an earlier copy,
+behind what the agents remember, or made in another cluster. It answers `{"differences":
+[{"subject", "store", "reported"}], "drawn", "generation", "nonce"}`: without `confirm` only
+what differs between the store and what the agents and Cloudflare say, and nothing is drawn
+(the sentinels are read only by a node that holds the lease, else the line says they are read
+once confirmed); with it, the epoch drawn above every sentinel of the install and every epoch
+an agent reported, and the settings are set to observe-only. It is refused with `refused` when
+nothing differs and nothing holds the controller, unless `force`; when the store was made in
+another cluster and `cluster` is not the name of that cluster, or its fingerprint when it has
+none; when a sentinel cannot be read; and in the appliance, which draws an epoch with `pco
+appliance recover`. The reads at Cloudflare have 45 seconds, the whole request 55. The daemon takes it from root
 alone: `pco-web` is refused with `only root may promote a node to be the writer`.
 
 ### Credentials

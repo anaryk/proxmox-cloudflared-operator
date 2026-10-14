@@ -676,22 +676,33 @@ two seconds, and nothing stood still in between; `pco status --json` shows the l
 
 Each time a node takes the lease anew it draws a new epoch, one generation higher, which it
 writes into `leader.json` and the sentinel of every tunnel. That happens once after an
-upgrade to this release, and after every stop that gave the lease back: a clean stop or
-restart of the daemon gives it back, and the next start takes it with a new generation. A
-daemon that ended without giving it back, as after `kill -9` or a restart by the watchdog,
-finds the lock of its node and boot still its own and keeps the epoch. After a crash or a
-power loss of the node, the lock expires two minutes after its last refresh, and the daemon
-takes it then; until then it writes nothing.
+upgrade to this release. A node that stands alone, with no cluster in `/etc/pve/.members` and
+no other node registered, has nobody to give the lease to: a clean stop or restart of the
+daemon keeps the lock, and the next start of the same boot keeps the epoch; after a reboot or
+a power loss it takes its own lock at once and draws one new epoch for the new boot. A node of
+a cluster gives the lease back on a clean stop, so that another node takes it within seconds,
+and its next start takes it with a new generation; a daemon that ended without giving it back,
+as after `kill -9` or a restart by the watchdog, finds the lock of its node and boot still its
+own and keeps the epoch, and after a crash or a power loss of the node the lock expires two
+minutes after its last refresh, and a node takes it then.
 
 A controller writes nothing, and says why, while the store is older than what the agents
 remember, went back under it, or was made in another cluster: after a restore of
 `/etc/pve/pco`, or a copy of a node's disk. [`pco promote`](cli/pco-promote.md) shows what
 differs and, confirmed, draws a new epoch above every sentinel of the install at Cloudflare
-and every epoch an agent reported, and sets observe-only mode until `pco apply`.
+and every epoch an agent reported, and sets observe-only mode until `pco apply`. It refuses when
+nothing differs and nothing holds the daemon, as a new epoch rewrites the sentinel of every
+tunnel (`--force` does it all the same), and for a store of another cluster it wants the name
+of that cluster, or its fingerprint, typed or given with `--cluster`. Nothing pco does makes a
+store go back: `pco setup` run again only adds and updates objects, and `pco uninstall` stops
+the daemon before it removes any.
 
-The engine has a deadline of 75 seconds per cycle, and pings the watchdog of systemd only
-while a cycle runs that began less than 75 seconds ago, or while it waits for the next one;
-a daemon whose engine hangs is restarted within 90 seconds and keeps its epoch. The
+The engine has a deadline of 75 seconds per cycle, and pings the watchdog of systemd every 15
+seconds only while a cycle runs that began less than 75 seconds ago, or while it waits for the
+next one. The reads before a cycle, the first checks of new credentials and of the access
+control, have deadlines of their own and count as part of it. A daemon whose engine hangs is
+restarted 90 seconds after its last ping: between 90 and 165 seconds after the cycle that hung
+began, and it keeps its epoch. The
 Cloudflare credentials are read into memory only while the node holds a valid lease, and
 dropped when it loses it or is fenced.
 

@@ -280,14 +280,12 @@ func (s *Server) postPromote(c *gin.Context) {
 		s.fail(c, errPromoteBy)
 		return
 	}
-	var req struct {
-		Confirm bool `json:"confirm"`
-	}
+	var req engine.PromoteRequest
 	if err := decode(c, &req, true); err != nil {
 		s.fail(c, err)
 		return
 	}
-	res, err := s.engine.Promote(c.Request.Context(), req.Confirm)
+	res, err := s.engine.Promote(c.Request.Context(), req)
 	if err != nil {
 		s.fail(c, err)
 		return

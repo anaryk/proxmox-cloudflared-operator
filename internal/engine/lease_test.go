@@ -148,6 +148,24 @@ func TestAHostHoldingTheLeaseWritesAsBefore(t *testing.T) {
 	require.True(t, l.firstWrite)
 }
 
+// The agent of this node runs in the process and reports at once: the first
+// cycle of a new tenure is not held for the report round, also with the clock
+// standing still.
+func TestTheFirstCycleOfANewTenureIsNotHeldForTheLocalAgent(t *testing.T) {
+	e, l := onHost(t)
+	e.enforce()
+	e.cycle()
+	next := planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "n2"}
+	require.NoError(t, e.store.SaveWriter(next))
+	l.set(func(st *lease.State) { st.Writer, st.Record.Writer = next, next })
+
+	st := e.cycle()
+
+	require.Empty(t, st.Problems)
+	require.Empty(t, st.Hold, "no wait for the report of the agent of this node")
+	require.Equal(t, VerdictOK, st.WriterVerdict)
+}
+
 func TestTheWriterCallbackFailsWhileTheGateDoesAndSaysWhy(t *testing.T) {
 	e, l := onHost(t)
 	e.eng.us = testWriter
@@ -376,7 +394,17 @@ func TestTheStoreGoingBackHoldsUntilPromote(t *testing.T) {
 
 	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "n2"}
 	l.saved = e.store.SaveWriter
-	res, err := e.eng.Promote(t.Context(), true)
+	// A promotion that fails once it began a new store tenure leaves the
+	// controller holding.
+	l.promoteErr = errors.New("the cluster filesystem did not answer")
+	_, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
+	require.Error(t, err)
+	st = e.cycle()
+	require.Equal(t, problemStoreWentBack, st.Hold, "still")
+	require.Len(t, e.writes(), writes)
+
+	l.promoteErr = nil
+	res, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
 	require.NoError(t, err)
 	require.True(t, res.Drawn)
 	require.NoError(t, e.store.WentBack(), "a new tenure")

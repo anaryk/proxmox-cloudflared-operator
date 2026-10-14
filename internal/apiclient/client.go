@@ -177,14 +177,11 @@ func (c *Client) RotateTunnel(ctx context.Context, account string) (engine.Tunne
 }
 
 // Promote asks what differs between the store and what the agents and
-// Cloudflare say, and with confirm has the daemon draw a new epoch that
-// makes its node the writer.
-func (c *Client) Promote(ctx context.Context, confirm bool) (engine.PromoteResult, error) {
-	body := struct {
-		Confirm bool `json:"confirm,omitempty"`
-	}{confirm}
+// Cloudflare say, and confirmed has the daemon draw a new epoch that makes
+// its node the writer.
+func (c *Client) Promote(ctx context.Context, req engine.PromoteRequest) (engine.PromoteResult, error) {
 	var res engine.PromoteResult
-	err := c.call(ctx, c.long, http.MethodPost, "/v1/promote", body, &res)
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/promote", req, &res)
 	return res, err
 }
 

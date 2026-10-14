@@ -9,7 +9,8 @@ import (
 
 // pingEvery is how often the watchdog of systemd is told that the engine
 // makes progress. pco.service has WatchdogSec=90s: six pings fit in it, and
-// a hung engine is restarted within 90 s of the last one.
+// a hung engine is restarted 90 s after the last one: at most 165 s after
+// its cycle began, as the pings go on for 75 s of a cycle.
 const pingEvery = 15 * time.Second
 
 // watchdog pings systemd while the engine makes progress, and only then. The

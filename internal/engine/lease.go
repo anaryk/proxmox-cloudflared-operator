@@ -69,7 +69,7 @@ func (c *cycleRun) leaseAdmits() bool {
 		return false
 	}
 	c.startTenure(st)
-	if err := c.e.d.Store.WentBack(); err != nil {
+	if err := c.e.storeWentBack(); err != nil {
 		c.e.d.Log.Error().Err(err).Msg("the store went back under this writer")
 		c.holdBehind(c.problem(problemStoreWentBack))
 		return false
@@ -184,7 +184,7 @@ func (e *Engine) writer() (us, stored planner.Writer, err error) {
 			return e.us, planner.Writer{}, fmt.Errorf("the lease is of epoch %d.%s, not of this cycle's writer %d.%s",
 				w.Generation, w.Nonce, e.us.Generation, e.us.Nonce)
 		}
-		if err := e.d.Store.WentBack(); err != nil {
+		if err := e.storeWentBack(); err != nil {
 			return e.us, planner.Writer{}, err
 		}
 	}
@@ -224,7 +224,17 @@ func (e *Engine) leaseRefused(ctx context.Context) error {
 	if _, err := e.d.Lease.Gate(ctx); err != nil {
 		return fmt.Errorf("%w: %w", ErrRefused, err)
 	}
-	return e.d.Store.WentBack()
+	return e.storeWentBack()
+}
+
+// storeWentBack is the step back of the store the tenure saw, kept by the
+// engine until a promotion draws a new epoch: a new store tenure, begun by a
+// promotion that then failed, must not let the writes go on.
+func (e *Engine) storeWentBack() error {
+	if err := e.d.Store.WentBack(); err != nil && e.wentBack == nil {
+		e.wentBack = err
+	}
+	return e.wentBack
 }
 
 // NoteLease keeps an event of the lease that happened outside a cycle, as

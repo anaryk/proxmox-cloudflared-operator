@@ -489,9 +489,9 @@ func TestPromote(t *testing.T) {
 	for _, tt := range []struct {
 		name, body, call, answer string
 	}{
-		{"the differences", `{}`, "promote:false",
+		{"the differences", `{}`, "promote:false:false:",
 			`{"differences":[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}],"drawn":false}`},
-		{"confirmed", `{"confirm":true}`, "promote:true",
+		{"confirmed", `{"confirm":true,"force":true,"cluster":"old-lab"}`, "promote:true:true:old-lab",
 			`{"differences":[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}],"drawn":true,"generation":5,"nonce":"drawn"}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -245,8 +245,9 @@ func (f *fakeEngine) Adopt(ctx context.Context, name string) error {
 	return f.failure()
 }
 
-func (f *fakeEngine) Promote(ctx context.Context, confirm bool) (engine.PromoteResult, error) {
-	f.record(ctx, fmt.Sprintf("promote:%t", confirm))
+func (f *fakeEngine) Promote(ctx context.Context, req engine.PromoteRequest) (engine.PromoteResult, error) {
+	f.record(ctx, fmt.Sprintf("promote:%t:%t:%s", req.Confirm, req.Force, req.Cluster))
+	confirm := req.Confirm
 	if err := f.failure(); err != nil {
 		return engine.PromoteResult{}, err
 	}

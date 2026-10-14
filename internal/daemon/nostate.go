@@ -107,7 +107,7 @@ func (n *noStateEngine) RotateTunnel(context.Context, string) (engine.TunnelRota
 	return engine.TunnelRotation{}, n.refuse()
 }
 
-func (n *noStateEngine) Promote(context.Context, bool) (engine.PromoteResult, error) {
+func (n *noStateEngine) Promote(context.Context, engine.PromoteRequest) (engine.PromoteResult, error) {
 	return engine.PromoteResult{}, n.refuse()
 }
 

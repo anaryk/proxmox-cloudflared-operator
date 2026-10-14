@@ -101,13 +101,11 @@ func (e *Engine) Adopt(ctx context.Context, name string) error {
 
 // Promote finds nothing that differs; the fake holds no lease, so it draws
 // no epoch.
-func (e *Engine) Promote(ctx context.Context, confirm bool) (engine.PromoteResult, error) {
-	if err := e.begin(ctx, "Promote", struct {
-		Confirm bool `json:"confirm"`
-	}{confirm}); err != nil {
+func (e *Engine) Promote(ctx context.Context, req engine.PromoteRequest) (engine.PromoteResult, error) {
+	if err := e.begin(ctx, "Promote", req); err != nil {
 		return engine.PromoteResult{}, err
 	}
-	if confirm {
+	if req.Confirm {
 		return engine.PromoteResult{}, fmt.Errorf("%w: this daemon holds no lease to draw an epoch under", engine.ErrRefused)
 	}
 	return engine.PromoteResult{Differences: []engine.DifferenceView{}}, nil

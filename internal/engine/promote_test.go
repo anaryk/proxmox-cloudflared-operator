@@ -3,9 +3,11 @@ package engine
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -29,7 +31,7 @@ func behindHost(t *testing.T) (*env, *fakeLease) {
 func TestPromoteShowsTheDifferencesAndDrawsNothingUnasked(t *testing.T) {
 	e, l := behindHost(t)
 
-	res, err := e.eng.Promote(t.Context(), false)
+	res, err := e.eng.Promote(t.Context(), PromoteRequest{})
 
 	require.NoError(t, err)
 	require.False(t, res.Drawn)
@@ -56,7 +58,7 @@ func TestPromoteDrawsAboveTheSentinelsAndTheAgents(t *testing.T) {
 				putSentinel(t, e, planner.Writer{InstallID: testInstall, Generation: tc.sentinel, Nonce: "else"})
 			}
 
-			res, err := e.eng.Promote(t.Context(), true)
+			res, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
 
 			require.NoError(t, err)
 			require.Equal(t, []int{tc.want}, l.promoted)
@@ -73,7 +75,7 @@ func TestPromoteRefusesWhatItCannotSee(t *testing.T) {
 	e, l := behindHost(t)
 	e.cf.FailNext("tunnel.read", 100, errors.New("timeout"))
 
-	_, err := e.eng.Promote(t.Context(), true)
+	_, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
 
 	require.ErrorIs(t, err, ErrRefused)
 	require.ErrorContains(t, err, "the generation at Cloudflare cannot be read")
@@ -83,15 +85,16 @@ func TestPromoteRefusesWhatItCannotSee(t *testing.T) {
 func TestPromoteIsForTheHost(t *testing.T) {
 	e := newEnv(t)
 
-	_, err := e.eng.Promote(t.Context(), true)
+	_, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
 
 	require.ErrorIs(t, err, ErrRefused)
 	require.ErrorContains(t, err, "pco appliance recover")
 }
 
 // A store made in another cluster becomes this cluster's once the admin
-// confirms: the node takes the lease then, and the epoch is drawn.
-func TestPromoteMakesThisClusterTheStores(t *testing.T) {
+// confirms with the name of the cluster it was made in: the identity is
+// saved only once this node holds the lease, with the new epoch.
+func TestPromoteMakesThisClusterTheStoresWithItsName(t *testing.T) {
 	e, l := onHost(t)
 	inst, _, err := e.store.Install()
 	require.NoError(t, err)
@@ -101,7 +104,17 @@ func TestPromoteMakesThisClusterTheStores(t *testing.T) {
 	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
 	l.saved = e.store.SaveWriter
 
-	res, err := e.eng.Promote(t.Context(), true)
+	for _, typed := range []string{"", "lab", "old"} {
+		_, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: typed})
+		require.ErrorIs(t, err, ErrRefused, typed)
+		require.ErrorContains(t, err, "old-lab", typed)
+	}
+	require.Empty(t, l.promoted)
+	stored, _, err := e.store.Install()
+	require.NoError(t, err)
+	require.Equal(t, caOld, stored.Cluster.CASHA256, "nothing saved")
+
+	res, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: "old-lab"})
 
 	require.NoError(t, err)
 	require.Contains(t, res.Differences, DifferenceView{
@@ -111,6 +124,83 @@ func TestPromoteMakesThisClusterTheStores(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, &store.ClusterIdentity{CASHA256: caNew, Name: "lab"}, inst.Cluster)
 	require.True(t, res.Drawn)
+}
+
+// A store whose cluster had no name is promoted with its fingerprint; and
+// while this node does not hold the lease, the sentinels are read only once
+// the admin confirmed.
+func TestPromoteOfAnUnnamedClustersStore(t *testing.T) {
+	e, l := onHost(t)
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	inst.Cluster = &store.ClusterIdentity{CASHA256: caOld}
+	require.NoError(t, e.store.SaveInstall(inst))
+	e.eng.d.Cluster = func() (store.ClusterIdentity, error) { return store.ClusterIdentity{CASHA256: caNew}, nil }
+	held := l.State()
+	l.set(func(st *lease.State) { *st = lease.State{Waiting: "the lock is held"} })
+	e.eng.d.NewClient = holdingOnly(l, e.newClient)
+
+	res, err := e.eng.Promote(t.Context(), PromoteRequest{})
+	require.NoError(t, err)
+	require.Contains(t, res.Differences, DifferenceView{
+		Subject: "sentinels at Cloudflare", Store: "1.n1", Reported: "read once confirmed: this node does not hold the lease yet",
+	})
+
+	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
+	l.saved = e.store.SaveWriter
+	l.set(func(st *lease.State) { *st = held })
+	res, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: caOld})
+	require.NoError(t, err)
+	require.True(t, res.Drawn)
+}
+
+// holdingOnly is the client factory of the daemon: none without the lease.
+func holdingOnly(l *fakeLease, made ClientFactory) ClientFactory {
+	return func(c store.Credential) (cfapi.API, error) {
+		if !l.State().Holder {
+			return nil, errors.New("this node does not hold a valid lease")
+		}
+		return made(c)
+	}
+}
+
+// When the store and the agents agree and nothing holds the controller,
+// there is nothing to promote: a new epoch would rewrite every sentinel for
+// nothing, so it takes --force.
+func TestPromoteRefusesWhenNothingApplies(t *testing.T) {
+	e, l := onHost(t)
+	e.enforce()
+	e.cycle()
+	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
+	l.saved = e.store.SaveWriter
+
+	res, err := e.eng.Promote(t.Context(), PromoteRequest{})
+	require.NoError(t, err)
+	require.Empty(t, res.Differences)
+
+	_, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "nothing differs")
+	require.Empty(t, l.promoted)
+
+	res, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Force: true})
+	require.NoError(t, err)
+	require.True(t, res.Drawn)
+}
+
+// The reads at Cloudflare have a deadline of their own, inside what the
+// command line waits for the answer.
+func TestPromoteBoundsItsReadsAtCloudflare(t *testing.T) {
+	e, _ := behindHost(t)
+	asked := &timeouts{}
+	e.eng.timeout = asked.withTimeout
+
+	_, err := e.eng.Promote(t.Context(), PromoteRequest{})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, asked.count(promoteReads))
+	require.LessOrEqual(t, promoteReads, 45*time.Second)
+	require.Less(t, promoteWait, 60*time.Second, "the command line waits a minute")
 }
 
 func TestClusterSettingsWaitForTheUpgradeToFinish(t *testing.T) {

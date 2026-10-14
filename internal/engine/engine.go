@@ -348,6 +348,9 @@ type Engine struct {
 	tenureAt    time.Time
 	tenureWrote bool
 	leaseSaid   leaseSaidAs
+	// wentBack is the step back of the store the tenure saw, until a
+	// promotion; guarded by the cycle lock.
+	wentBack error
 	// progress is what the watchdog of the daemon and the heartbeat read of
 	// the cycles.
 	progress progressBook
@@ -463,7 +466,11 @@ func (e *Engine) Cycle(ctx context.Context) State { return e.cycle(ctx, 0) }
 // cycle is Cycle, with a deadline for the cycle once it holds the lock when
 // deadline is above zero.
 func (e *Engine) cycle(ctx context.Context, deadline time.Duration) State {
+	// The read of the access control has a deadline of its own, and runs;
+	// the wait for the lock behind an admin action does not.
+	e.progress.started(e.d.Now())
 	e.refreshAccess(ctx)
+	e.progress.due(e.d.Now())
 	if err := e.acquire(ctx); err != nil {
 		return e.State()
 	}
@@ -515,6 +522,8 @@ func (e *Engine) Run(ctx context.Context) error {
 	defer e.moving.Wait()
 	e.progress.due(e.d.Now())
 	for {
+		// The first checks of the credentials have a deadline of their own.
+		e.progress.started(e.d.Now())
 		e.checkNew(ctx)
 		e.timedCycle(ctx)
 		if ctx.Err() != nil {

@@ -168,6 +168,30 @@ func TestTheTenureCheckIsNotFooledByItsOwnWrites(t *testing.T) {
 	require.NoError(t, s.WentBack())
 }
 
+// Another process that writes the store, as pco setup run again does, only
+// adds objects and raises revisions: that is no step back. Only a removal
+// is, which is why pco uninstall stops the daemon before it removes anything.
+func TestWritesOfAnotherProcessAreNoStepBack(t *testing.T) {
+	s, p := openStore(t)
+	s.StartTenure()
+	ackFive(t, s)
+	require.NoError(t, s.SaveSettings(DefaultSettings()))
+	other, err := Open(p)
+	require.NoError(t, err)
+
+	require.NoError(t, other.SaveSegment(Segment{Bridge: "vmbr0", AcknowledgedAt: t0.Add(time.Hour)}))
+	require.NoError(t, other.SaveSegment(Segment{Bridge: "vmbr1", AcknowledgedAt: t0}))
+	settings := DefaultSettings()
+	settings.ObserveOnly = !settings.ObserveOnly
+	require.NoError(t, other.SaveSettings(settings))
+	_, err = s.Segments()
+	require.NoError(t, err)
+	_, err = s.Settings()
+	require.NoError(t, err)
+
+	require.NoError(t, s.WentBack())
+}
+
 // Once a read found the store gone back, nothing more is written on top of
 // what the writer no longer knows, until a new tenure begins.
 func TestAStoreThatWentBackTakesNoWriteUntilANewTenure(t *testing.T) {

@@ -24,21 +24,32 @@ func (a *app) confirm(cmd *cobra.Command, yes bool, question string) (bool, erro
 	if yes {
 		return true, nil
 	}
+	answer, err := a.ask(cmd, question)
+	if err != nil {
+		return false, err
+	}
+	answer = strings.ToLower(answer)
+	return answer == "y" || answer == "yes", nil
+}
+
+// ask asks a question on stderr and returns the answer read from stdin,
+// which has to be a terminal, with the white space around it trimmed; the
+// end of the input is an empty answer.
+func (a *app) ask(cmd *cobra.Command, question string) (string, error) {
 	if _, terminal := a.stdinTerminal(cmd.InOrStdin()); !terminal {
-		return false, errNoTerminal
+		return "", errNoTerminal
 	}
 	s := &screen{w: cmd.ErrOrStderr()}
 	s.printf("%s ", question)
 	if err := s.done(); err != nil {
-		return false, err
+		return "", err
 	}
 	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 	if err != nil {
 		// The answer did not end with a newline, or never came.
 		s.println("")
 	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes", nil
+	return strings.TrimSpace(line), nil
 }
 
 // addYesFlag adds --yes, which answers the questions of a command with yes.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 type promoteDaemon struct {
 	mu    sync.Mutex
 	asked []string
+	diffs string // the differences it answers; one of an agent's epoch when empty
 }
 
 func (d *promoteDaemon) bodies() []string {
@@ -45,8 +47,11 @@ func servePromote(t *testing.T, d *promoteDaemon) string {
 		d.mu.Lock()
 		d.asked = append(d.asked, string(body))
 		d.mu.Unlock()
-		diffs := `[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}]`
-		if string(body) == `{"confirm":true}` {
+		diffs := d.diffs
+		if diffs == "" {
+			diffs = `[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}]`
+		}
+		if strings.Contains(string(body), `"confirm":true`) {
 			_, _ = io.WriteString(w, `{"differences":`+diffs+`,"drawn":true,"generation":5,"nonce":"drawn"}`)
 			return
 		}
@@ -122,4 +127,55 @@ func TestPromoteWithoutATerminalWantsYes(t *testing.T) {
 
 	require.ErrorIs(t, res.err, errNoTerminal)
 	require.Equal(t, []string{`{}`}, d.bodies(), "nothing drawn")
+}
+
+// pco promote passes --force through, for a store that agrees with the
+// agents.
+func TestPromoteForce(t *testing.T) {
+	d := &promoteDaemon{diffs: `[]`}
+	r := newRunner(t, servePromote(t, d))
+
+	res := r.run("", "promote", "--yes", "--force")
+
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, "The store and what the agents and Cloudflare report agree.")
+	require.Equal(t, []string{`{}`, `{"confirm":true,"force":true}`}, d.bodies())
+}
+
+// A store made in another cluster is promoted only once the admin typed the
+// name of that cluster, or its fingerprint, which is the confirmation; a
+// script names it with --cluster.
+func TestPromoteOfAnotherClustersStoreAsksForItsName(t *testing.T) {
+	const other = `[{"subject":"cluster","store":"old-lab (aaaa)","reported":"lab (bbbb)"}]`
+	t.Run("typed", func(t *testing.T) {
+		d := &promoteDaemon{diffs: other}
+		r := newRunner(t, servePromote(t, d))
+
+		res := r.tty().run("old-lab\n", "promote")
+
+		require.NoError(t, res.err)
+		require.Contains(t, res.errOut, "The store was made in another cluster. Type the name of that cluster, or its fingerprint "+
+			"when it has none, as shown above, to make this cluster its writer: ")
+		require.Equal(t, []string{`{}`, `{"confirm":true,"cluster":"old-lab"}`}, d.bodies())
+	})
+	t.Run("nothing typed", func(t *testing.T) {
+		d := &promoteDaemon{diffs: other}
+		r := newRunner(t, servePromote(t, d))
+
+		res := r.tty().run("\n", "promote")
+
+		require.ErrorIs(t, res.err, errAborted)
+		require.Equal(t, []string{`{}`}, d.bodies())
+	})
+	t.Run("a script", func(t *testing.T) {
+		d := &promoteDaemon{diffs: other}
+		r := newRunner(t, servePromote(t, d))
+
+		res := r.run("", "promote", "--yes")
+		require.EqualError(t, res.err, "the store was made in another cluster: name it with --cluster, as the differences show it")
+
+		res = r.run("", "promote", "--yes", "--cluster", "old-lab")
+		require.NoError(t, res.err)
+		require.Equal(t, []string{`{}`, `{}`, `{"confirm":true,"cluster":"old-lab"}`}, d.bodies())
+	})
 }

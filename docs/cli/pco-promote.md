@@ -8,9 +8,12 @@ follows, the nodes, the revisions, the cluster, the generation of the sentinels.
 it makes this cluster the store's and draws a new epoch above every sentinel of the install
 at Cloudflare and every epoch an agent reported, and sets observe-only mode: pco plan shows
 what the daemon would change, and pco apply lets it. It refuses when a sentinel cannot be
-read, which could hold a higher generation. Host profile only; an appliance draws a new
-epoch with pco appliance recover. Only root may, and the question needs a terminal; a script
-passes `--yes`.
+read, which could hold a higher generation, and when nothing differs and nothing holds the
+daemon: a new epoch rewrites the sentinel of every tunnel, which `--force` does all the same.
+A store made in another cluster is promoted only once you type the name of that cluster, or
+its fingerprint when it has none, as the differences show it; a script names it with
+`--cluster`. Host profile only; an appliance draws a new epoch with pco appliance recover. Only
+root may, and the question needs a terminal; a script passes `--yes`.
 
 It asks the daemon through its socket, which answers this request for root alone; the exit
 status is 2 when the daemon could not be asked.
@@ -29,13 +32,18 @@ pco promote
 
 # From a script that read the differences already
 pco promote --yes
+
+# A store restored from the cluster lab-old
+pco promote --yes --cluster lab-old
 ```
 
 ## Flags
 
 ```text
--h, --help   help for promote
--y, --yes    do not ask for confirmation (needed without a terminal)
+    --cluster string   the name, or the fingerprint, of the cluster a store of another cluster was made in
+    --force            draw a new epoch also when nothing differs
+-h, --help             help for promote
+-y, --yes              do not ask for confirmation (needed without a terminal)
 ```
 
 ## Global flags

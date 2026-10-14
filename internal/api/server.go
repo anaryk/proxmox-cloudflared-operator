@@ -101,9 +101,9 @@ type Engine interface {
 	ApproveManaged(ctx context.Context, owner, identity string, acceptFirewallImpact bool) (store.Consent, error)
 	RevokeManaged(ctx context.Context, owner string) error
 	EnableManaged(ctx context.Context) error
-	// Promote shows what differs between the store and the agents, and with
-	// confirm draws a new epoch that makes this node the writer.
-	Promote(ctx context.Context, confirm bool) (engine.PromoteResult, error)
+	// Promote shows what differs between the store and the agents, and
+	// confirmed draws a new epoch that makes this node the writer.
+	Promote(ctx context.Context, req engine.PromoteRequest) (engine.PromoteResult, error)
 }
 
 // Server answers API requests for an engine.
