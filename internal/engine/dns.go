@@ -100,20 +100,22 @@ func (c *cycleRun) noteListed(res reconcile.DNSResult) {
 
 // notePointed remembers, for the zones the run listed, which tunnel the
 // record of each hostname pointed at: what a zone the run could not list
-// showed before stands.
+// showed before stands, for pointedFor.
 func (c *cycleRun) notePointed(res reconcile.DNSResult) {
 	if !res.Looked {
 		return
 	}
 	mem := &c.e.place
 	if mem.pointedAt == nil {
-		mem.pointedAt = map[string]string{}
+		mem.pointedAt = map[string]pointedRecord{}
 	}
-	maps.DeleteFunc(mem.pointedAt, func(host, _ string) bool {
+	maps.DeleteFunc(mem.pointedAt, func(host string, p pointedRecord) bool {
 		z, ok := c.zoneOf(host)
-		return !ok || !slices.Contains(res.Unlisted, z.Name)
+		return !ok || !slices.Contains(res.Unlisted, z.Name) || c.now.Sub(p.at) >= pointedFor
 	})
-	maps.Copy(mem.pointedAt, res.PointsAt)
+	for host, tunnel := range res.PointsAt {
+		mem.pointedAt[host] = pointedRecord{tunnel: tunnel, at: c.now}
+	}
 }
 
 // offerRemovals offers the removals the mass delete guard counted, when it

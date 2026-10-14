@@ -276,7 +276,7 @@ func (c *cycleRun) storedOf(routes []model.Route) (placed, bool) {
 func (c *cycleRun) servedShared(routes []model.Route) bool {
 	shared := placed{kind: store.PlacementShared}
 	for _, rt := range routes {
-		if c.e.place.pointedAt[strings.ToLower(rt.Hostname)] == planner.TunnelName(c.install.ID) {
+		if c.e.place.recordPointed(strings.ToLower(rt.Hostname), c.now) == planner.TunnelName(c.install.ID) {
 			return true
 		}
 		if dialed, ok := c.baseTarget(rt).Dialed(); ok && c.sendsTo(rt, shared, egress.Target{Addr: dialed, Port: rt.Target.Port}) {

@@ -63,10 +63,34 @@ type placementMemory struct {
 	// decided is where the last placement put each owner's routes.
 	decided map[string]decidedPlace
 	// pointedAt is, by hostname, the tunnel its record pointed at when a
-	// DNS run of this process last listed its zone; unresolvedSince is,
-	// by hostname, since when no node resolves the route.
-	pointedAt       map[string]string
+	// DNS run of this process last listed its zone, and when that was;
+	// unresolvedSince is, by hostname, since when no node resolves the
+	// route.
+	pointedAt       map[string]pointedRecord
 	unresolvedSince map[string]time.Time
+}
+
+// pointedRecord is where the record of a hostname pointed when a DNS run
+// of this process last listed its zone, and when that was.
+type pointedRecord struct {
+	tunnel string
+	at     time.Time
+}
+
+// pointedFor is how long what a listing showed of a record stands while
+// its zone cannot be listed again: this controller may have switched the
+// record since, in a run that could not list the zone, and goes by a
+// listing older than this no more.
+const pointedFor = 5 * time.Minute
+
+// recordPointed is the tunnel the record of host pointed at when a DNS run
+// of this process listed its zone within pointedFor; empty when none did.
+func (m *placementMemory) recordPointed(host string, now time.Time) string {
+	p, ok := m.pointedAt[host]
+	if !ok || now.Sub(p.at) >= pointedFor {
+		return ""
+	}
+	return p.tunnel
 }
 
 // newTenure drops what the memory kept under an epoch this process no

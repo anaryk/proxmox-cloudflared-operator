@@ -459,7 +459,7 @@ func TestALeaseTakenAgainUnderANewEpochStartsOver(t *testing.T) {
 	w.settle()
 	w.eng.place.addedAt = map[string]time.Time{"qemu/103": t0}
 	w.eng.place.unresolvedSince = map[string]time.Time{"old.example.com": t0}
-	w.eng.place.pointedAt["www.example.com"] = "nowhere"
+	w.eng.place.pointedAt["www.example.com"] = pointedRecord{tunnel: "nowhere", at: w.clock.now()}
 
 	w.lease.set(func(st *lease.State) { st.Holder, st.Valid, st.Waiting = false, false, "the lock is held by pve2" })
 	w.tick(time.Second)

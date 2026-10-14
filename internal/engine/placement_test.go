@@ -171,6 +171,18 @@ func (w *world) placementEvents() []string {
 	return out
 }
 
+// Where a record pointed when its zone was last listed stands for a few
+// minutes only: this controller may have switched it since, in a cycle
+// whose run could not list the zone, and a route is not taken for served
+// through the shared tunnel on a listing that old.
+func TestWhereARecordPointedIsForgottenAfterAWhile(t *testing.T) {
+	m := &placementMemory{pointedAt: map[string]pointedRecord{"www.example.com": {tunnel: tunnelName, at: t0}}}
+
+	require.Equal(t, tunnelName, m.recordPointed("www.example.com", t0.Add(pointedFor-time.Second)))
+	require.Empty(t, m.recordPointed("www.example.com", t0.Add(pointedFor)))
+	require.Empty(t, m.recordPointed("db.example.com", t0))
+}
+
 // What the placement remembers by owner or hostname is pruned against the
 // winners of every cycle: a route that is gone leaves no timer behind that
 // would count for one with its name later.
