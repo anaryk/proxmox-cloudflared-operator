@@ -41,6 +41,10 @@ const (
 
 	// WhyIncomplete is why a check of an incomplete snapshot is not OK.
 	WhyIncomplete = "the inventory is incomplete; self-identification waits for a complete one"
+	// WhyPendingNIC is why an agent with a NIC that appeared or vanished
+	// within the minute, proven by its uptime alone, is not decided yet.
+	WhyPendingNIC = "a NIC of this container appeared or vanished within the last minute and only its uptime proves it; " +
+		"self-identification waits for the NICs to match"
 )
 
 // System is where the facts of the container are read: the roots of /proc

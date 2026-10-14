@@ -90,6 +90,23 @@ func TestAnAgentProvesItselfAndDrawsNoEpoch(t *testing.T) {
 	require.Equal(t, planner.Writer{InstallID: "abc123", Generation: 5, Nonce: "n5", Incarnation: incA}, f.writer(t))
 }
 
+// An agent whose NIC is pending, with only the uptime to prove it, is not
+// proven: a clone started within the slack of the uptime would pass too. It
+// is undecided, every time, not only before the first verdict.
+func TestAnAgentWithAPendingNICAndOnlyTheUptimeIsUndecided(t *testing.T) {
+	f := newSelf(t)
+	f.self.NoEpoch = true
+	own := snap(lxc(ownVMID, Pool, macA))
+	require.True(t, f.self.Check(t.Context(), own).OK)
+
+	f.facts = facts(unknown, time.Hour, macB)
+	v := f.self.Check(t.Context(), own)
+
+	require.Equal(t, Verdict{Pending: true, Why: WhyPendingNIC}, v)
+	f.facts = facts(byMount, time.Hour, macB)
+	require.True(t, f.self.Check(t.Context(), own).OK, "the mount proves it")
+}
+
 func TestACopyDrawsNothingAndLosesTheFlag(t *testing.T) {
 	f := newSelf(t)
 	require.NoError(t, f.self.SetFlag(true))

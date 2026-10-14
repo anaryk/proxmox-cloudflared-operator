@@ -88,6 +88,10 @@ func (s *Self) Check(ctx context.Context, snap inventory.Snapshot) Verdict {
 			v.Why = fmt.Sprintf("the certificate of %s no longer verifies under %s (the cluster CA or the pveproxy certificate changed?): "+
 				"run pco appliance repair --vmid %d on the node", s.Endpoint.Address, s.Endpoint.ServerName, s.ID.VMID)
 		}
+	case s.NoEpoch && v.Pending && f.Mount.VMID != s.ID.VMID:
+		// An agent decides no epoch, and is not taken for proven while only
+		// the uptime proves it: a clone started within its slack passes that.
+		return Verdict{Pending: true, Why: WhyPendingNIC}
 	case s.decided:
 	case s.NoEpoch:
 		s.decided = true
