@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -50,6 +51,41 @@ func TestTheNodeViewsCarryWhatTheClusterStatusShows(t *testing.T) {
 	require.Equal(t, *st.Cluster, cs.Cluster)
 	require.Equal(t, testNode, cs.Lease.Holder)
 	require.Equal(t, cs.Nodes, w.eng.Nodes())
+}
+
+// A controller whose cycles hold before they take the agents' reports, as
+// while a node is lost and the inventory cannot be read whole, still shows
+// itself as the controller, the quorum and the members: what it knows of
+// them does not wait for the reports.
+func TestTheClusterViewOfACycleThatHeldShowsTheControllerAndTheQuorum(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	snap := w.inv.snapshot()
+	snap.Complete = false
+	w.inv.set(snap)
+
+	st := w.tick(time.Second)
+
+	require.NotEmpty(t, st.Hold)
+	require.NotNil(t, st.Cluster)
+	cs := w.eng.ClusterStatus()
+	require.Equal(t, testNode, cs.Cluster.Controller)
+	require.True(t, cs.Cluster.Quorate)
+	require.Equal(t, []string{"pve1", "pve2", "pve3"}, cs.Cluster.Members)
+	require.Positive(t, cs.Cluster.Generation)
+
+	// A node that does not hold the lease names the one that does.
+	w.lease.set(func(st *lease.State) {
+		st.Holder, st.Valid = false, false
+		st.Record.Node, st.Record.Generation = "pve2", 9
+	})
+	w.tick(time.Second)
+	cs = w.eng.ClusterStatus()
+	require.Equal(t, "pve2", cs.Cluster.Controller)
+	require.Equal(t, 9, cs.Cluster.Generation)
+	require.True(t, cs.Cluster.Quorate)
 }
 
 // The cluster view says what corosync.conf says of the quorum.

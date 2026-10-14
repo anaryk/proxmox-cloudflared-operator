@@ -270,9 +270,12 @@ func (c *cycleRun) run() State {
 	if views := c.nodeViews(); views != nil {
 		c.st.Nodes = views
 	}
-	if c.fleet != nil {
+	switch {
+	case c.fleet != nil:
 		c.st.Cluster = c.clusterView()
-	} else if !c.clustered() {
+	case c.clustered():
+		c.st.Cluster = c.heldClusterView()
+	default:
 		// A node left alone, as after every other was forgotten, still
 		// shows the rotation that runs for them.
 		c.st.Cluster = nil

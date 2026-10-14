@@ -196,14 +196,43 @@ func (c *cycleRun) observeCoverage() {
 // clusterView is the cluster as this cycle found it: the controller, the
 // members, coverage and the blocks.
 func (c *cycleRun) clusterView() *ClusterView {
-	v := &ClusterView{Controller: c.e.d.Node, Generation: c.e.us.Generation, Coverage: c.coverageOfView()}
+	v := c.quorumView(c.e.d.Node)
+	v.Generation, v.Coverage = c.e.us.Generation, c.coverageOfView()
+	v.Blocks = c.blockViews()
+	v.CARotation = c.rotationView()
+	v.Upgrade = c.upgradeView()
+	return v
+}
+
+// heldClusterView is the cluster as a cycle that held before it took the
+// agents' reports shows it, as while a lost node keeps the inventory from
+// being read whole: the controller, the generation, the members and the
+// quorum are known without the reports; the coverage, the blocks, the
+// rotation and the upgrade are what the last cycle that judged them found.
+func (c *cycleRun) heldClusterView() *ClusterView {
+	controller, generation := c.e.d.Node, c.e.us.Generation
+	if c.leaseHeld {
+		controller, generation = "", 0
+		if l := c.st.Lease; l != nil {
+			controller, generation = l.Holder, l.Generation
+		}
+	}
+	v := c.quorumView(controller)
+	v.Generation = generation
+	if prev := c.st.Cluster; prev != nil {
+		v.Coverage, v.Blocks, v.CARotation, v.Upgrade = prev.Coverage, prev.Blocks, prev.CARotation, prev.Upgrade
+	}
+	return v
+}
+
+// quorumView is the cluster view of controller with the members and the
+// quorum as Proxmox has them now.
+func (c *cycleRun) quorumView(controller string) *ClusterView {
+	v := &ClusterView{Controller: controller}
 	v.Members = append([]string{}, slices.Sorted(maps.Keys(c.listedMembers()))...)
 	if q := c.e.d.Quorum; q != nil {
 		v.Quorate, _ = q()
 	}
-	v.Blocks = c.blockViews()
-	v.CARotation = c.rotationView()
-	v.Upgrade = c.upgradeView()
 	if read := c.e.d.Corosync; read != nil {
 		if cs, err := read(); err == nil {
 			v.QuorumDevice = cs.QuorumDevice
