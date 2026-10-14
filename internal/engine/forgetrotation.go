@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -102,4 +105,90 @@ func (c *cycleRun) forgetRotation(name string) {
 	c.nodes[name] = store.NodeRev{Node: n, Rev: rev}
 	c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindNode, Subject: name, Node: name, Security: true,
 		Message: fmt.Sprintf("node %s was forgotten: the secret of the shared tunnel is rotated in every account, and the run token the node holds no longer works", name)})
+}
+
+// dropForgotten drops at Cloudflare, connector by connector, the connectors
+// a node forgotten without a rotation of the shared secret reported as its
+// own: its run token still works, and its agent stands down by itself, but
+// one that does not, or cannot read that it was removed, keeps a share of
+// the requests. The connectors of a tunnel are listed for it at most every
+// rolloutAskEvery, and an id a listing no longer shows is not looked for
+// again: a connector that starts anew has another one.
+func (c *cycleRun) dropForgotten() {
+	if c.leaseHeld || c.fleet == nil || c.cfHold || !c.checked || c.mode() != reconcile.Enforce {
+		return
+	}
+	// A rotation of every secret drops the connectors of the nodes it is
+	// for itself, as each tunnel gets its new secret.
+	if _, rotating, err := c.e.d.Store.CARotation(); err != nil || rotating {
+		return
+	}
+	mem := &c.e.place
+	for _, name := range slices.Sorted(maps.Keys(mem.ids)) {
+		entry, ok := c.nodes[name]
+		if !ok || entry.Node.State != store.NodeRemoved || entry.Node.Rotation != nil {
+			continue
+		}
+		for _, t := range c.tunnels {
+			if t.Kind == TunnelPinned || !t.Exists || t.ID == "" || len(mem.ids[name][t.ID]) == 0 {
+				continue
+			}
+			c.dropOf(name, t)
+		}
+	}
+}
+
+// dropOf drops the connectors of a tunnel that a forgotten node reported.
+func (c *cycleRun) dropOf(node string, t reconcile.TunnelState) {
+	mem := &c.e.place
+	if mem.forgottenAsked == nil {
+		mem.forgottenAsked = map[string]time.Time{}
+	}
+	if last, ok := mem.forgottenAsked[t.ID]; ok && !c.now.Before(last) && c.now.Sub(last) < rolloutAskEvery {
+		return
+	}
+	api := c.e.clients[t.CredentialID]
+	if api == nil {
+		return
+	}
+	mem.forgottenAsked[t.ID] = c.now
+	listed, err := api.Connectors(c.ctx, t.AccountID, t.ID)
+	if err != nil {
+		c.problem("node %s was forgotten: listing the connectors of tunnel %s in account %s failed: %v; its own are dropped once a listing shows them",
+			node, t.Name, t.AccountID, err)
+		return
+	}
+	ids := mem.ids[node][t.ID]
+	for _, id := range slices.Sorted(maps.Keys(ids)) {
+		if !slices.ContainsFunc(listed, func(x cfapi.Connector) bool { return x.ID == id }) {
+			delete(ids, id)
+			continue
+		}
+		if err := api.CleanUpConnector(c.ctx, t.AccountID, t.ID, id); err != nil {
+			c.problem("node %s was forgotten: dropping its connector %s of tunnel %s in account %s failed: %v; it is tried again",
+				node, id, t.Name, t.AccountID, err)
+			continue
+		}
+		c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindNode, Subject: node, Node: node, Tunnel: t.Name, Account: t.AccountID,
+			Security: true, Message: fmt.Sprintf("node %s was forgotten: its connector %s of tunnel %s in account %s is dropped; "+
+				"its run token still works, as cluster.rotateOnForget is off", node, id, t.Name, t.AccountID)})
+	}
+}
+
+// notOwned takes the connector ids the nodes removed from the install or
+// contested reported out of the ones the install owns: a connector of
+// theirs is not one of the install's, for a rollout or a rogue connector,
+// from the cycle on that sees them so.
+func (c *cycleRun) notOwned() {
+	for node, byTunnel := range c.e.place.ids {
+		n, ok := c.nodes[node]
+		if !ok || n.Node.State != store.NodeRemoved && n.Node.State != store.NodeContested {
+			continue
+		}
+		for tunnel, ids := range byTunnel {
+			for id := range ids {
+				delete(c.e.ownIDs[tunnel], id)
+			}
+		}
+	}
 }

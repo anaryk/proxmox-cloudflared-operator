@@ -65,6 +65,28 @@ func TestAConnectorThatIsNotOursIsReported(t *testing.T) {
 	}}, connectorEvents(e))
 }
 
+// A rollout counts the connectors of the install alone: one that pco does
+// not run, as that of a forgotten node, says nothing of what the install's
+// connectors run, whatever version it reports.
+func TestARolloutCountsOnlyTheConnectorsOfTheInstall(t *testing.T) {
+	e, id := rogueEnv(t)
+	behind := theirConnector
+	behind.ConfigVersion = 0
+	e.cf.SetConnectors(testAccount, id, []cfapi.Connector{ourConnector, behind})
+	e.clock.advance(rolloutAskEvery)
+
+	st := e.cycle()
+
+	var rollouts []string
+	for _, ev := range unnumbered(e.eng.Events(time.Time{})) {
+		if ev.Kind == kindRollout {
+			rollouts = append(rollouts, ev.Message)
+		}
+	}
+	require.Equal(t, []string{"configuration version 1 runs on 1 connector in account acc1"}, rollouts)
+	require.Len(t, st.RogueConnectors, 1)
+}
+
 func TestAConnectorThatIsNotOursIsAnErrorOnceAndAProblemWhileItIsThere(t *testing.T) {
 	e, id := rogueEnv(t)
 	e.cf.SetConnectors(testAccount, id, []cfapi.Connector{ourConnector, theirConnector})

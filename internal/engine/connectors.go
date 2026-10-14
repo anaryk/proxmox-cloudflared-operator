@@ -36,6 +36,10 @@ func (c *cycleRun) reconcileConnectors() {
 			if !c.runsHere(t) {
 				continue
 			}
+			if c.retiring(t) {
+				c.noteStopping(t.ID)
+				continue
+			}
 			if token, ok := c.ensure(t); ok {
 				run[t.ID] = token
 			}
@@ -95,7 +99,9 @@ func (c *cycleRun) keepConnectors(shown []reconcile.TunnelState, run map[string]
 			// connector of it that runs here.
 			continue
 		}
-		tunnels = append(tunnels, c.snapshotTunnel(t.AccountID, t.ID, t.Name, run[t.ID]))
+		tun := c.snapshotTunnel(t.AccountID, t.ID, t.Name, run[t.ID])
+		tun.Stop = !tun.Run && c.stopping[t.ID]
+		tunnels = append(tunnels, tun)
 	}
 	s := c.keptSnapshot(tunnels, prune)
 	if keep {
@@ -198,6 +204,15 @@ func (c *cycleRun) runsHere(t reconcile.TunnelState) bool {
 	}
 	node, pinned := planner.PinnedTunnelNode(c.install.ID, t.Name)
 	return pinned && node == c.e.d.Node
+}
+
+// noteStopping notes a tunnel of this node on its way out, whose connector
+// the agent stops.
+func (c *cycleRun) noteStopping(id string) {
+	if c.stopping == nil {
+		c.stopping = make(map[string]bool)
+	}
+	c.stopping[id] = true
 }
 
 func (c *cycleRun) noteEnsured(id string) {

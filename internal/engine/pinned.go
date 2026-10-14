@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
@@ -92,7 +93,9 @@ func (c *cycleRun) handsTokens() bool {
 // back joining with its guests, and their pinned routes are served through
 // that tunnel alone, so holding its token until admission would keep them
 // down for as long as the admission takes. A tunnel whose token cannot be
-// had is listed without one: its connector is kept as it is.
+// had is listed without one: its connector is kept as it is. The node's
+// pinned tunnel on its way out goes without a token, for its connector to
+// stop.
 func (c *cycleRun) remoteTunnels(node string, role sharedRole) []agentproto.Tunnel {
 	n, ok := c.nodes[node]
 	if !ok || !servedState(n.Node.State) || !c.handsTokens() {
@@ -111,6 +114,11 @@ func (c *cycleRun) remoteTunnels(node string, role sharedRole) []agentproto.Tunn
 			continue
 		case t.Name == planner.TunnelName(c.install.ID) && role == sharedRun:
 		case err == nil && t.Name == own && host && c.planned(tunnelRef{t.AccountID, own}):
+		case err == nil && t.Name == own && c.retiring(t):
+			stop := c.snapshotTunnel(t.AccountID, t.ID, t.Name, "")
+			stop.Stop = true
+			out = append(out, stop)
+			continue
 		default:
 			continue
 		}
@@ -188,11 +196,51 @@ func (c *cycleRun) findPinned() {
 	}
 }
 
+// retiring says whether a tunnel pinned to a node is on its way out in an
+// enforcing cycle that may withdraw: no route of the plan is in it, no
+// record of the plan points at it, and its configuration was verified as
+// such. Its node stops its connector, which serves nothing then, so that
+// Cloudflare lets the tunnel be deleted.
+func (c *cycleRun) retiring(t reconcile.TunnelState) bool {
+	_, pinned := planner.PinnedTunnelNode(c.install.ID, t.Name)
+	ref := tunnelRef{t.AccountID, t.Name}
+	return pinned && t.Exists && t.ID != "" && t.Verified && c.mode() == reconcile.Enforce && c.addOnly == "" &&
+		!c.planned(ref) && !c.pointedAt(ref)
+}
+
+// failedDeletes are the deletes of a pinned tunnel that failed in a row,
+// and when the last did.
+type failedDeletes struct {
+	count int
+	last  time.Time
+}
+
+// The first delete of a pinned tunnel that failed is tried again after
+// retireRetry, and each one that fails after it waits twice as long, up to
+// retireRetryMax: a delete Cloudflare refuses, as while a connector of the
+// tunnel still connects, is not asked again every cycle.
+const (
+	retireRetry    = time.Minute
+	retireRetryMax = 30 * time.Minute
+)
+
+// next is when the delete is tried again.
+func (f failedDeletes) next() time.Time {
+	wait := retireRetryMax
+	if f.count <= 5 {
+		wait = min(retireRetry<<(f.count-1), retireRetryMax)
+	}
+	return f.last.Add(wait)
+}
+
 // retirePinned deletes a tunnel pinned to a node once it served no route and
 // no record pointed at it for pinnedEmptyFor, or at once when its node was
 // removed from the install. The tunnel run emptied it first: only a tunnel
 // whose configuration this install wrote is emptied, and only one it
-// verified empty is deleted.
+// verified empty is deleted. The connections of the tunnel are ended
+// before, as Cloudflare deletes no tunnel with connections: its node stopped
+// its connector once the tunnel served nothing, and a removed node may
+// still run one, which must keep none.
 func (c *cycleRun) retirePinned() {
 	if c.fleet == nil || c.cfHold || !c.checked || c.mode() != reconcile.Enforce {
 		return
@@ -201,11 +249,15 @@ func (c *cycleRun) retirePinned() {
 	if mem.emptySince == nil {
 		mem.emptySince = map[tunnelRef]time.Time{}
 	}
+	if mem.retireFailed == nil {
+		mem.retireFailed = map[tunnelRef]failedDeletes{}
+	}
 	for _, t := range c.tunnels {
 		node, pinned := planner.PinnedTunnelNode(c.install.ID, t.Name)
 		ref := tunnelRef{t.AccountID, t.Name}
 		if !pinned || !t.Exists || t.ID == "" || c.planned(ref) || c.pointedAt(ref) {
 			delete(mem.emptySince, ref)
+			delete(mem.retireFailed, ref)
 			continue
 		}
 		since, ok := mem.emptySince[ref]
@@ -217,28 +269,40 @@ func (c *cycleRun) retirePinned() {
 		if !t.Verified || !removed && c.now.Sub(since) < pinnedEmptyFor {
 			continue
 		}
+		failed, retried := mem.retireFailed[ref]
+		if retried && c.now.Before(failed.next()) && !c.now.Before(failed.last) {
+			continue
+		}
 		api := c.e.clients[t.CredentialID]
 		if api == nil {
 			continue
 		}
-		if removed {
-			// The node may still run its connector: Cloudflare deletes no
-			// tunnel with connections, and the node must keep none.
-			if err := api.CleanUpConnections(c.ctx, t.AccountID, t.ID); err != nil {
-				c.problem("ending the connections of tunnel %s in account %s, which node %s ran: %v", t.Name, t.AccountID, node, err)
-				continue
-			}
+		err := api.CleanUpConnections(c.ctx, t.AccountID, t.ID)
+		if err == nil {
+			err = api.DeleteTunnel(c.ctx, t.AccountID, t.ID)
 		}
-		if err := api.DeleteTunnel(c.ctx, t.AccountID, t.ID); err != nil {
-			c.problem("deleting tunnel %s in account %s, which serves nothing: %v", t.Name, t.AccountID, err)
+		if err != nil && !cfapi.IsNotFound(err) {
+			failed = failedDeletes{count: failed.count + 1, last: c.now}
+			mem.retireFailed[ref] = failed
+			c.problem("deleting tunnel %s in account %s, which %s: %v; tried again at %s", t.Name, t.AccountID, retireWhat(removed, node), err,
+				failed.next().UTC().Format(time.RFC3339))
 			continue
 		}
 		delete(mem.emptySince, ref)
+		delete(mem.retireFailed, ref)
 		delete(c.e.seen, t.ID)
 		delete(c.e.verified, ref)
+		c.e.tunnels.Deleted(t.AccountID, t.Name, t.ID)
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
 			Message: fmt.Sprintf("tunnel %s in account %s is deleted: %s", t.Name, t.AccountID, retireWhy(removed, node))})
 	}
+}
+
+func retireWhat(removed bool, node string) string {
+	if removed {
+		return "node " + node + " ran"
+	}
+	return "serves nothing"
 }
 
 func retireWhy(removed bool, node string) string {

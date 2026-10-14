@@ -65,6 +65,12 @@ type placementMemory struct {
 	// nothing.
 	tokens     map[string]string
 	emptySince map[tunnelRef]time.Time
+	// retireFailed are, by pinned tunnel, the deletes of it that failed in
+	// a row and when the last did: the next waits longer after each.
+	retireFailed map[tunnelRef]failedDeletes
+	// forgottenAsked is, by tunnel id, when its connectors were last listed
+	// for the connectors of forgotten nodes.
+	forgottenAsked map[string]time.Time
 	// ids are the connector ids the agents of other nodes reported;
 	// heard are the nodes whose agent reported to this process while it
 	// controlled, and heardSince when its first such cycle noted them.
@@ -124,7 +130,7 @@ func (m *placementMemory) newTenure() {
 	m.movesRead, m.addedAt = false, nil
 	m.diverged, m.reaching, m.waiting = nil, nil, nil
 	m.pointedAt, m.unresolvedSince = nil, nil
-	m.emptySince = nil
+	m.emptySince, m.retireFailed = nil, nil
 	m.inherited, m.inheritedRead = nil, false
 }
 

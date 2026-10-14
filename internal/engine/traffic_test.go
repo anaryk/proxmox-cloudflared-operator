@@ -332,12 +332,12 @@ func TestTheRolloutOfATunnelIsInTheState(t *testing.T) {
 	st = e.cycle()
 
 	ev := rollout()
-	require.Equal(t, "configuration version 1 runs on 2 connectors in account acc1", ev.Message)
-	require.Equal(t, &RolloutView{Version: 1, Connectors: 2, ConfirmedAt: ev.At}, st.Tunnels[0].Rollout)
+	require.Equal(t, "configuration version 1 runs on 1 connector in account acc1", ev.Message, "c2 is not one pco runs")
+	require.Equal(t, &RolloutView{Version: 1, Connectors: 1, ConfirmedAt: ev.At}, st.Tunnels[0].Rollout)
 
 	e.clock.advance(time.Minute)
 	st = e.cycle()
-	require.Equal(t, &RolloutView{Version: 1, Connectors: 2, ConfirmedAt: ev.At}, st.Tunnels[0].Rollout, "it stays until the next one")
+	require.Equal(t, &RolloutView{Version: 1, Connectors: 1, ConfirmedAt: ev.At}, st.Tunnels[0].Rollout, "it stays until the next one")
 
 	e.inv.set(snapshot(guest(101, "web-1", "www.example.com api.example.com -> :8080")))
 	e.cf.SetConnectors(testAccount, id, []cfapi.Connector{{ID: defaultConnectorID, ConfigVersion: 2}})

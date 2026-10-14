@@ -114,6 +114,7 @@ type cycleRun struct {
 	// statuses of the connectors as the last cycle read them.
 	connected bool
 	ensured   map[string]bool // the tunnels whose connector this cycle kept running
+	stopping  map[string]bool // the tunnels of this node on their way out, whose connector stops
 	reread    map[string]bool // the tunnels whose token this cycle read again
 	existing  []reconcile.TunnelState
 	shown     []reconcile.TunnelState
@@ -257,6 +258,7 @@ func (c *cycleRun) run() State {
 		c.rotationStep()
 		c.forgetRotations()
 		c.restoreRotation()
+		c.dropForgotten()
 		c.expireJoinTokens()
 		c.publishRemote()
 	}

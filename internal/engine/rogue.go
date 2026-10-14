@@ -59,10 +59,39 @@ func (c *cycleRun) watchConnectors(existing []reconcile.TunnelState, now []conne
 			continue
 		}
 		if rollout {
-			c.confirmRollout(t, conns)
+			c.confirmRollout(t, c.ofTheInstall(t, conns, now))
 		}
 		c.compareConnectors(t, conns, now)
 	}
+}
+
+// ownConnectorIDs are the ids of the connectors of a tunnel that pco runs:
+// the one /ready names on this node now, those this node's and the agents'
+// had within accountsFreshFor. known is false while neither this node has a
+// connector of it that is ready nor an agent reported one in this cycle:
+// one that just came up is listed before it says it is ready.
+func (c *cycleRun) ownConnectorIDs(t reconcile.TunnelState, now []connector.Status) (own []string, known bool) {
+	own = readyIDs(t.ID, now)
+	if len(own) == 0 && !c.agentRuns(t.ID) {
+		return nil, false
+	}
+	for id, seen := range c.e.ownIDs[t.ID] {
+		if c.ownStill(seen) {
+			own = append(own, id)
+		}
+	}
+	return own, true
+}
+
+// ofTheInstall are the connectors Cloudflare lists on a tunnel that pco
+// runs, or every one listed while that cannot be told: a rollout is
+// confirmed against them alone.
+func (c *cycleRun) ofTheInstall(t reconcile.TunnelState, conns []cfapi.Connector, now []connector.Status) []cfapi.Connector {
+	own, known := c.ownConnectorIDs(t, now)
+	if !known {
+		return conns
+	}
+	return slices.DeleteFunc(slices.Clone(conns), func(x cfapi.Connector) bool { return !slices.Contains(own, x.ID) })
 }
 
 // noteOwnIDs remembers the id /ready gives each connector of the node that is
@@ -87,6 +116,7 @@ func (c *cycleRun) noteOwnIDs(statuses []connector.Status) {
 	if !c.agentsNoted {
 		c.agentsNoted = true
 		c.noteAgentIDs(own)
+		c.notOwned()
 	}
 	for tunnel, ids := range c.e.ownIDs {
 		maps.DeleteFunc(ids, func(_ string, seen time.Time) bool { return !c.ownStill(seen) })
@@ -125,14 +155,9 @@ func (c *cycleRun) connectorsDue(t reconcile.TunnelState, rollout bool) bool {
 // one that just came up is listed before it says it is ready, and what was
 // known of the tunnel stays.
 func (c *cycleRun) compareConnectors(t reconcile.TunnelState, conns []cfapi.Connector, now []connector.Status) {
-	own := readyIDs(t.ID, now)
-	if len(own) == 0 && !c.agentRuns(t.ID) {
+	own, ok := c.ownConnectorIDs(t, now)
+	if !ok {
 		return
-	}
-	for id, seen := range c.e.ownIDs[t.ID] {
-		if c.ownStill(seen) {
-			own = append(own, id)
-		}
 	}
 	known := make(map[string]RogueConnector)
 	var kept []RogueConnector

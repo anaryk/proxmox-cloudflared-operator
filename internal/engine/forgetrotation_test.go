@@ -79,6 +79,51 @@ func TestForgetDropsOnlyTheConnectorOfTheNode(t *testing.T) {
 	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id))
 }
 
+// With cluster.rotateOnForget off the run token the forgotten node holds
+// still works: its connector is dropped at Cloudflare all the same, by its
+// id, as often as a listing shows it again, and it is never one of the
+// install's, neither for the rogue connectors nor for a rollout.
+func TestAForgetWithoutRotationDropsTheConnectorOfTheNode(t *testing.T) {
+	w := threeNodes(t)
+	no := false
+	w.settings(func(s *store.Settings) { s.Cluster.RotateOnForget = &no })
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	w.conn.setConnectorID(id, "c-pve1")
+	w.listAt(t, tunnelName, "c-pve1", "pve2-"+id, "pve3-"+id)
+	w.tick(time.Second)
+	n := len(w.cf.Calls())
+
+	_, err := w.eng.ForgetNode(t.Context(), "pve3", false)
+	require.NoError(t, err)
+	st := w.tick(time.Second)
+
+	calls := w.callsSince(n)
+	require.NotContains(t, calls, "RotateTunnelSecret acc1 "+id)
+	require.Contains(t, calls, "CleanUpConnector acc1 "+id+" pve3-"+id)
+	require.NotContains(t, calls, "CleanUpConnections acc1 "+id, "the replicas keep their connections")
+	require.Equal(t, []string{"c-pve1", "pve2-" + id}, w.listedIDs(t, id))
+	require.Contains(t, nodeEventsOf(w.env), "node pve3 was forgotten: its connector pve3-"+id+" of tunnel "+tunnelName+
+		" in account acc1 is dropped; its run token still works, as cluster.rotateOnForget is off")
+	require.Empty(t, st.RogueConnectors)
+
+	t.Run("and again when it connects again", func(t *testing.T) {
+		w.listAt(t, tunnelName, "c-pve1", "pve2-"+id, "pve3-"+id)
+		n := len(w.cf.Calls())
+		st := w.tick(time.Second)
+		require.Contains(t, w.callsSince(n), "CleanUpConnector acc1 "+id+" pve3-"+id)
+		require.Equal(t, []string{"c-pve1", "pve2-" + id}, w.listedIDs(t, id))
+		require.False(t, slices.ContainsFunc(st.RogueConnectors, func(r RogueConnector) bool { return r.ID != "pve3-"+id }), st.RogueConnectors)
+	})
+	t.Run("but not listed in every cycle", func(t *testing.T) {
+		n := len(w.cf.Calls())
+		for range 3 {
+			w.tick(time.Second)
+		}
+		require.Zero(t, count(w.callsSince(n), "Connectors acc1 "+id))
+	})
+}
+
 // A rotation the forget could not do is kept with the node's entry: the
 // cycles finish it once Cloudflare takes it, a controller that takes over
 // included.

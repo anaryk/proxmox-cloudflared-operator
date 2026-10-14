@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -211,6 +215,136 @@ func TestATokenLeavesTheSnapshotOnceTheRoutesMovedAway(t *testing.T) {
 	}
 	require.False(t, gone.IsZero(), "the route moved away")
 	require.NotContains(t, w.tunnelNames(), pinned2)
+}
+
+// A pinned tunnel on its way out has its node told to stop its connector,
+// which serves nothing then: Cloudflare deletes no tunnel that has
+// connections.
+func TestThePinnedTunnelOnItsWayOutHasItsConnectorStopped(t *testing.T) {
+	w, pinned2 := pinnedDB(t)
+	w.acts["pve3"].fail = nil
+	told := false
+	for range 150 {
+		w.tick(10 * time.Second)
+		if tun, ok := w.tunnelIn(t, "pve2", pinned2); ok && tun.Stop {
+			require.False(t, tun.Run)
+			require.Empty(t, tun.Token.Reveal())
+			told = true
+			break
+		}
+	}
+	require.True(t, told, "pve2 is told to stop the connector of its pinned tunnel")
+	require.Contains(t, w.tunnelNames(), pinned2, "the tunnel itself goes ten minutes later")
+	shared, ok := w.tunnelIn(t, "pve2", tunnelName)
+	require.True(t, ok)
+	require.False(t, shared.Stop)
+}
+
+// A connector that keeps connecting, as one of an agent that does not stop
+// it, keeps a pinned tunnel from being deleted: its connections are ended
+// before every delete, and a delete that failed is tried again later each
+// time, not in every cycle.
+func TestAPinnedTunnelThatCannotBeDeletedIsTriedAgainLater(t *testing.T) {
+	w, pinned2 := pinnedDB(t)
+	w.acts["pve3"].fail = nil
+	id := w.tunnelID(t, pinned2)
+	back := &connectingAgain{API: w.cf, fake: w.cf, tunnel: id}
+	back.connect()
+	w.useAPI(testToken, back)
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	for range 150 {
+		w.tick(10 * time.Second)
+		if tun, ok := w.tunnelIn(t, "pve2", pinned2); ok && tun.Stop {
+			break
+		}
+	}
+	calls := len(w.cf.Calls())
+
+	// Due ten minutes after it began to serve nothing, then tried again.
+	var problems []string
+	for range 120 {
+		problems = append(problems, w.tick(10*time.Second).Problems...)
+	}
+
+	since := w.callsSince(calls)
+	var deletes []int
+	for i, call := range since {
+		if call == "DeleteTunnel "+testAccount+" "+id {
+			deletes = append(deletes, i)
+			require.Equal(t, "CleanUpConnections "+testAccount+" "+id, since[i-1], "the connections are ended first")
+		}
+	}
+	require.Contains(t, w.tunnelNames(), pinned2)
+	require.GreaterOrEqual(t, len(deletes), 2)
+	require.LessOrEqual(t, len(deletes), 4, "tried again after one, two and four minutes, not every ten seconds")
+	require.True(t, slices.ContainsFunc(problems, func(p string) bool {
+		return strings.HasPrefix(p, "deleting tunnel "+pinned2+" in account "+testAccount+", which serves nothing: ") && strings.Contains(p, "; tried again at ")
+	}), problems)
+
+	back.stop()
+	for range 60 {
+		w.tick(10 * time.Second)
+	}
+	require.NotContains(t, w.tunnelNames(), pinned2)
+}
+
+// connectingAgain is a Cloudflare where a connector of a tunnel connects
+// again right after its connections are ended, until stopped.
+type connectingAgain struct {
+	cfapi.API
+	fake   *cffake.Fake
+	tunnel string
+
+	mu      sync.Mutex
+	stopped bool
+}
+
+func (c *connectingAgain) connect() {
+	c.fake.SetConnectors(testAccount, c.tunnel, []cfapi.Connector{{ID: "pve2-" + c.tunnel, Connections: 4}})
+}
+
+func (c *connectingAgain) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stopped = true
+}
+
+func (c *connectingAgain) CleanUpConnections(ctx context.Context, account, id string) error {
+	if err := c.API.CleanUpConnections(ctx, account, id); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if id == c.tunnel && !c.stopped {
+		c.connect()
+	}
+	return nil
+}
+
+// A pinned tunnel deleted is not deleted again, nor are its connections
+// ended once it is gone, while the listings that named it are still fresh.
+func TestADeletedPinnedTunnelIsLeftAlone(t *testing.T) {
+	w, pinned2 := pinnedDB(t)
+	id := w.tunnelID(t, pinned2)
+	n := entryOf(t, w.env, "pve2")
+	n.State = store.NodeRemoved
+	require.NoError(t, w.store.SaveNode(n))
+	calls := len(w.cf.Calls())
+
+	var problems []string
+	for range 6 {
+		problems = append(problems, w.tick(5*time.Second).Problems...)
+	}
+
+	since := w.callsSince(calls)
+	require.NotContains(t, w.tunnelNames(), pinned2)
+	count := func(call string) int {
+		return len(slices.DeleteFunc(slices.Clone(since), func(c string) bool { return c != call }))
+	}
+	require.Equal(t, 1, count("CleanUpConnections "+testAccount+" "+id), since)
+	require.Equal(t, 1, count("DeleteTunnel "+testAccount+" "+id), since)
+	require.False(t, slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, pinned2) }), problems)
 }
 
 // targetKeys are the hostnames of the targets in the snapshot last served
