@@ -228,6 +228,9 @@ func encodeFile(path string, rev int64, id string, data []byte) ([]byte, error) 
 
 // commit writes a file that prepare worked out. The caller holds the lock.
 func (d Dir) commit(w *write) error {
+	if err := d.tenure.failed(); err != nil {
+		return fmt.Errorf("storing %s %q: %w", w.kind, w.id, err)
+	}
 	if err := d.ensureKindDir(w.dir); err != nil {
 		return fmt.Errorf("storing %s %q: %w", w.kind, w.id, err)
 	}

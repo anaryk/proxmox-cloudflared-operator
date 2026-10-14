@@ -167,3 +167,24 @@ func TestTheTenureCheckIsNotFooledByItsOwnWrites(t *testing.T) {
 
 	require.NoError(t, s.WentBack())
 }
+
+// Once a read found the store gone back, nothing more is written on top of
+// what the writer no longer knows, until a new tenure begins.
+func TestAStoreThatWentBackTakesNoWriteUntilANewTenure(t *testing.T) {
+	s, p := openStore(t)
+	s.StartTenure()
+	ackFive(t, s)
+	path := filepath.Join(p.Cluster, "segments", "vmbr0.json")
+	writeFile(t, path, restored)
+	_, err := s.Segments()
+	require.NoError(t, err)
+
+	err = s.SaveSegment(Segment{Bridge: "vmbr1", AcknowledgedAt: t0})
+	require.ErrorIs(t, err, ErrWentBack)
+	require.ErrorIs(t, s.DeleteSegment("vmbr0"), ErrWentBack)
+	require.NoFileExists(t, filepath.Join(p.Cluster, "segments", "vmbr1.json"))
+	require.EqualValues(t, 3, revOf(t, path), "the restored file stays")
+
+	s.StartTenure()
+	require.NoError(t, s.SaveSegment(Segment{Bridge: "vmbr1", AcknowledgedAt: t0}))
+}

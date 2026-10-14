@@ -46,9 +46,21 @@ func (s *Store) StartTenure() {
 
 // WentBack returns an error, ErrWentBack, once a read of this tenure found an
 // object it wrote at a lower revision, or found it missing though the tenure
-// did not delete it; nil until then, and outside a tenure.
+// did not delete it; nil until then, and outside a tenure. From then on every
+// write of the cluster and private roots fails with it, until StartTenure.
 func (s *Store) WentBack() error {
 	t := s.tenure
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.err
+}
+
+// failed is the step back the tenure saw, which refuses every write after
+// it: a write would build on what the writer no longer knows.
+func (t *tenure) failed() error {
+	if t == nil {
+		return nil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.err

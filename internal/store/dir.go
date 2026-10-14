@@ -374,6 +374,9 @@ func (d Dir) listObjects(kind string) ([]string, error) {
 // removeFile removes a file. One that is not there is no error, unless the
 // root is gone too. The caller holds the lock.
 func (d Dir) removeFile(path string) error {
+	if err := d.tenure.failed(); err != nil {
+		return fmt.Errorf("deleting %s: %w", filepath.Base(path), err)
+	}
 	err := os.Remove(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		if err := d.requireRoot(); err != nil {
