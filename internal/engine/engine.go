@@ -334,6 +334,9 @@ type Engine struct {
 	// both guarded by the cycle lock.
 	pendingCards map[string]bool
 	exhausted    bool
+	// addFailed are the owners whose card could not be added in the last
+	// cycle that tried; guarded by the cycle lock.
+	addFailed map[string]bool
 	// attachedSaid are the owners whose card this process said is attached;
 	// vnetRead is what the step last read of the vnet, and impacts what it
 	// last read of the firewall of each guest it would attach, both kept
@@ -461,6 +464,7 @@ func New(d Deps) (*Engine, error) {
 		state:     first,
 
 		pendingCards: make(map[string]bool),
+		addFailed:    make(map[string]bool),
 		unknownMACs:  make(map[string]time.Time),
 		attachedSaid: make(map[string]bool),
 		impacts:      make(map[string]impactRead),

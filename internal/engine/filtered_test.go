@@ -563,16 +563,23 @@ func TestTheCycleTimeWithFiftyGuestsOnTheVnet(t *testing.T) {
 	}
 	m.inv.set(snapshot(guests...))
 	m.warm()
-	m.next()
-	atts := m.attachments()
-	require.Len(t, atts, 50)
-	for i := range guests[1:] {
-		a := atts[guests[1+i].Ref.String()]
-		g := withCard(guests[1+i], a.MAC, a.Addr.String())
-		g.NICs[len(g.NICs)-1].Firewall = true
-		guests[1+i] = g
+	// A cycle adds a few cards; the inventory shows them to the next.
+	carded := map[string]bool{}
+	for range 50/attachesPerCycle + 1 {
+		m.next()
+		for i := range guests[1:] {
+			a, ok := m.attachments()[guests[1+i].Ref.String()]
+			if !ok || carded[a.Owner] {
+				continue
+			}
+			carded[a.Owner] = true
+			g := withCard(guests[1+i], a.MAC, a.Addr.String())
+			g.NICs[len(g.NICs)-1].Firewall = true
+			guests[1+i] = g
+		}
+		m.inv.set(snapshot(guests...))
 	}
-	m.inv.set(snapshot(guests...))
+	require.Len(t, m.attachments(), 50)
 	reads := m.fw.readCount()
 	start := time.Now()
 	st := m.next()

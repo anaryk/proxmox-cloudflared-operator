@@ -592,6 +592,73 @@ func TestAutomaticConsentAttachesAGuestThatNeedsTheNetwork(t *testing.T) {
 	require.Equal(t, "cf-tunnel", st.Managed.GateTag, "the gate tag consents for every guest it admits")
 }
 
+// A node that switches to auto with many guests gets their cards a few per
+// cycle, so that every cycle stays short and the state follows; the next
+// cycle is asked for at once.
+func TestOneCycleAddsAFewCardsAndAsksForTheNext(t *testing.T) {
+	m := newManagedEnv(t)
+	m.settings(func(s *store.Settings) { s.Managed.Consent = store.ConsentAuto })
+	var guests []model.Guest
+	for i := range attachesPerCycle + 2 {
+		guests = append(guests, unconsented(managedGuest(101+i, fmt.Sprintf("web-%d", i+1), fmt.Sprintf("w%d.example.com -> :8080", i+1))))
+	}
+	m.inv.set(snapshot(guests...))
+	m.warm()
+	drainTrigger(m.eng.trigger)
+
+	st := m.next()
+
+	require.Len(t, m.cfg.changes(), attachesPerCycle)
+	require.Len(t, m.attachments(), attachesPerCycle)
+	require.Equal(t, waitAttachBatch, waitingWhy(st, fmt.Sprintf("lxc/%d", 101+attachesPerCycle)))
+	require.Len(t, m.eng.trigger, 1, "the next cycle is asked for")
+
+	drainTrigger(m.eng.trigger)
+	for i, g := range guests {
+		if att, ok := m.attachments()[g.Ref.String()]; ok {
+			guests[i] = withCard(g, att.MAC, att.Addr.String())
+		}
+	}
+	m.inv.set(snapshot(guests...))
+	m.cfg.set(func(f *fakeConfigurer) { f.calls = nil })
+	st = m.next()
+
+	require.Len(t, m.cfg.changes(), 2, "the rest")
+	require.Len(t, m.attachments(), attachesPerCycle+2)
+	require.Empty(t, st.Managed.Waiting)
+	require.Empty(t, m.eng.trigger, "nothing is left for a cycle at once")
+}
+
+// A card that keeps failing does not take the place of the others.
+func TestACardThatFailedWaitsBehindTheOthers(t *testing.T) {
+	m := newManagedEnv(t)
+	m.settings(func(s *store.Settings) { s.Managed.Consent = store.ConsentAuto })
+	failing := unconsented(managedGuest(101, "web-1", "w1.example.com -> :8080"))
+	m.inv.set(snapshot(failing))
+	m.warm()
+	m.cfg.set(func(f *fakeConfigurer) { f.addErr["lxc/101"] = errors.New("adding net1 to lxc/101: locked") })
+	m.next()
+	guests := []model.Guest{failing}
+	for i := range attachesPerCycle {
+		guests = append(guests, unconsented(managedGuest(102+i, fmt.Sprintf("web-%d", i+2), fmt.Sprintf("w%d.example.com -> :8080", i+2))))
+	}
+	m.inv.set(snapshot(guests...))
+	m.cfg.set(func(f *fakeConfigurer) { f.calls = nil })
+
+	st := m.next()
+
+	require.Len(t, m.cfg.changes(), attachesPerCycle, "the new ones")
+	require.False(t, slices.ContainsFunc(m.cfg.changes(), func(c string) bool { return strings.HasPrefix(c, "add lxc/101 ") }),
+		"the card that failed waits behind the new ones: %v", m.cfg.changes())
+	require.Equal(t, waitAttachBatch, waitingWhy(st, "lxc/101"))
+}
+
+func drainTrigger(ch chan struct{}) {
+	for len(ch) > 0 {
+		<-ch
+	}
+}
+
 func TestTheGateTagLeavingTheRegisteredTagsStopsAutomaticAttachesOnly(t *testing.T) {
 	m := newManagedEnv(t)
 	m.settings(func(s *store.Settings) { s.Managed.Consent = store.ConsentAuto })

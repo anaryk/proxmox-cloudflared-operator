@@ -261,7 +261,22 @@ type managedStep struct {
 	unverified map[string]string
 	// migrated are the owners whose attachment is on another node.
 	migrated map[string]bool
+	// adds counts the cards this cycle tried to add; deferred says that a
+	// guest was left to the next cycle for attachesPerCycle, and progressed
+	// that a card was added or sent.
+	adds       int
+	deferred   bool
+	progressed bool
 }
+
+// attachesPerCycle bounds the cards one cycle adds: each is a qm set or pct
+// set of seconds, and a node that switches to auto with many guests would
+// otherwise hold the state of every guest for the length of all of them. The
+// rest wait for the next cycle, which runs right after.
+const attachesPerCycle = 4
+
+// waitAttachBatch is why a guest waits for the next cycle.
+var waitAttachBatch = fmt.Sprintf("waits for the next cycle: one cycle adds no more than %d cards", attachesPerCycle)
 
 // managed puts consenting guests on the managed network, and takes the
 // cards of those whose consent ended after the grace. It runs after the
@@ -331,7 +346,7 @@ func (s *managedStep) run() ManagedView {
 			s.detach(d)
 		}
 	}
-	for _, d := range decisions {
+	for _, d := range s.attachOrder(decisions) {
 		switch d.Action {
 		case managednet.ActionAttach:
 			s.attach(d)
@@ -348,7 +363,33 @@ func (s *managedStep) run() ManagedView {
 	s.noteAuto()
 	s.fill()
 	s.events()
+	if s.deferred && s.progressed {
+		c.e.Trigger()
+	}
 	return s.v
+}
+
+// attachOrder returns the decisions with the attaches of the guests whose
+// card could not be added last time behind the others, so that a few cards
+// that keep failing do not take the place of the rest every cycle.
+func (s *managedStep) attachOrder(decisions []managednet.Decision) []managednet.Decision {
+	maps.DeleteFunc(s.c.e.addFailed, func(owner string, _ bool) bool {
+		return !slices.ContainsFunc(decisions, func(d managednet.Decision) bool {
+			return d.Owner == owner && d.Action == managednet.ActionAttach
+		})
+	})
+	out := slices.Clone(decisions)
+	slices.SortStableFunc(out, func(a, b managednet.Decision) int {
+		return cmp.Compare(s.failedBefore(a), s.failedBefore(b))
+	})
+	return out
+}
+
+func (s *managedStep) failedBefore(d managednet.Decision) int {
+	if d.Action == managednet.ActionAttach && s.c.e.addFailed[d.Owner] {
+		return 1
+	}
+	return 0
 }
 
 // read reads the consents, the attachments and the leases; without them the
@@ -785,6 +826,12 @@ func (s *managedStep) attach(d managednet.Decision) {
 		s.wait(owner, why)
 		return
 	}
+	if s.adds >= attachesPerCycle {
+		s.deferred = true
+		s.wait(owner, waitAttachBatch)
+		return
+	}
+	s.adds++
 	att, healing := s.attachments[owner]
 	switch {
 	case !healing:
@@ -811,6 +858,12 @@ func (s *managedStep) attach(d managednet.Decision) {
 		return
 	}
 	live, err := c.e.d.Guests.AddNIC(c.ctx, g, att.NIC, s.spec(g, att.MAC, att.Addr))
+	if err != nil && !errors.Is(err, managednet.ErrSent) {
+		c.e.addFailed[owner] = true
+	} else {
+		delete(c.e.addFailed, owner)
+		s.progressed = true
+	}
 	if errors.Is(err, managednet.ErrSent) {
 		s.sentTo(owner, g, fmt.Sprintf("the card net%d of %s on the managed network is written by the agent of node %s", att.NIC, s.name(owner), g.Node))
 		return
