@@ -33,7 +33,6 @@ const (
 	reasonBlocked  = "blocked on every node: its MAC was seen where it must not be"
 	whyDiverged    = "%s does not reach it while %s does"
 	whyCoverage    = "not every node watches its forwarding table"
-	whyLocal       = "it is reached through a leg of this node"
 	whyNodeAddress = "it reaches an address of node %s"
 	whyHosted      = "its guest runs on %s"
 	whyNotEvery    = "not every replica reached it when it was placed"
@@ -268,6 +267,11 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 	if fixed, why := c.fixedNode(routes); fixed != "" {
 		return placed{kind: store.PlacementPinned, node: fixed, why: why}, ""
 	}
+	if why := c.serviceWait(routes); why != "" && !stored && c.now.Sub(c.waitingSince(owner)) < waitFor {
+		// No replica reaches it before the node that resolves it verified
+		// it at its service address: it is placed by what they reach then.
+		return placed{}, why
+	}
 	all, any, unknown, yes := c.verdicts(routes, replicas)
 	hostReaches := host != "" && c.allReach(host, routes)
 	cross := host != "" && slices.ContainsFunc(replicas, func(n string) bool { return n != host })
@@ -427,8 +431,8 @@ func (c *cycleRun) hostingNode(routes []model.Route) string {
 // reaches, and a manual route to an address of a node.
 func (c *cycleRun) fixedNode(routes []model.Route) (string, string) {
 	for _, rt := range routes {
-		if res, ok := c.results[rt.Hostname]; ok && res.Target.Leg {
-			return c.e.d.Node, whyLocal
+		if node, why, ok := c.legFixed(rt); ok {
+			return node, why
 		}
 		if rt.Source != model.SourceManual || !rt.Options.AllowNode || !rt.Target.Addr.IsValid() {
 			continue
@@ -517,6 +521,13 @@ func (c *cycleRun) baseTarget(rt model.Route) planner.ResolvedTarget {
 	t := planner.ResolvedTarget{Addr: tr.Addr, Reachable: tr.OK, Reason: tr.Reason, Owner: rt.Owner(), Level: tr.Level}
 	if res, err := agent.DecodeResult(tr.Result); err == nil {
 		t.Withdrawn, t.Rejected = res.Target.Withdrawn, res.Target.Rejected
+	}
+	if rl, ok := c.remoteLegs[rt.Hostname]; ok {
+		// A target behind a leg is dialed at its service address only.
+		t.Leg, t.Via = true, rl.service
+		if !rl.service.IsValid() {
+			t.Reachable, t.Reason = false, fmt.Sprintf(reasonNoService, rl.why)
+		}
 	}
 	return t
 }

@@ -196,6 +196,12 @@ type cycleRun struct {
 	// read once; netsSaid says that the cycle said they could not be.
 	netsOfNodes *netsRead
 	netsSaid    bool
+	// nets are the networks as the gateway step read them, scoped those of
+	// single nodes, and remoteLegs the targets other nodes resolve through
+	// a leg, by hostname.
+	nets       map[string]store.Network
+	scoped     map[string]bool
+	remoteLegs map[string]*remoteLeg
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {

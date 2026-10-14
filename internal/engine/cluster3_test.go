@@ -48,6 +48,10 @@ type agentAct struct {
 	noWatch bool
 	fail    map[string]string // hostname -> reason it fails there
 	addrs   map[string]netip.Addr
+	// legs are, by hostname, the network the node reaches a target
+	// through: it verifies one only once the snapshot gives it its service
+	// address, and reports the result of one it resolves.
+	legs map[string]string
 	// edit changes the status before it is reported.
 	edit func(st *agentproto.Status)
 }
@@ -164,6 +168,9 @@ func (w *world) statusOf(node string, act *agentAct) agentproto.Status {
 			}
 			if why, bad := act.fail[t.Key]; bad {
 				r.OK, r.InEgressSet, r.Level, r.Reason = false, false, "observed", why
+			}
+			if network, onLeg := act.legs[t.Key]; onLeg {
+				w.onLeg(&r, t, network)
 			}
 			st.Targets = append(st.Targets, r)
 		}

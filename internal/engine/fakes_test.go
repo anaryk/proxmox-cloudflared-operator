@@ -290,7 +290,7 @@ func (f *fakeResolver) VerifyAddress(_ context.Context, req resolve.VerifyReques
 	if req.Route.Guest != nil && len(req.MACs) > 0 {
 		res.Binding = &resolve.Binding{
 			Owner: req.Route.Owner(), Hostname: req.Route.Hostname, Guest: req.Route.Guest.String(),
-			Addr: req.Addr, MAC: req.MACs[0], VerifiedAt: f.now(), Level: level,
+			Addr: req.Addr, MAC: req.MACs[0], VerifiedAt: f.now(), Level: level, Via: f.vias[req.Route.Hostname],
 		}
 	}
 	return resolve.VerifyResult{Result: res, Attested: attested}

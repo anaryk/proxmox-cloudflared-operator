@@ -62,7 +62,7 @@ func (c *cycleRun) networksFor(node string) json.RawMessage {
 	cache := gateway.Cache{Legs: c.legsOn(node, r.nets)}
 	if slices.ContainsFunc(cache.Legs, func(l gateway.Leg) bool { return l.Managed }) {
 		pins := leasePins(r.leases)
-		for _, key := range slices.SortedFunc(maps.Keys(pins), compareMappingKeys) {
+		for _, key := range slices.SortedFunc(maps.Keys(pins), compareBehindLegs) {
 			cache.Pins = append(cache.Pins, *pins[key])
 		}
 		cache.Sticky = c.stickyOn(node, r.attachments)
@@ -75,8 +75,8 @@ func (c *cycleRun) networksFor(node string) json.RawMessage {
 	return raw
 }
 
-func compareMappingKeys(a, b mappingKey) int {
-	return cmp.Or(cmp.Compare(a.network, b.network), a.addr.Compare(b.addr))
+func compareBehindLegs(a, b behindLeg) int {
+	return cmp.Or(cmp.Compare(a.leg, b.leg), a.addr.Compare(b.addr))
 }
 
 // legsOn are the legs of the networks with a leg address on node, by
@@ -143,6 +143,12 @@ type legServed struct {
 // legService is how the target of a route is published on a leg in this
 // cycle; false for one that is not on a leg, or has no service address.
 func (c *cycleRun) legService(host string) (legServed, bool) {
+	if rl, ok := c.remoteLegs[host]; ok {
+		if !rl.service.IsValid() {
+			return legServed{}, false
+		}
+		return legServed{network: rl.key.network, addr: rl.key.addr, service: rl.service}, true
+	}
 	res, ok := c.results[host]
 	if !ok || res.Binding == nil || res.Binding.Via == "" || !res.Target.Leg || !res.Target.Via.IsValid() {
 		return legServed{}, false

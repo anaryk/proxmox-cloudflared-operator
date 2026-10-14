@@ -52,7 +52,7 @@ func (c *cycleRun) identityUnknown(rt model.Route, res resolve.Result) bool {
 // result res has a binding: its owner, guest and the guest's identity are
 // those it was made for. A mapping stored without an owner was made for no
 // one.
-func (c *cycleRun) madeFor(m store.ServiceAddr, rt model.Route, res resolve.Result) bool {
+func (c *cycleRun) madeFor(m mapping, rt model.Route, res resolve.Result) bool {
 	return res.Binding != nil && m.Known() && m.ServiceOwner == c.serviceOwner(rt, res)
 }
 
@@ -60,7 +60,7 @@ func (c *cycleRun) madeFor(m store.ServiceAddr, rt model.Route, res resolve.Resu
 // under m: m was made for it, or is shared with it, or was made for its owner
 // and guest while the guest's identity is not known in this cycle, which
 // proves nothing either way.
-func (c *cycleRun) keeps(m store.ServiceAddr, rt model.Route, res resolve.Result) bool {
+func (c *cycleRun) keeps(m mapping, rt model.Route, res resolve.Result) bool {
 	if c.madeFor(m, rt, res) || c.sharedWith(m, rt, res) {
 		return true
 	}
@@ -74,7 +74,7 @@ func (c *cycleRun) keeps(m store.ServiceAddr, rt model.Route, res resolve.Result
 // this cycle, as a manual route to a guest beside the guest's own. The rules
 // of either then reach only that guest. Once the routes m was made for are
 // gone, rt gets a service address of its own.
-func (c *cycleRun) sharedWith(m store.ServiceAddr, rt model.Route, res resolve.Result) bool {
+func (c *cycleRun) sharedWith(m mapping, rt model.Route, res resolve.Result) bool {
 	if res.Binding == nil || res.Binding.Guest == "" || !m.Known() {
 		return false
 	}
@@ -88,7 +88,7 @@ func (c *cycleRun) sharedWith(m store.ServiceAddr, rt model.Route, res resolve.R
 // usedByItsOwner reports whether a route m was made for, to guest or, when
 // guest is empty, to any, is served at the address m forwards to in this
 // cycle.
-func (c *cycleRun) usedByItsOwner(m store.ServiceAddr, guest string) bool {
+func (c *cycleRun) usedByItsOwner(m mapping, guest string) bool {
 	return c.servedAt(m, func(rt model.Route, res resolve.Result) bool {
 		return (guest == "" || res.Binding.Guest == guest) && c.madeFor(m, rt, res)
 	})
@@ -97,19 +97,24 @@ func (c *cycleRun) usedByItsOwner(m store.ServiceAddr, guest string) bool {
 // servedFor reports whether a route published under m in this cycle is
 // served at the address m forwards to: one m was made for, or one kept
 // under it while its guest's identity is not known.
-func (c *cycleRun) servedFor(m store.ServiceAddr) bool {
+func (c *cycleRun) servedFor(m mapping) bool {
 	return c.servedAt(m, func(rt model.Route, res resolve.Result) bool { return c.keeps(m, rt, res) })
 }
 
 // servedAt reports whether a winner that match accepts is served through a
-// leg at the address m forwards to.
-func (c *cycleRun) servedAt(m store.ServiceAddr, match func(model.Route, resolve.Result) bool) bool {
+// leg at the address m forwards to, here or on the node that resolves it.
+func (c *cycleRun) servedAt(m mapping, match func(model.Route, resolve.Result) bool) bool {
 	for _, rt := range c.claims.Winners {
 		res, ok := c.results[rt.Hostname]
 		if !ok || res.Binding == nil || !res.Target.Leg || !serves(rt, res) {
 			continue
 		}
-		if (mappingKey{res.Binding.Via, res.Target.Addr}) == (mappingKey{m.Network, m.Addr}) && match(rt, res) {
+		if c.localKey(res.Binding.Via, res.Target.Addr) == m.key() && match(rt, res) {
+			return true
+		}
+	}
+	for _, rl := range c.remoteLegs {
+		if rl.key == m.key() && match(rl.rt, rl.res) {
 			return true
 		}
 	}
@@ -120,21 +125,21 @@ func (c *cycleRun) servedAt(m store.ServiceAddr, match func(model.Route, resolve
 // at its address now, and reports whether it is gone. A rule that still
 // sends a connector to it, as one Cloudflare kept after a write that failed,
 // reaches nothing: the pool never gives the address again.
-func (c *cycleRun) disown(m store.ServiceAddr, rt model.Route, ms mappings) bool {
+func (c *cycleRun) disown(m mapping, rt model.Route, res resolve.Result, ms mappings) bool {
 	c.freeze(m.Service)
-	if err := c.e.d.Store.ReleaseServiceAddr(m.Network, m.Addr); err != nil {
-		c.problem(problemServiceRelease, m.Service, m.Addr, m.Network, err)
+	if err := c.releaseMapping(m); err != nil {
+		c.problem(problemServiceRelease, m.Service, m.Addr, m.onNetwork(), err)
 		return false
 	}
 	ms.remove(m)
 	c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: m.Network, Route: rt.Hostname,
 		Message: fmt.Sprintf("service address %s of %s on network %s released: it was made for %s, and %s is at the address now",
-			m.Service, m.Addr, m.Network, madeForText(m), c.serviceOwner(rt, c.results[rt.Hostname]).Name())})
+			m.Service, m.Addr, m.onNetwork(), madeForText(m), c.serviceOwner(rt, res).Name())})
 	return true
 }
 
 // madeForText names whom m was made for.
-func madeForText(m store.ServiceAddr) string {
+func madeForText(m mapping) string {
 	if !m.Known() {
 		return "a route of an earlier version"
 	}

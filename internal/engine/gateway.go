@@ -156,44 +156,127 @@ func setAddr(b resolve.Binding) netip.Addr {
 	return b.Service
 }
 
-// mappingKey is a real address on a network, which has one service address.
+// mappingKey is a real address on a network, which has one service address:
+// on a network of single nodes, on the network of one node.
 type mappingKey struct {
 	network string
+	node    string // empty for a network that is one segment on every node
 	addr    netip.Addr
+}
+
+// mapping is a service address as the step knows it: one of a network of
+// single nodes has the node of its network.
+type mapping struct {
+	store.ServiceAddr
+	Node string
+}
+
+func (m mapping) key() mappingKey { return mappingKey{m.Network, m.Node, m.Addr} }
+
+// onNetwork names the network of a mapping, with its node when it has one.
+func (m mapping) onNetwork() string {
+	if m.Node == "" {
+		return m.Network
+	}
+	return m.Network + " of node " + m.Node
+}
+
+// mappingsOf are the stored mappings of both kinds.
+func mappingsOf(cluster []store.ServiceAddr, nodes []store.NodeServiceAddr) []mapping {
+	out := make([]mapping, 0, len(cluster)+len(nodes))
+	for _, m := range cluster {
+		out = append(out, mapping{ServiceAddr: m})
+	}
+	for _, m := range nodes {
+		out = append(out, mapping{ServiceAddr: store.ServiceAddr{Network: m.Network, Addr: m.Addr, Service: m.Service,
+			AllocatedAt: m.AllocatedAt, ServiceOwner: m.ServiceOwner}, Node: m.Node})
+	}
+	return out
 }
 
 // mappings are the service addresses as the step knows them, by the real
 // address each forwards to and by itself.
 type mappings struct {
-	byKey     map[mappingKey]store.ServiceAddr
-	byService map[netip.Addr]store.ServiceAddr
+	byKey     map[mappingKey]mapping
+	byService map[netip.Addr]mapping
 }
 
-func newMappings(all []store.ServiceAddr) mappings {
-	ms := mappings{byKey: map[mappingKey]store.ServiceAddr{}, byService: map[netip.Addr]store.ServiceAddr{}}
+func newMappings(all []mapping) mappings {
+	ms := mappings{byKey: map[mappingKey]mapping{}, byService: map[netip.Addr]mapping{}}
 	for _, m := range all {
 		ms.add(m)
 	}
 	return ms
 }
 
-func (ms mappings) add(m store.ServiceAddr) {
-	ms.byKey[mappingKey{m.Network, m.Addr}] = m
+func (ms mappings) add(m mapping) {
+	ms.byKey[m.key()] = m
 	ms.byService[m.Service] = m
 }
 
-func (ms mappings) remove(m store.ServiceAddr) {
-	delete(ms.byKey, mappingKey{m.Network, m.Addr})
+func (ms mappings) remove(m mapping) {
+	delete(ms.byKey, m.key())
 	delete(ms.byService, m.Service)
 }
 
-// list is every mapping, by network and then by address.
-func (ms mappings) list() []store.ServiceAddr {
+// list is every mapping, by network, node and then by address.
+func (ms mappings) list() []mapping {
 	out := slices.Collect(maps.Values(ms.byKey))
-	slices.SortFunc(out, func(a, b store.ServiceAddr) int {
-		return cmp.Or(cmp.Compare(a.Network, b.Network), a.Addr.Compare(b.Addr))
+	slices.SortFunc(out, func(a, b mapping) int {
+		return cmp.Or(cmp.Compare(a.Network, b.Network), cmp.Compare(a.Node, b.Node), a.Addr.Compare(b.Addr))
 	})
 	return out
+}
+
+// keyOn is the key of a real address on a network as node reaches it: on a
+// network of single nodes, that node's.
+func (c *cycleRun) keyOn(network, node string, addr netip.Addr) mappingKey {
+	if !c.scoped[network] {
+		node = ""
+	}
+	return mappingKey{network, node, addr}
+}
+
+// localKey is the key of a real address on a network as this node reaches it.
+func (c *cycleRun) localKey(network string, addr netip.Addr) mappingKey {
+	return c.keyOn(network, c.e.d.Node, addr)
+}
+
+// allocate makes the mapping of key for owner, of the kind its network
+// takes.
+func (c *cycleRun) allocate(key mappingKey, owner store.ServiceOwner) (mapping, error) {
+	if key.node == "" {
+		m, err := c.e.d.Store.AllocateServiceAddr(key.network, key.addr, owner, c.now)
+		return mapping{ServiceAddr: m}, err
+	}
+	m, err := c.e.d.Store.AllocateNodeServiceAddr(key.network, key.node, key.addr, owner, c.now)
+	if err != nil {
+		return mapping{}, err
+	}
+	return mappingsOf(nil, []store.NodeServiceAddr{m})[0], nil
+}
+
+// releaseMapping deletes a mapping of either kind.
+func (c *cycleRun) releaseMapping(m mapping) error {
+	if m.Node == "" {
+		return c.e.d.Store.ReleaseServiceAddr(m.Network, m.Addr)
+	}
+	return c.e.d.Store.ReleaseNodeServiceAddr(m.Network, m.Node, m.Addr)
+}
+
+// readMappings reads the service addresses of both kinds.
+func (c *cycleRun) readMappings() (mappings, bool) {
+	all, err := c.e.d.Store.ServiceAddrs()
+	if err != nil {
+		c.hold(c.storeProblem("reading the service addresses", err))
+		return mappings{}, false
+	}
+	nodes, err := c.e.d.Store.NodeServiceAddrs()
+	if err != nil {
+		c.hold(c.storeProblem("reading the service addresses of the networks of single nodes", err))
+		return mappings{}, false
+	}
+	return newMappings(mappingsOf(all, nodes)), true
 }
 
 // gateway is the step between the resolution and the plan. Every winner
@@ -221,6 +304,7 @@ func (c *cycleRun) gateway() {
 				c.withoutService(rt, gateNoGateway)
 			}
 		}
+		c.remoteOnly()
 		return
 	}
 	nets, err := c.e.d.Store.Networks()
@@ -228,6 +312,7 @@ func (c *cycleRun) gateway() {
 		c.hold(c.storeProblem("reading the networks", err))
 		return
 	}
+	c.noteNets(nets)
 	for _, id := range slices.Sorted(maps.Keys(nets)) {
 		n := nets[id]
 		c.legIfaces[id] = gateway.LegIface(n.Mark)
@@ -236,22 +321,21 @@ func (c *cycleRun) gateway() {
 			c.legNets[id] = true
 		}
 	}
-	all, err := c.e.d.Store.ServiceAddrs()
-	if err != nil {
-		c.hold(c.storeProblem("reading the service addresses", err))
+	ms, ok := c.readMappings()
+	if !ok {
 		return
 	}
 	cards, ok := c.readManagedCards()
 	if !ok {
 		return
 	}
-	ms := newMappings(all)
 	followed := c.followMovers(ms)
 	for _, rt := range legs {
 		if !followed[rt.Hostname] {
 			c.serviceAddr(rt, ms)
 		}
 	}
+	c.serveRemoteLegs(ms)
 	if c.storeHold {
 		return
 	}
@@ -290,7 +374,7 @@ func (c *cycleRun) readManagedCards() (managedCards, bool) {
 // forwards to: movers are the winners whose binding is elsewhere now, and
 // stayers says that a winner published under it is still there.
 type leaving struct {
-	m       store.ServiceAddr
+	m       mapping
 	movers  []model.Route
 	stayers bool
 }
@@ -315,7 +399,7 @@ func (c *cycleRun) leavers(ms mappings) []*leaving {
 			l = &leaving{m: m}
 			by[m.Service] = l
 		}
-		if (mappingKey{res.Binding.Via, res.Binding.Addr}) == (mappingKey{m.Network, m.Addr}) {
+		if c.localKey(res.Binding.Via, res.Binding.Addr) == m.key() {
 			l.stayers = true
 		} else {
 			l.movers = append(l.movers, rt)
@@ -351,7 +435,8 @@ func (c *cycleRun) followMovers(ms mappings) map[string]bool {
 		host := l.movers[0].Hostname
 		open, why := c.gateOpen("service address for " + host)
 		if open {
-			moved, err := c.e.d.Store.MoveServiceAddr(l.m.Network, l.m.Addr, to.network, to.addr, c.now)
+			stored, err := c.e.d.Store.MoveServiceAddr(l.m.Network, l.m.Addr, to.network, to.addr, c.now)
+			moved := mapping{ServiceAddr: stored}
 			if err == nil {
 				ms.remove(l.m)
 				ms.add(moved)
@@ -382,14 +467,16 @@ func (c *cycleRun) followMovers(ms mappings) map[string]bool {
 
 // followTo is the address every route that left l's service address went
 // to, when it can take the service address along: each is served there,
-// through a leg of this node, and the address has no service address yet.
+// through a leg of this node, and the address has no service address yet. A
+// mapping of a network of single nodes stays where it is: it is released, and
+// the routes find their own.
 func (c *cycleRun) followTo(l *leaving, ms mappings) (mappingKey, bool) {
 	var to mappingKey
 	for i, rt := range l.movers {
 		res := c.results[rt.Hostname]
-		key := mappingKey{res.Binding.Via, res.Binding.Addr}
+		key := c.localKey(res.Binding.Via, res.Binding.Addr)
 		switch {
-		case !serves(rt, res), key.network == "", !c.legNets[key.network], i > 0 && key != to:
+		case !serves(rt, res), key.network == "", !c.legNets[key.network], i > 0 && key != to, key.node != "", l.m.Node != "":
 			return mappingKey{}, false
 		}
 		to = key
@@ -403,15 +490,15 @@ func (c *cycleRun) followTo(l *leaving, ms mappings) (mappingKey, bool) {
 // abandon releases a service address no route is at any more, at once: a
 // rule still sending a connector there reaches nothing, and the address it
 // forwarded to gets a new one when a route is proven there.
-func (c *cycleRun) abandon(m store.ServiceAddr, ms mappings) {
+func (c *cycleRun) abandon(m mapping, ms mappings) {
 	c.freeze(m.Service)
-	if err := c.e.d.Store.ReleaseServiceAddr(m.Network, m.Addr); err != nil {
-		c.problem(problemServiceRelease, m.Service, m.Addr, m.Network, err)
+	if err := c.releaseMapping(m); err != nil {
+		c.problem(problemServiceRelease, m.Service, m.Addr, m.onNetwork(), err)
 		return
 	}
 	ms.remove(m)
 	c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: m.Network,
-		Message: fmt.Sprintf("service address %s of %s on network %s released", m.Service, m.Addr, m.Network)})
+		Message: fmt.Sprintf("service address %s of %s on network %s released", m.Service, m.Addr, m.onNetwork())})
 }
 
 // freeze has a service address forward nothing in this cycle: it leaves the
@@ -481,42 +568,49 @@ func (c *cycleRun) serviceAddr(rt model.Route, ms mappings) {
 		c.withoutService(rt, fmt.Sprintf(gateNoLeg, b.Via))
 		return
 	}
-	key := mappingKey{b.Via, res.Target.Addr}
+	service, why := c.mappingFor(rt, res, c.localKey(b.Via, res.Target.Addr), ms)
+	if !service.IsValid() {
+		c.withoutService(rt, why)
+		return
+	}
+	c.publishAt(rt, service)
+}
+
+// mappingFor is the service address of the target of rt at key, whose result
+// res has a binding: the one key has when it was made for the route's owner,
+// guest and the guest's identity, or is shared with it, or one made now, when
+// the gate is open. One made for anyone else is released first. Without one,
+// why says why.
+func (c *cycleRun) mappingFor(rt model.Route, res resolve.Result, key mappingKey, ms mappings) (service netip.Addr, why string) {
 	unknown := c.identityUnknown(rt, res)
 	if m, ok := ms.byKey[key]; ok {
 		switch {
 		case c.frozen[m.Service]:
-			c.withoutService(rt, fmt.Sprintf(gateFrozen, m.Service))
-			return
+			return netip.Addr{}, fmt.Sprintf(gateFrozen, m.Service)
 		case c.keeps(m, rt, res):
-			c.publishAt(rt, m.Service)
-			return
+			return m.Service, ""
 		case c.usedByItsOwner(m, ""):
-			c.withoutService(rt, fmt.Sprintf(gateTaken, m.Service, madeForText(m)))
-			return
+			return netip.Addr{}, fmt.Sprintf(gateTaken, m.Service, madeForText(m))
 		case unknown:
-		case !c.disown(m, rt, ms):
-			c.withoutService(rt, fmt.Sprintf(gateNotReleased, m.Service))
-			return
+		case !c.disown(m, rt, res, ms):
+			return netip.Addr{}, fmt.Sprintf(gateNotReleased, m.Service)
 		}
 	}
 	if unknown {
-		c.withoutService(rt, fmt.Sprintf(gateUnknownIdentity, b.Guest))
-		return
+		return netip.Addr{}, fmt.Sprintf(gateUnknownIdentity, res.Binding.Guest)
 	}
 	open, why := c.gateOpen("service address for " + rt.Hostname)
-	if open {
-		m, err := c.e.d.Store.AllocateServiceAddr(key.network, key.addr, c.serviceOwner(rt, res), c.now)
-		if err == nil {
-			ms.add(m)
-			c.publishAt(rt, m.Service)
-			c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: m.Network, Route: rt.Hostname,
-				Message: fmt.Sprintf("service address %s allocated for %s on network %s", m.Service, m.Addr, m.Network)})
-			return
-		}
-		why = err.Error()
+	if !open {
+		return netip.Addr{}, why
 	}
-	c.withoutService(rt, why)
+	m, err := c.allocate(key, c.serviceOwner(rt, res))
+	if err != nil {
+		return netip.Addr{}, err.Error()
+	}
+	ms.add(m)
+	c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: m.Network, Route: rt.Hostname,
+		Message: fmt.Sprintf("service address %s allocated for %s on network %s", m.Service, m.Addr, m.onNetwork())})
+	return m.Service, ""
 }
 
 // publishAt gives the target of a winner on a leg the service address it is
@@ -540,7 +634,7 @@ func (c *cycleRun) withoutService(rt model.Route, why string) {
 // syncGateway gives the gateway what this cycle wants of it and keeps what it
 // says of the legs; a gateway that cannot be programmed holds the tunnel run.
 // A node that never had a network asks the gateway for nothing.
-func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []store.ServiceAddr, cards managedCards) {
+func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []mapping, cards managedCards) {
 	legs := c.wantedLegs(nets)
 	services := c.wantedServices(legs, mappings)
 	pins := c.wantedPins(services, cards.leases)
@@ -586,7 +680,7 @@ func (c *cycleRun) wantedLegs(nets map[string]store.Network) []gateway.Leg {
 // address no route it was made for is served in this cycle forwards nothing:
 // whoever is there now may be another guest, and a rule that still names it
 // must reach no one.
-func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []store.ServiceAddr) []gateway.Service {
+func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []mapping) []gateway.Service {
 	ports := map[netip.Addr][]uint16{}
 	for _, t := range c.egressSet() {
 		ports[t.Addr] = append(ports[t.Addr], t.Port)
@@ -594,7 +688,8 @@ func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []store.ServiceAd
 	var out []gateway.Service
 	for _, m := range mappings {
 		p, ok := ports[m.Service]
-		if !ok || !slices.ContainsFunc(legs, func(l gateway.Leg) bool { return l.ID == m.Network }) || !c.servedFor(m) {
+		mine := m.Node == "" || m.Node == c.e.d.Node
+		if !ok || !mine || !slices.ContainsFunc(legs, func(l gateway.Leg) bool { return l.ID == m.Network }) || !c.servedFor(m) {
 			continue
 		}
 		out = append(out, gateway.Service{Leg: m.Network, Service: m.Service, Addr: m.Addr, Ports: slices.Compact(slices.Sorted(slices.Values(p)))})
@@ -612,24 +707,24 @@ func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []store.ServiceAd
 // only.
 func (c *cycleRun) wantedPins(services []gateway.Service, leases map[string]store.Lease) []gateway.Pin {
 	leased := leasePins(leases)
-	forwarded := map[mappingKey]bool{}
+	forwarded := map[behindLeg]bool{}
 	for _, s := range services {
-		forwarded[mappingKey{s.Leg, s.Addr}] = true
+		forwarded[behindLeg{s.Leg, s.Addr}] = true
 	}
-	seen := map[mappingKey]bool{}
+	seen := map[behindLeg]bool{}
 	var out []gateway.Pin
 	for _, rt := range c.claims.Winners {
 		res, ok := c.results[rt.Hostname]
 		if !ok || res.Binding == nil || !res.Target.Leg || !serves(rt, res) {
 			continue
 		}
-		key := mappingKey{res.Binding.Via, res.Target.Addr}
+		key := behindLeg{res.Binding.Via, res.Target.Addr}
 		mac, err := net.ParseMAC(res.Binding.MAC)
 		if err != nil || !forwarded[key] || seen[key] {
 			continue
 		}
 		seen[key] = true
-		out = append(out, gateway.Pin{Leg: key.network, Addr: key.addr, MAC: mac})
+		out = append(out, gateway.Pin{Leg: key.leg, Addr: key.addr, MAC: mac})
 	}
 	for key, p := range leased {
 		if !seen[key] {
@@ -640,16 +735,22 @@ func (c *cycleRun) wantedPins(services []gateway.Service, leases map[string]stor
 	return out
 }
 
+// behindLeg is an address behind a leg.
+type behindLeg struct {
+	leg  string
+	addr netip.Addr
+}
+
 // leasePins are the pins of the leases, by the address each has on the
 // managed network.
-func leasePins(leases map[string]store.Lease) map[mappingKey]*gateway.Pin {
-	out := map[mappingKey]*gateway.Pin{}
+func leasePins(leases map[string]store.Lease) map[behindLeg]*gateway.Pin {
+	out := map[behindLeg]*gateway.Pin{}
 	for _, l := range leases {
 		mac, err := net.ParseMAC(l.MAC)
 		if err != nil || len(mac) != 6 || !l.Addr.Is4() {
 			continue
 		}
-		out[mappingKey{gateway.ManagedBridge, l.Addr}] = &gateway.Pin{Leg: gateway.ManagedBridge, Addr: l.Addr, MAC: mac}
+		out[behindLeg{gateway.ManagedBridge, l.Addr}] = &gateway.Pin{Leg: gateway.ManagedBridge, Addr: l.Addr, MAC: mac}
 	}
 	return out
 }
@@ -697,9 +798,12 @@ func (c *cycleRun) stickyOn(node string, atts map[string]store.Attachment) []gat
 // the address of, and returns the others. A withdrawn route is still bound to
 // its address: its proof may come back, as after a change of the guest's MAC,
 // and the tunnel then sends the connector where it did. A released address is
-// never given again; the mappings of another node's networks are its own to
-// release.
-func (c *cycleRun) releaseUnused(mappings []store.ServiceAddr, services []gateway.Service) []store.ServiceAddr {
+// never given again. A node alone leaves the mappings of a network without a
+// leg here as they are. In a cluster the controller releases those of the
+// networks of other nodes too, once no route is bound to their address, no
+// agent's gateway maps them, and no winner is of the owner they were made
+// for, so that one of a node that does not report is kept.
+func (c *cycleRun) releaseUnused(mappings []mapping, services []gateway.Service) []mapping {
 	inUse := map[netip.Addr]bool{}
 	for _, s := range services {
 		inUse[s.Service] = true
@@ -707,32 +811,40 @@ func (c *cycleRun) releaseUnused(mappings []store.ServiceAddr, services []gatewa
 	for t := range c.e.sentTargets() {
 		inUse[t.Addr] = true
 	}
+	for addr := range c.agentServices() {
+		inUse[addr] = true
+	}
 	bound := c.boundAddrs()
-	var kept []store.ServiceAddr
+	var kept []mapping
 	for _, m := range mappings {
-		if inUse[m.Service] || bound[mappingKey{m.Network, m.Addr}] || !c.legNets[m.Network] {
+		local := c.legNets[m.Network] && (m.Node == "" || m.Node == c.e.d.Node)
+		if inUse[m.Service] || bound[m.key()] || !local && (!c.clustered() || c.ownerWins(m.Owner)) {
 			kept = append(kept, m)
 			continue
 		}
-		if err := c.e.d.Store.ReleaseServiceAddr(m.Network, m.Addr); err != nil {
-			c.problem(problemServiceRelease, m.Service, m.Addr, m.Network, err)
+		if err := c.releaseMapping(m); err != nil {
+			c.problem(problemServiceRelease, m.Service, m.Addr, m.onNetwork(), err)
 			kept = append(kept, m)
 			continue
 		}
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: m.Network,
-			Message: fmt.Sprintf("service address %s of %s on network %s released", m.Service, m.Addr, m.Network)})
+			Message: fmt.Sprintf("service address %s of %s on network %s released", m.Service, m.Addr, m.onNetwork())})
 	}
 	return kept
 }
 
 // boundAddrs are the addresses on a network that the binding of a winner of
-// this cycle names, served or withdrawn.
+// this cycle names, served or withdrawn, here or on the node that resolves
+// it.
 func (c *cycleRun) boundAddrs() map[mappingKey]bool {
 	out := map[mappingKey]bool{}
 	for _, rt := range c.claims.Winners {
 		if res, ok := c.results[rt.Hostname]; ok && res.Binding != nil && res.Binding.Via != "" {
-			out[mappingKey{res.Binding.Via, res.Binding.Addr}] = true
+			out[c.localKey(res.Binding.Via, res.Binding.Addr)] = true
 		}
+	}
+	for _, rl := range c.remoteLegs {
+		out[rl.key] = true
 	}
 	return out
 }
@@ -741,7 +853,7 @@ func (c *cycleRun) boundAddrs() map[mappingKey]bool {
 // pco netns up restores the namespace from at boot, the networks, service
 // addresses and leases it serves, and the pins with the time they were
 // proven. One that cannot be saved is a problem line; it holds nothing.
-func (c *cycleRun) saveGatewayCache(given gateway.Cache, nets map[string]store.Network, mappings []store.ServiceAddr) {
+func (c *cycleRun) saveGatewayCache(given gateway.Cache, nets map[string]store.Network, mappings []mapping) {
 	var failed []string
 	fail := func(err error) {
 		if err != nil {
@@ -753,7 +865,12 @@ func (c *cycleRun) saveGatewayCache(given gateway.Cache, nets map[string]store.N
 	}
 	leases, err := c.e.d.Store.Leases()
 	fail(err)
-	cache := store.NetCache{ServiceAddrs: nonNil(mappings), Leases: []store.Lease{}, WrittenAt: c.now}
+	cache := store.NetCache{ServiceAddrs: []store.ServiceAddr{}, Leases: []store.Lease{}, WrittenAt: c.now}
+	for _, m := range mappings {
+		if m.Node == "" || m.Node == c.e.d.Node {
+			cache.ServiceAddrs = append(cache.ServiceAddrs, m.ServiceAddr)
+		}
+	}
 	for _, id := range slices.Sorted(maps.Keys(nets)) {
 		cache.Networks = append(cache.Networks, nets[id])
 	}

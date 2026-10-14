@@ -282,9 +282,10 @@ of the appliance did not pass this cycle`, `the cluster is not quorate`, `the qu
 cluster could not be read: <error>`, `this process drew a new epoch and none of its writes is
 verified at Cloudflare yet` and `the previous cycle found this appliance behind its last write
 at Cloudflare`. Where no gateway runs, the reason is `no gateway runs on this node`; for a
-network with no leg here, `network <network> has no leg on this node`; for the address a route
-just left while its service address waits to follow it, `service address <service> of this
-address waits for the route that left it`; for an address whose service address was made for
+network with no leg here, `network <network> has no leg on this node`; for a target another
+node of a cluster found behind a network that is no longer attached, `network <network> is not
+attached`; for the address a route just left while its service address waits to follow it,
+`service address <service> of this address waits for the route that left it`; for an address whose service address was made for
 another owner and could not be released (the line of the release says why), `service address
 <service> of this address was made for another owner and could not be released`; for an
 address where the guest its service address was made for is proven too, `service address
@@ -300,6 +301,7 @@ reaches nothing until it is`.
 
 | Line | Meaning and cause | What to do |
 |---|---|---|
+| `network <network> has no leg on node <node>; its routes are served from the nodes that have one` | In a cluster, a network that is one segment on every node (an uplinked bridge, a VXLAN or EVPN vnet) serves a route, and a replica of the shared tunnel has no leg into it. That node cannot verify the network's targets, so their routes are pinned to the nodes that reach them instead of running on every replica. | Give the node a leg into the network where its connector should serve these routes too; otherwise nothing. |
 | `network <id>: pco reaches at most 15 networks: the SNAT through each takes a block of 4096 source ports, and 15 blocks end at port 62463, where one more would pass 65535`, and the same words after `network <id>: mark <n> is not 1 to 15:` | A 16th network was refused. The SNAT through the leg of each network draws its source ports from a block of 4096 of its own, and 15 blocks are all that fit below port 65536. The marks are kept once for the whole cluster, so the 15 are those of the cluster, and the limit is in the code, not a setting. With the blocks a target takes about 68 new connections a second; see [Architecture](architecture.md#the-network-gateway). | Remove a network that nothing you publish needs before adding another. |
 
 ## The managed network
