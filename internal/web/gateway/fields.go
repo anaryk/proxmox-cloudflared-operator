@@ -165,7 +165,7 @@ var (
 	}
 	upgradeFields    = map[string]decision{"from": kept, "since": kept, "older": kept}
 	caRotationFields = map[string]decision{
-		"node": kept, "startedAt": kept, "done": kept, "next": kept, "finishedAt": kept, "refused": kept,
+		"node": kept, "also": kept, "startedAt": kept, "done": kept, "next": kept, "finishedAt": kept, "refused": kept,
 	}
 )
 

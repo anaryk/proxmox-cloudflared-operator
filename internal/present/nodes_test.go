@@ -29,6 +29,9 @@ func TestNodeWords(t *testing.T) {
 	require.Equal(t, "", RotationText(nil))
 	require.Equal(t, "running for node pve3: 2 of 6 steps done, waiting on tunnels",
 		RotationText(&engine.CARotationView{Node: "pve3", Done: []string{"credentials", "proxmox"}, Next: "tunnels"}))
+	require.Equal(t, "running for nodes pve3, pve4 and pve2: 0 of 6 steps done, waiting on credentials",
+		RotationText(&engine.CARotationView{Node: "pve3", Also: []string{"pve4", "pve2"}, Next: "credentials"}))
+	require.Equal(t, "finished for nodes pve3 and pve4", RotationText(&engine.CARotationView{Node: "pve3", Also: []string{"pve4"}, FinishedAt: time.Unix(1, 0)}))
 	require.Equal(t, "finished for node pve3", RotationText(&engine.CARotationView{Node: "pve3", FinishedAt: time.Unix(1, 0)}))
 	require.Equal(t, "finished for node pve3; the new CA refuses 1 nodes still",
 		RotationText(&engine.CARotationView{Node: "pve3", FinishedAt: time.Unix(1, 0), Refused: []string{"pve2"}}))

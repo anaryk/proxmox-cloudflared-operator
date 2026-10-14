@@ -2,6 +2,7 @@ package present
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -66,15 +67,22 @@ func NodeAgentText(n engine.NodeView) string {
 	return text
 }
 
-// RotationText says where the rotation of a compromised node's secrets is.
+// RotationText says where the rotation of a compromised node's secrets is,
+// naming every node forgotten as compromised while it ran.
 func RotationText(r *engine.CARotationView) string {
-	switch {
-	case r == nil:
+	if r == nil {
 		return ""
-	case !r.FinishedAt.IsZero() && len(r.Refused) > 0:
-		return fmt.Sprintf("finished for node %s; the new CA refuses %d nodes still", r.Node, len(r.Refused))
-	case !r.FinishedAt.IsZero():
-		return "finished for node " + r.Node
 	}
-	return fmt.Sprintf("running for node %s: %d of 6 steps done, waiting on %s", r.Node, len(r.Done), r.Next)
+	nodes := "node " + r.Node
+	if len(r.Also) > 0 {
+		names := append([]string{r.Node}, r.Also...)
+		nodes = "nodes " + strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
+	switch {
+	case !r.FinishedAt.IsZero() && len(r.Refused) > 0:
+		return fmt.Sprintf("finished for %s; the new CA refuses %d nodes still", nodes, len(r.Refused))
+	case !r.FinishedAt.IsZero():
+		return "finished for " + nodes
+	}
+	return fmt.Sprintf("running for %s: %d of 6 steps done, waiting on %s", nodes, len(r.Done), r.Next)
 }

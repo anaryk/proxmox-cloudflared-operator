@@ -27,7 +27,7 @@ func clusterState() engine.State {
 		Controller: "pve1", Generation: 3, Members: []string{"pve1", "pve2", "pve3"}, Quorate: true, QuorumDevice: true, Overrides: []string{"two_node"},
 		Coverage:   engine.CoverageView{Covered: false, Since: t0.Add(-time.Minute), Uncovered: []string{"pve3"}},
 		Upgrade:    &engine.UpgradeView{From: "0.9.0", Since: t0.Add(-24 * time.Hour), Older: []string{"pve3"}},
-		CARotation: &engine.CARotationView{Node: "pve4", StartedAt: t0.Add(-10 * time.Minute), Done: []string{"credentials"}, Next: "proxmox"},
+		CARotation: &engine.CARotationView{Node: "pve4", Also: []string{"pve5"}, StartedAt: t0.Add(-10 * time.Minute), Done: []string{"credentials"}, Next: "proxmox"},
 		Blocks:     []engine.BlockView{{Address: netip.MustParseAddr("10.0.0.7"), Guest: "qemu/102", MAC: "bc:24:11:00:00:02", Node: "pve3", Port: "tap103i0", Since: t0}},
 	}
 	zero := 0

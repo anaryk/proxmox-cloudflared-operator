@@ -109,6 +109,7 @@ export interface BlockView {
 // engine.CARotationView
 export interface CARotationView {
   node: string
+  also?: string[]
   startedAt?: string
   done?: string[]
   next?: string
