@@ -22,7 +22,7 @@ import (
 // pass of the agent begins with.
 func (c *cycleRun) snapshot() agentproto.Snapshot {
 	s := c.desired()
-	s.Tunnels = c.withVerified(nil, true)
+	s.Tunnels = c.withVerified(nil, c.e.d.Node)
 	return s
 }
 
@@ -33,7 +33,7 @@ func (c *cycleRun) snapshot() agentproto.Snapshot {
 // the node keeps.
 func (c *cycleRun) keptSnapshot(tunnels []agentproto.Tunnel, prune bool) agentproto.Snapshot {
 	s := c.desired()
-	s.Tunnels, s.Prune = c.withVerified(tunnels, false), prune
+	s.Tunnels, s.Prune = c.withVerified(tunnels, ""), prune
 	return s
 }
 
@@ -157,10 +157,20 @@ func (c *cycleRun) snapshotGuests(targets []agentproto.Target) []model.Guest {
 }
 
 // withVerified gives each tunnel the targets of its configuration last
-// verified at Cloudflare, and with others adds every other tunnel with one,
-// which the node keeps as it is: the egress set keeps what they send a
-// connector to until a configuration without it is verified.
-func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel, others bool) []agentproto.Tunnel {
+// verified at Cloudflare, and for a node adds every other tunnel with one
+// that the node may run, which it keeps as it is: the shared tunnel of an
+// account and the one pinned to that node. The egress set keeps what they
+// send a connector to until a configuration without it is verified; a
+// tunnel pinned to another node vouches for nothing on this one. An empty
+// node adds none.
+func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel, node string) []agentproto.Tunnel {
+	own := ""
+	if node != "" {
+		own, _ = planner.PinnedTunnelName(c.install.ID, node)
+	}
+	others := func(ref tunnelRef) bool {
+		return node != "" && (ref.name == planner.TunnelName(c.install.ID) || own != "" && ref.name == own)
+	}
 	out := make([]agentproto.Tunnel, 0, len(tunnels)+len(c.e.verified))
 	listed := map[tunnelRef]bool{}
 	for _, t := range tunnels {
@@ -170,7 +180,7 @@ func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel, others bool) []agen
 		out = append(out, t)
 	}
 	for _, ref := range slices.SortedFunc(maps.Keys(c.e.verified), compareTunnelRefs) {
-		if listed[ref] || !others {
+		if listed[ref] || !others(ref) {
 			continue
 		}
 		t := agentproto.Tunnel{

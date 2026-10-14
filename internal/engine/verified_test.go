@@ -52,23 +52,37 @@ func TestVerifiedConfigurationsAreKeptPerTunnel(t *testing.T) {
 	require.NotContains(t, e.eng.verified, tunnelRef{testAccount, pinnedName})
 }
 
-// The snapshot names each tunnel with the targets of its own verified
-// configuration, and keeps every other verified one as it is.
+// The snapshot of a node names each tunnel with the targets of its own
+// verified configuration, and keeps the other verified ones the node may
+// run: the shared tunnel and the one pinned to it, never one pinned to
+// another node.
 func TestTheSnapshotKeepsTheTargetsOfEachTunnel(t *testing.T) {
 	e := newEnv(t)
 	e.eng.verified[tunnelRef{testAccount, tunnelName}] = egressTargets("10.0.0.11:8080")
 	e.eng.verified[tunnelRef{testAccount, pinnedName}] = egressTargets("10.0.0.12:5432")
+	e.eng.verified[tunnelRef{"acc2", tunnelName}] = egressTargets("10.0.0.13:80")
 	c := e.eng.newCycle(t.Context())
 	c.install = store.Install{ID: testInstall}
+	shared := []agentproto.Tunnel{{AccountID: testAccount, TunnelID: "t1", Name: tunnelName, Kind: agentproto.TunnelShared}}
 
-	got := c.withVerified([]agentproto.Tunnel{{AccountID: testAccount, TunnelID: "t1", Name: tunnelName, Kind: agentproto.TunnelShared}}, true)
+	got := c.withVerified(shared, "pve2")
 
-	require.Len(t, got, 2)
+	require.Len(t, got, 3)
 	require.Equal(t, tunnelName, got[0].Name)
 	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.11:8080")}, got[0].Verified)
 	require.Equal(t, pinnedName, got[1].Name)
 	require.Equal(t, agentproto.TunnelPinned, got[1].Kind)
 	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.12:5432")}, got[1].Verified)
+	require.Equal(t, "acc2", got[2].AccountID)
+
+	for _, node := range []string{"pve1", "pve3"} {
+		got = c.withVerified(shared, node)
+		require.Len(t, got, 2, node)
+		for _, tun := range got {
+			require.NotEqual(t, pinnedName, tun.Name, node)
+		}
+	}
+	require.Len(t, c.withVerified(shared, ""), 1)
 }
 
 // A tunnel whose own configuration was never verified keeps no target in the
@@ -83,7 +97,7 @@ func TestATunnelGetsNoTargetsOfAnotherTunnelOfItsAccount(t *testing.T) {
 	got := c.withVerified([]agentproto.Tunnel{
 		{AccountID: testAccount, TunnelID: "t2", Name: pinnedName, Kind: agentproto.TunnelPinned},
 		{AccountID: "acc2", TunnelID: "t3", Name: tunnelName, Kind: agentproto.TunnelShared},
-	}, false)
+	}, "")
 
 	require.Len(t, got, 2)
 	for _, tun := range got {

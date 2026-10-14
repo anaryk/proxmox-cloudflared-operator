@@ -64,7 +64,7 @@ func (c *cycleRun) publishRemote() {
 		s := c.desired()
 		s.Node, s.State = name, agentproto.NodeState(n.State)
 		s.Targets, s.Guests = []agentproto.Target{}, nil
-		s.Tunnels = c.withVerified(nil, true)
+		s.Tunnels = c.withVerified(nil, name)
 		rep := reports[name]
 		c.e.seqs.stamp(&s, rep.Status.EpochSeen, rep.Status.SeqApplied)
 		snaps[name] = s
