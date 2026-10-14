@@ -45,12 +45,17 @@ func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Durati
 	ctx, cancel := e.timeout(ctx, wait)
 	defer cancel()
 	out := map[string]agentproto.ActionResult{}
+	// A free slot is taken at once; only a taken one is waited for.
 	select {
 	case d.one <- struct{}{}:
-		defer func() { <-d.one }()
-	case <-ctx.Done():
-		return out, ErrDoctorBusy
+	default:
+		select {
+		case d.one <- struct{}{}:
+		case <-ctx.Done():
+			return out, ErrDoctorBusy
+		}
 	}
+	defer func() { <-d.one }()
 	d.mu.Lock()
 	if d.acts == nil {
 		d.acts = map[string]*doctorAsk{}
