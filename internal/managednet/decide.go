@@ -21,6 +21,10 @@ const (
 	foreignWhy    = "a card on " + gateway.ManagedBridge + " that pco did not attach, as a clone or a restore copies one"
 )
 
+// NoAgentWhy is why a guest of a node without an admitted agent waits, in a
+// cluster: no one writes the guests of that node.
+const NoAgentWhy = "node %s has no pco agent"
+
 // verdict is what the consent of a guest says this cycle.
 type verdict int
 
@@ -47,8 +51,10 @@ const (
 // then the attachments without a tagged guest, then the foreign cards by
 // owner and index.
 //
-// A guest on another node waits, whatever else holds: pco attaches the guests
-// of its own node only, and a guest that migrated keeps its card and lease.
+// A guest on another node waits, whatever else holds, unless in a cluster the
+// node has an admitted agent, which writes its guests: a node alone attaches
+// the guests of its own node only. A guest that migrated keeps its card and
+// lease.
 // The opt-out marker wins over every consent. Per-guest consent, the
 // registered consent tag or an approval of the guest's identity, attaches
 // whether or not the guest needs the managed network; automatic consent
@@ -98,8 +104,11 @@ func (d *decider) guest(g model.Guest) Decision {
 		dec.NIC, dec.Lease = att.NIC, d.lease(att)
 	}
 	switch {
-	case g.Node != d.in.Node:
+	case g.Node != d.in.Node && d.in.Agents == nil:
 		dec.Action, dec.Why = ActionWait, fmt.Sprintf("guest is on node %s, not %s", g.Node, d.in.Node)
+		return dec
+	case g.Node != d.in.Node && !d.in.Agents[g.Node]:
+		dec.Action, dec.Why = ActionWait, fmt.Sprintf(NoAgentWhy, g.Node)
 		return dec
 	case d.optOut[owner] && attached:
 		return d.detach(dec, att, optOutWhy)

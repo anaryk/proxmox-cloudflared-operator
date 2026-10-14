@@ -21,21 +21,43 @@ type Runner interface {
 // reads a configuration with pvesh and changes it with qm set or pct set
 // under the digest it read (--digest), which refuses the change when the
 // configuration changed meanwhile. qm and pct change the guests of the node
-// they run on only.
+// they run on only: with a Remote, the guests of another node are changed by
+// the agent of that node, from a typed request.
 type HostConfigurer struct {
 	node string
+	run  Runner
 	cards
+	// remote and through change the guests of the other nodes; nil
+	// without SetRemote.
+	remote  Remote
+	through cards
 }
 
 // NewHostConfigurer returns the configurer of the host profile, on node.
 func NewHostConfigurer(run Runner, node string) *HostConfigurer {
-	return &HostConfigurer{node: node, cards: cards{cfg: hostConfig{run: run}}}
+	return &HostConfigurer{node: node, run: run, cards: cards{cfg: hostConfig{run: run}}}
+}
+
+// of is what changes the cards of g: root on this node, the agent of the
+// guest's node through the remote, or nothing, and why.
+func (h *HostConfigurer) of(g model.Guest) (cards, error) {
+	if g.Node == h.node {
+		return h.cards, nil
+	}
+	if h.remote != nil && h.remote.Agent(g.Node) {
+		return h.through, nil
+	}
+	if h.remote != nil {
+		return cards{}, fmt.Errorf("the guest is on node %s, which has no pco agent to change it", g.Node)
+	}
+	return cards{}, h.local(g)
 }
 
 func (h *HostConfigurer) AddNIC(ctx context.Context, g model.Guest, index int, spec NICSpec) (bool, error) {
-	live, err := false, h.local(g)
+	live := false
+	on, err := h.of(g)
 	if err == nil {
-		live, err = h.add(ctx, g, index, spec)
+		live, err = on.add(ctx, g, index, spec)
 	}
 	if err != nil {
 		return false, fmt.Errorf("adding net%d to %s: %w", index, g.Ref, err)
@@ -44,9 +66,9 @@ func (h *HostConfigurer) AddNIC(ctx context.Context, g model.Guest, index int, s
 }
 
 func (h *HostConfigurer) RemoveNIC(ctx context.Context, g model.Guest, index int) error {
-	err := h.local(g)
+	on, err := h.of(g)
 	if err == nil {
-		err = h.removeNIC(ctx, g, index)
+		err = on.removeNIC(ctx, g, index)
 	}
 	if err != nil {
 		return fmt.Errorf("removing net%d from %s: %w", index, g.Ref, err)
@@ -55,9 +77,9 @@ func (h *HostConfigurer) RemoveNIC(ctx context.Context, g model.Guest, index int
 }
 
 func (h *HostConfigurer) SetLinkDown(ctx context.Context, g model.Guest, index int) error {
-	err := h.local(g)
+	on, err := h.of(g)
 	if err == nil {
-		err = h.linkDown(ctx, g, index)
+		err = on.linkDown(ctx, g, index)
 	}
 	if err != nil {
 		return fmt.Errorf("setting the link of net%d of %s down: %w", index, g.Ref, err)
@@ -66,9 +88,9 @@ func (h *HostConfigurer) SetLinkDown(ctx context.Context, g model.Guest, index i
 }
 
 func (h *HostConfigurer) SetLinkUp(ctx context.Context, g model.Guest, index int) error {
-	err := h.local(g)
+	on, err := h.of(g)
 	if err == nil {
-		err = h.linkUp(ctx, g, index)
+		err = on.linkUp(ctx, g, index)
 	}
 	if err != nil {
 		return fmt.Errorf("setting the link of net%d of %s up: %w", index, g.Ref, err)
@@ -77,9 +99,10 @@ func (h *HostConfigurer) SetLinkUp(ctx context.Context, g model.Guest, index int
 }
 
 // CanWrite says yes for a guest on this node: root may change every guest
-// there, and qm and pct reach no other.
+// there, and qm and pct reach no other; and for a guest of another node whose
+// agent changes it.
 func (h *HostConfigurer) CanWrite(_ context.Context, g model.Guest) (bool, string, error) {
-	if err := h.local(g); err != nil {
+	if _, err := h.of(g); err != nil {
 		return false, err.Error(), nil
 	}
 	return true, "", nil

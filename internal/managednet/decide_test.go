@@ -198,6 +198,18 @@ func TestDecidePerGuest(t *testing.T) {
 			why:    "guest is on node pve2, not pve1",
 		},
 		{
+			name:   "in a cluster a guest of a node with an agent is attached",
+			guest:  func() model.Guest { g := guest(101, managednet.Tag); g.Node = "pve2"; return g }(),
+			setup:  func(in *managednet.DecideInput) { in.Agents = map[string]bool{"pve2": true} },
+			action: managednet.ActionAttach, consent: managednet.ByTag,
+		},
+		{
+			name:   "in a cluster a guest of a node without an agent waits",
+			guest:  func() model.Guest { g := guest(101, managednet.Tag); g.Node = "pve3"; return g }(),
+			setup:  func(in *managednet.DecideInput) { in.Agents = map[string]bool{"pve2": true} },
+			action: managednet.ActionWait, why: "node pve3 has no pco agent",
+		},
+		{
 			name:   "the marker wins over the tag",
 			guest:  guest(101, managednet.Tag),
 			setup:  func(in *managednet.DecideInput) { in.OptOut = []model.GuestRef{{Kind: model.KindLXC, VMID: 101}} },

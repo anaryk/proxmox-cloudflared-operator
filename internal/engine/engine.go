@@ -268,6 +268,9 @@ type Engine struct {
 	// something in, so that it says it once per epoch.
 	caughtUp agentproto.Epoch
 	saidIn   map[string]agentproto.Epoch
+	// writes are the writes of guests' cards handed the agents of other
+	// nodes.
+	writes pveWrites
 	// moving are the verifications of addresses whose MAC moved that the
 	// agent runs, which Run waits for.
 	moving sync.WaitGroup

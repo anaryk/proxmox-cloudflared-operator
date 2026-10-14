@@ -100,6 +100,10 @@ type DecideInput struct {
 	Leases        map[string]store.Lease // by MAC
 	Foreign       []ForeignNIC           // Classify's answer
 	Node          string                 // the node pco runs on
+	// Agents are, in a cluster, the other nodes with an admitted agent,
+	// which writes the guests of its node: their guests are attached too.
+	// Nil on a node alone, which attaches the guests of its own node only.
+	Agents map[string]bool
 	// Writable, by owner: Configurer.CanWrite, for every tagged guest and
 	// every guest with a foreign card. A guest missing here is not written.
 	Writable map[string]bool

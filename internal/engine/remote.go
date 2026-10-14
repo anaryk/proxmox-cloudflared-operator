@@ -56,6 +56,7 @@ func (c *cycleRun) publishRemote() {
 		return
 	}
 	reports := c.reportsNow()
+	c.e.writes.note(c.fleet, c.epoch())
 	snaps := map[string]agentproto.Snapshot{}
 	for _, name := range slices.Sorted(maps.Keys(c.nodes)) {
 		n := c.nodes[name].Node
@@ -69,6 +70,7 @@ func (c *cycleRun) publishRemote() {
 		s.Tunnels = c.withVerified(c.remoteTunnels(name), name)
 		s.Prune = c.pruned && len(s.Tunnels) > 0
 		s.Networks = c.networksFor(name)
+		s.Actions = c.e.writes.actionsFor(name, c.epoch())
 		rep := reports[name]
 		c.e.seqs.stamp(&s, rep.Status.EpochSeen, rep.Status.SeqApplied)
 		c.e.place.noteListed(s)

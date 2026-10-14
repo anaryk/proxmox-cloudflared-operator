@@ -183,7 +183,10 @@ const (
 	problemAutoUnreadable = "managed.consent is auto, and registered-tags could not be read; automatic attaches are stopped; attached guests stay attached"
 	problemForeignCard    = "foreign card net%d (%s) of %s: %s"
 	problemManagedCard    = "managed card of %s: %s"
-	problemManagedStore   = "the managed network is left as it is: %s: %v"
+	// problemNoAgentForGuest is the line of a consenting guest on a node of
+	// the cluster without an admitted agent, which would write its card.
+	problemNoAgentForGuest = "guest %s is on node %s, which has no pco agent; its managed card waits"
+	problemManagedStore    = "the managed network is left as it is: %s: %v"
 
 	autoUnreadable = "registered-tags could not be read"
 )
@@ -335,6 +338,7 @@ func (s *managedStep) run() ManagedView {
 		case managednet.ActionKeep:
 			s.keep(d)
 		case managednet.ActionWait:
+			s.noAgent(d)
 			if !s.migratedNow(d.Owner) {
 				s.wait(d.Owner, d.Why)
 			}
@@ -521,6 +525,9 @@ func (s *managedStep) input() managednet.DecideInput {
 		OptOut: c.col.OptOut, Needs: map[string]bool{}, ValidRoutes: map[string]int{}, AdmissionMode: c.settings.Admission,
 		Admitted: map[string]bool{}, Consents: s.consents, Attachments: s.attachments, Leases: s.leases, Node: c.e.d.Node,
 		Writable: map[string]bool{}, Grant: map[string]string{}, Impact: map[string]string{}, AcceptImpact: map[string]bool{},
+	}
+	if !appliance && c.clustered() {
+		in.Agents = c.e.writes.agentNodes()
 	}
 	var self model.GuestRef
 	if appliance && c.install.Appliance != nil {
@@ -804,6 +811,10 @@ func (s *managedStep) attach(d managednet.Decision) {
 		return
 	}
 	live, err := c.e.d.Guests.AddNIC(c.ctx, g, att.NIC, s.spec(g, att.MAC, att.Addr))
+	if errors.Is(err, managednet.ErrSent) {
+		s.sentTo(owner, g, fmt.Sprintf("the card net%d of %s on the managed network is written by the agent of node %s", att.NIC, s.name(owner), g.Node))
+		return
+	}
 	if err != nil {
 		c.problem(problemManagedCard, s.name(owner), err.Error())
 		s.unverified[owner] = err.Error()
@@ -971,7 +982,12 @@ func (s *managedStep) detach(d managednet.Decision) {
 		return
 	}
 	if listed && c.e.d.Guests != nil {
-		if err := c.e.d.Guests.RemoveNIC(c.ctx, g, att.NIC); err != nil {
+		err := c.e.d.Guests.RemoveNIC(c.ctx, g, att.NIC)
+		if errors.Is(err, managednet.ErrSent) {
+			s.sentTo(d.Owner, g, fmt.Sprintf("the card net%d of %s on the managed network is removed by the agent of node %s", att.NIC, s.name(d.Owner), g.Node))
+			return
+		}
+		if err != nil {
 			c.problem(problemManagedCard, s.name(d.Owner), err.Error())
 			return
 		}
@@ -1072,6 +1088,10 @@ func (s *managedStep) replace(d managednet.Decision, g model.Guest) bool {
 		return false
 	}
 	live, err := c.e.d.Guests.AddNIC(c.ctx, g, d.NIC, s.spec(g, att.MAC, att.Addr))
+	if errors.Is(err, managednet.ErrSent) {
+		s.sentTo(owner, g, fmt.Sprintf("the card net%d of %s on the managed network is written by the agent of node %s", d.NIC, s.name(owner), g.Node))
+		return false
+	}
 	if err != nil {
 		c.problem(problemManagedCard, s.name(owner), err.Error())
 		s.unverified[owner] = err.Error()
@@ -1121,6 +1141,8 @@ func (s *managedStep) linkDown(d managednet.Decision, g model.Guest, view *Forei
 	c := s.c
 	err := c.e.d.Guests.SetLinkDown(c.ctx, g, d.NIC)
 	switch {
+	case errors.Is(err, managednet.ErrSent):
+		s.sentTo(d.Owner, g, fmt.Sprintf("the link of foreign card net%d (%s) of %s is set down by the agent of node %s", d.NIC, d.MAC, s.name(d.Owner), g.Node))
 	case errors.Is(err, managednet.ErrPending):
 		view.Why += "; the change waits for the restart of the guest"
 		s.foreignEvent(*view, fmt.Sprintf("foreign card net%d (%s) of %s was set link down: %s", d.NIC, d.MAC, s.name(d.Owner), view.Why))
@@ -1703,6 +1725,8 @@ func (s *managedStep) linkUp(fw *managednet.Firewall, j firewallJob, r firewallR
 	}
 	err := c.e.d.Guests.SetLinkUp(c.ctx, j.g, j.att.NIC)
 	switch {
+	case errors.Is(err, managednet.ErrSent):
+		s.sentTo(owner, j.g, fmt.Sprintf("the link of net%d of %s on the managed network is set up by the agent of node %s", j.att.NIC, s.name(owner), j.g.Node))
 	case errors.Is(err, managednet.ErrPending):
 		c.problem(problemManagedCard, s.name(owner), fmt.Sprintf("the link of net%d comes up at the restart of the guest", j.att.NIC))
 	case err != nil:
