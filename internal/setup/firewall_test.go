@@ -474,7 +474,8 @@ func TestANodeAloneIsNotOfferedTheFirewallRule(t *testing.T) {
 			e.done()
 
 			require.False(t, e.manifest().inFirewall())
-			require.NotContains(t, e.ask.text(), "8644", "nothing is asked or said of the rule")
+			require.NotContains(t, e.ask.text(), "-dport 8644", "nothing is asked or said of the rule")
+			require.NotContains(t, e.ask.text(), "firewall", "nothing is asked or said of the rule")
 			require.NotContains(t, strings.Join(e.run.ran, "\n"), "firewall")
 		})
 	}
