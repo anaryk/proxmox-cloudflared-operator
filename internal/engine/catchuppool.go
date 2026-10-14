@@ -89,6 +89,7 @@ func (c *cycleRun) raisePool(m *catchUpMemory, settled bool, overdue []string) s
 	}
 	reported, refused := c.reportedServices(overdue)
 	limit := addrPlus(next, maxCatchUp)
+	byWord := false // an address only an agent reports moves the pool
 	for _, addr := range slices.SortedFunc(maps.Keys(reported), netip.Addr.Compare) {
 		var why string
 		switch {
@@ -102,6 +103,7 @@ func (c *cycleRun) raisePool(m *catchUpMemory, settled bool, overdue []string) s
 		case !addr.Less(limit):
 			why = fmt.Sprintf("an agent's word moves the pool at most %d past %s", maxCatchUp, next)
 		default:
+			byWord = true
 			if !addr.Less(want) {
 				want, highest = addr.Next(), addr
 			}
@@ -124,7 +126,10 @@ func (c *cycleRun) raisePool(m *catchUpMemory, settled bool, overdue []string) s
 			Message: fmt.Sprintf("the pool of service addresses moved on from %s to %s: an agent's gateway or a configuration verified at Cloudflare holds %s",
 				next, want, highest)})
 	}
-	if settled {
+	if byWord {
+		// The one move of the epoch on an agent's word is used up only
+		// once it moved the pool: a node that reports later in the epoch
+		// has its chance until then.
 		m.guessed = true
 	}
 	c.sayRefused(m, refused, want)

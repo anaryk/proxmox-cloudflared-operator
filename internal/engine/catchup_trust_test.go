@@ -194,10 +194,18 @@ func TestThePoolMovesOnAnAgentsWordOncePerEpoch(t *testing.T) {
 		w.tick(time.Second)
 		w.acts["pve2"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.3")} }
 
+		w.tick(time.Second)
+
+		require.Equal(t, netip.MustParseAddr("198.18.1.4"), poolNext(t, w), "a cycle that moved nothing used up no chance")
+
+		w.acts["pve2"].edit = func(st *agentproto.Status) {
+			st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.3"), netip.MustParseAddr("198.18.1.6")}
+		}
+
 		st := w.tick(time.Second)
 
-		require.Equal(t, netip.MustParseAddr("198.18.1.2"), poolNext(t, w))
-		require.Contains(t, st.Problems, "node pve2 reports that its gateway maps 198.18.1.3, not taken from it: "+
+		require.Equal(t, netip.MustParseAddr("198.18.1.4"), poolNext(t, w))
+		require.Contains(t, st.Problems, "node pve2 reports that its gateway maps 198.18.1.6, not taken from it: "+
 			"the pool moved on an agent's word once in this epoch already, and neither the store nor a configuration verified at Cloudflare has it")
 		require.False(t, hasProblem(st, held), st.Problems)
 	})
