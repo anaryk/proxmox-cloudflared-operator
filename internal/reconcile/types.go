@@ -4,7 +4,10 @@
 // configuration stops instead of overwriting it.
 package reconcile
 
-import "github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+import (
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+)
 
 // Mode says whether a run may change anything.
 type Mode int
@@ -64,6 +67,10 @@ type TunnelState struct {
 	// matched. It is false when a write was held or failed, or when its
 	// read-back failed or differed.
 	Verified bool `json:"verified"`
+
+	// Kept are the rules a run that may only add kept beyond the plan, as
+	// the configuration served them: the plan dropped them or blocked them.
+	Kept []planner.IngressRule `json:"-"`
 
 	// Unknown is true when the run could not find out whether the tunnel
 	// exists; Exists is then false. Nothing may be pruned for such a tunnel.

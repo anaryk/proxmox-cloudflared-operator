@@ -2,9 +2,56 @@ package reconcile
 
 import (
 	"slices"
+	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
+
+// keepServed is planned with every rule of remote that serves a hostname
+// planned leaves out or answers 503 for, in the order the planner gives
+// rules, and the rules it took from remote. The sentinels of remote are not
+// taken: planned carries the one of this writer.
+func keepServed(planned, remote []planner.IngressRule) (rules, kept []planner.IngressRule) {
+	at := map[string]int{}
+	var body, tail []planner.IngressRule
+	for _, r := range planned {
+		if !servesHost(r) {
+			tail = append(tail, r)
+			continue
+		}
+		at[strings.ToLower(r.Hostname)] = len(body)
+		body = append(body, r)
+	}
+	for _, r := range remote {
+		if !servesHost(r) || r.Service == planner.BlockedService {
+			continue
+		}
+		host := strings.ToLower(r.Hostname)
+		i, ok := at[host]
+		switch {
+		case !ok:
+			at[host] = len(body)
+			body = append(body, r)
+		case body[i].Service == planner.BlockedService:
+			body[i] = r
+		default:
+			continue
+		}
+		kept = append(kept, r)
+	}
+	if len(kept) == 0 {
+		return planned, nil
+	}
+	slices.SortStableFunc(body, func(x, y planner.IngressRule) int { return hostname.Compare(x.Hostname, y.Hostname) })
+	return append(body, tail...), kept
+}
+
+// servesHost says whether a rule is one of a hostname: not the catch-all,
+// and not a sentinel, whose names are in the .invalid domain.
+func servesHost(r planner.IngressRule) bool {
+	return r.Hostname != "" && !strings.HasSuffix(strings.ToLower(r.Hostname), ".invalid")
+}
 
 // JudgeWriter applies the decision table. remote is the sentinel found in the
 // remote config (ok=false when there is none); stored is leader.json as re-read

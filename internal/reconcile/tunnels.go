@@ -125,21 +125,30 @@ type TunnelResult struct {
 // without connectors. It deletes no other tunnel. An account is swept at most
 // every ten minutes, the first time by the first enforcing run.
 func (r *TunnelReconciler) Run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
-	return r.run(ctx, plans, known, mode, heldObserve)
+	return r.run(ctx, plans, known, mode, heldObserve, false)
+}
+
+// RunAddOnly runs as Run does, but withdraws nothing: a tunnel is written
+// with the rules of its plan and every rule it serves now that the plan
+// leaves out or would answer 503 for, and a tunnel without a plan is not
+// emptied. The state of each tunnel says the rules it kept beyond its plan.
+// Pinned tunnels are read in such a run, whatever was last seen of them.
+func (r *TunnelReconciler) RunAddOnly(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
+	return r.run(ctx, plans, known, mode, heldObserve, true)
 }
 
 // RunHeld runs as Run does in Observe mode, and gives why as the reason of
 // every write it holds: a run whose writes the caller holds for a reason of
 // its own still finds out what each tunnel holds.
 func (r *TunnelReconciler) RunHeld(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, why string) TunnelResult {
-	return r.run(ctx, plans, known, Observe, why)
+	return r.run(ctx, plans, known, Observe, why, false)
 }
 
-func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode, held string) TunnelResult {
+func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode, held string, addOnly bool) TunnelResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	run := &tunnelRun{r: r, mode: mode, held: held, hint: r.hint, listedNow: make(map[string]bool)}
+	run := &tunnelRun{r: r, mode: mode, held: held, addOnly: addOnly, hint: r.hint, listedNow: make(map[string]bool)}
 	goOn := run.start()
 	if goOn {
 		run.listPinned(ctx, plans, known)
@@ -160,7 +169,10 @@ func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, 
 			continue
 		}
 		st, ok := run.lastSeen(t)
-		if !ok {
+		switch {
+		case run.addOnly:
+			st, goOn = run.reconcile(ctx, t)
+		case !ok:
 			st, goOn = run.reconcile(ctx, t)
 			run.remember(t, st)
 		}
@@ -267,6 +279,7 @@ type tunnelRun struct {
 	r         *TunnelReconciler
 	mode      Mode
 	held      string          // why a write is held in Observe mode
+	addOnly   bool            // every rule a tunnel serves that its plan drops or blocks is kept
 	hint      string          // what a foreign verdict says to do, as SetRecoverHint set it
 	us        planner.Writer  // set once start has validated it
 	listedNow map[string]bool // accounts whose pinned tunnels this run listed
@@ -500,6 +513,9 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 		return true
 	}
 	st.Version = remote.Version
+	if run.addOnly {
+		t.rules, st.Kept = keepServed(t.rules, remote.Ingress)
+	}
 	if EqualIngress(remote.Ingress, t.rules) && !remote.Foreign {
 		st.Verified = true
 		return true

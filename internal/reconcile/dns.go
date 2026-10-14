@@ -108,6 +108,11 @@ type DNSInput struct {
 	// only what the guard showed.
 	ConfirmDeletes bool
 
+	// NoDeletes, when set, holds every delete of the run with it as the
+	// reason: a caller that may not withdraw anything in this run still has
+	// the records it wants made and pointed.
+	NoDeletes string
+
 	// StillUnwanted asks the inventory once more, right before a delete,
 	// whether no guest publishes name. An error or false holds the delete.
 	StillUnwanted func(ctx context.Context, name string) (bool, error)
@@ -266,6 +271,8 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 		adopt:  lowerKeys(in.Adopt),
 		keep:   lowerKeys(in.Keep),
 		spent:  make(map[string]bool),
+
+		noDeletes: in.NoDeletes,
 	}
 	started := false
 	if in.TunnelVerdict != WriterProceed {
