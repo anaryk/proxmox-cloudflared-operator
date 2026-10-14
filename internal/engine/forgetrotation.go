@@ -45,6 +45,9 @@ func (c *cycleRun) noLostConnection(name string, rot store.ForgetRotation) bool 
 		}
 		v, err := c.e.lostConnectors(c.ctx, t, rot.Connectors[t.ID], rot.At)
 		if err == nil && len(v.lost) == 0 {
+			// A connector that started with the new secret and that no
+			// node owns yet keeps the rotation until a node reports it.
+			clean = clean && len(v.waiting) == 0
 			continue
 		}
 		clean = false

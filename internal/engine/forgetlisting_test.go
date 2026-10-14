@@ -120,6 +120,16 @@ func TestAForgetDropsEveryConnectorNoNodeOwns(t *testing.T) {
 	require.NotContains(t, w.callsSince(n), "CleanUpConnector acc1 "+id+" pve2-next")
 	require.Equal(t, []string{"c-pve1", "pve2-" + id, "pve2-next"}, w.listedIDs(t, id))
 	w.tick(time.Second)
+	require.NotNil(t, entryOf(t, w.env, "pve3").Rotation, "no node reported pve2-next yet")
+	require.Contains(t, w.listedIDs(t, id), "pve2-next")
+
+	// No node owns it once a replica would have reported it: it is lost
+	// all the same.
+	w.clock.advance(ownGrace)
+	n = len(w.cf.Calls())
+	w.tick(time.Second)
+	require.Contains(t, w.callsSince(n), "CleanUpConnector acc1 "+id+" pve2-next")
+	w.tick(time.Second)
 	require.Nil(t, entryOf(t, w.env, "pve3").Rotation)
 }
 

@@ -15,17 +15,25 @@ import (
 // who may run them.
 type lostView struct {
 	listed int
-	// lost are the connectors the nodes that are gone may run.
-	lost []string
+	// lost are the connectors the nodes that are gone may run, and waiting
+	// those no node owns yet that started with the new secret.
+	lost    []string
+	waiting []string
 	// unsure says that a node still in the install that runs a connector of
 	// the tunnel reported none: a connector it runs looks like a lost one.
 	unsure bool
 }
 
+// ownGrace is how long a connector that started after the secret was given
+// may go without a node owning it: a replica that restarted with the new
+// token reports its id within it.
+const ownGrace = 2 * time.Minute
+
 // lostConnectors lists the connectors of a tunnel the nodes that are gone
 // may run: those of ids, and every other one no node still in the install
-// owns, unless Cloudflare says it started after since, when the secret was
-// given: such a one runs with the new token, which no node that is gone got.
+// owns. One Cloudflare says started after since, when the secret was given,
+// waits for ownGrace for a node to report it, as a replica that restarted
+// with the new token does; it is lost after that all the same.
 func (e *Engine) lostConnectors(ctx context.Context, t reconcile.TunnelState, ids []string, since time.Time) (lostView, error) {
 	api := e.clients[t.CredentialID]
 	if api == nil {
@@ -45,7 +53,8 @@ func (e *Engine) lostConnectors(ctx context.Context, t reconcile.TunnelState, id
 		case slices.Contains(ids, c.ID):
 		case owned[c.ID]:
 			continue
-		case !since.IsZero() && c.RunAt.After(since):
+		case !since.IsZero() && c.RunAt.After(since) && e.d.Now().Before(c.RunAt.Add(ownGrace)):
+			v.waiting = append(v.waiting, c.ID)
 			continue
 		}
 		v.lost = append(v.lost, c.ID)
