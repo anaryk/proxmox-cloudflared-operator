@@ -817,6 +817,9 @@ func (c *cycleRun) readPlacements() bool {
 		return false
 	}
 	c.placements = placements
+	if mem := &c.e.place; !mem.inheritedRead {
+		mem.inherited, mem.inheritedRead = maps.Clone(placements), true
+	}
 	return true
 }
 

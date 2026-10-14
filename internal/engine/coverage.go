@@ -73,6 +73,10 @@ type placementMemory struct {
 	self       map[string][]string
 	// decided is where the last placement put each owner's routes.
 	decided map[string]decidedPlace
+	// inherited are the placements stored when this tenure first read
+	// them: what the controller before it left, which this one rewrites.
+	inherited     map[string]store.Placement
+	inheritedRead bool
 	// pointedAt is, by hostname, the tunnel its record pointed at when a
 	// DNS run of this process last listed its zone, and when that was;
 	// unresolvedSince is, by hostname, since when no node resolves the
@@ -118,6 +122,7 @@ func (m *placementMemory) newTenure() {
 	m.diverged, m.reaching, m.waiting = nil, nil, nil
 	m.pointedAt, m.unresolvedSince = nil, nil
 	m.emptySince = nil
+	m.inherited, m.inheritedRead = nil, false
 }
 
 // coverageView is coverage as one cycle judges it.

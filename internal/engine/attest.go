@@ -29,10 +29,12 @@ const (
 	// migrateGrace is how long a moved MAC waits for a sign that its guest
 	// migrates before the address is blocked on every node.
 	migrateGrace = 10 * time.Second
-	// carryOverFor is how long after its wait for the agents a controller
-	// that took over gives a replica back the attestation it served a guest
-	// of another node on, while that node has not reported to it: as long
-	// as an agent shows a held-over attestation before it calls it stale.
+	// carryOverFor bounds how long after its wait for the agents a
+	// controller that took over gives a replica back the attestation it
+	// served a guest of another node on, while that node has not reported to
+	// it: a backstop of six minutes from the start of the tenure with the
+	// wait, as long as an agent shows a held-over attestation before it calls
+	// it stale. The carry ends sooner, as soon as coverage is judged.
 	carryOverFor = resolve.DefaultMaxProofAge
 
 	problemConflictBlocked = "%s is blocked on every node: its MAC %s was seen on %s of %s"
@@ -312,18 +314,23 @@ func (c *cycleRun) attests(node string, st agentproto.Status, a agentproto.Attes
 }
 
 // carry gives node back, for a target of a guest of another node, the
-// address, the MAC and the attestation it reported it served the target on,
-// with coverage, when a controller that took over has not heard the guest's
-// node yet: the node must be neither down nor gone, coverage not judged yet
-// in this process, and its wait for the agents over by at most
-// carryOverFor. It is node's own word given back to node alone, and only
-// what nothing contradicts: the replica reached the address at the address
-// the snapshot names, if it names one, on an attestation of the guest's own
-// card by the guest's node, which no other node attests, and the address is
-// not blocked. It never admits a target the replica did not serve, and the
-// replica checks all of it again on the wire. Once the guest's node
-// reports, its own attestation, or its lack of one, decides; once coverage
-// is judged, the coverage rule does.
+// address, the MAC and the attestation it served the target on, with
+// coverage, when a controller that took over has not heard the guest's node
+// yet: the node must be neither down nor gone, coverage not judged yet in
+// this process, and its wait for the agents over by at most carryOverFor.
+// That the replica served it before the takeover stands on what the store
+// holds, not on its word: the placement the last controller stored, as
+// this tenure first read it, puts the route on the replica, at the address
+// the replica reports. The replica's report must be of this install and of no
+// epoch above this controller's, of a snapshot of this epoch that listed
+// the target if it is one, at port through the guest's node's attestation.
+// The attestation given back is made of what the controller knows of the
+// guest's card; only the port, one of the guest's own, and the time, within
+// the replica's watch and status, are the replica's. Nothing may contradict
+// it: the address is neither denied nor blocked, and no other node attests
+// the card. The replica checks all of it again on the wire. Once the
+// guest's node reports, its own attestation, or its lack of one, decides;
+// once coverage is judged, the coverage rule does.
 func (c *cycleRun) carry(node string, t *agentproto.Target, macs []string) {
 	host := t.HostingNode
 	hf, known := c.fleet.nodes[host]
@@ -342,33 +349,84 @@ func (c *cycleRun) carry(node string, t *agentproto.Target, macs []string) {
 	rf := c.fleet.node(node)
 	tr, ok := rf.targets[t.Key]
 	switch {
-	case !rf.heard || !rf.fresh || !rf.host || !ok:
+	case !rf.heard || !rf.fresh || !rf.host || !ok || !c.reportOfThisInstall(node, t.Key, rf.report.Status):
 		return
-	case !tr.OK || tr.Attestation == nil || !tr.Addr.IsValid():
+	case !tr.OK || tr.Level != "port" || !tr.Attested || tr.AttestedBy != host || tr.Attestation == nil:
 		return
-	case t.Addr.IsValid() && t.Addr != tr.Addr:
+	case !tr.Addr.IsValid() || t.Addr.IsValid() && t.Addr != tr.Addr || !c.placedOn(node, t.Key, tr.Addr):
+		return
+	case c.denied(tr.Addr):
 		return
 	}
-	if _, blocked := c.e.place.blocks[tr.Addr]; blocked {
-		return
-	}
-	at := *tr.Attestation
-	mac := normalMAC(at.MAC)
+	given := *tr.Attestation
+	mac := normalMAC(given.MAC)
 	cd, published := c.fleet.cards[mac]
 	switch {
-	case at.Node != host || mac == "" || !slices.Contains(macs, mac) || !published:
+	case given.Node != host || mac == "" || !slices.Contains(macs, mac) || !published:
 		return
-	case cd.node != host || cd.ref != (cardRef{at.Guest, at.NIC}) || !attestsCard(at, cd.nic):
+	case cd.node != host || cd.ref != (cardRef{given.Guest, given.NIC}) || !attestsCard(given, cd.nic):
 		return
 	case len(c.fleet.elsewhere[cd.ref]) > 0:
 		return
-	}
-	if !t.Addr.IsValid() && !slices.Contains(c.addrsOf(cd.ref.guest), tr.Addr) {
-		// An address no binding or placement of the guest holds is the
-		// replica's alone to say: nothing vouches for it.
+	case !slices.Contains(resolve.GuestPorts(cd.ref.guest.VMID, cd.ref.nic), given.Port):
 		return
 	}
+	st := rf.report.Status
+	if given.Since.IsZero() || given.Since.After(st.Clock) || given.Since.Before(st.WatchRunningSince) {
+		return
+	}
+	at := agentproto.Attestation{
+		Node: host, Guest: cd.ref.guest, NIC: cd.ref.nic, MAC: mac, Bridge: cd.nic.Bridge, VLAN: cd.nic.VLAN,
+		Port: given.Port, Since: given.Since,
+	}
 	t.Addr, t.MACs, t.Attestation, t.Covered = tr.Addr, []string{mac}, &at, true
+}
+
+// reportOfThisInstall says whether a status of node may say what it served of
+// the target key: one of this install, of no epoch above this controller's,
+// and, of this controller's epoch, of a snapshot that listed the target for
+// node to verify. One of an earlier epoch is what the last controller
+// served it.
+func (c *cycleRun) reportOfThisInstall(node, key string, st agentproto.Status) bool {
+	ours := c.epoch()
+	if st.EpochSeen.InstallID != ours.InstallID {
+		return false
+	}
+	switch order, same := st.EpochSeen.Order(ours); {
+	case order > 0, order == 0 && !same:
+		return false
+	case order < 0:
+		return true
+	}
+	since, listed := c.e.place.listed(node, key, false)
+	return listed && st.SeqApplied >= since
+}
+
+// placedOn says whether the placement of host this tenure found stored puts
+// it on node at addr: on the shared tunnel, or on one pinned to node.
+func (c *cycleRun) placedOn(node, host string, addr netip.Addr) bool {
+	p, ok := c.e.place.inherited[host]
+	switch {
+	case !ok || p.Addr != addr:
+		return false
+	case p.Kind == store.PlacementShared:
+		return true
+	}
+	return p.Kind == store.PlacementPinned && p.Node == node
+}
+
+// denied says whether addr is one no route of a guest reaches: an address of
+// a node, a gateway of an SDN subnet, or one that needs the admin's
+// allowance.
+func (c *cycleRun) denied(addr netip.Addr) bool {
+	if _, blocked := c.e.place.blocks[addr]; blocked || slices.Contains(c.e.addrs.list, addr) {
+		return true
+	}
+	if _, gateway := sdnGateways(c.access.subnets)[addr]; gateway {
+		return true
+	}
+	_, soft := softMap(c.soft)[addr]
+	return soft
 }
 
 // spokeSince says whether a status of node was received at or after since,
