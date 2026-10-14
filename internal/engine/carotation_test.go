@@ -220,6 +220,8 @@ func TestTheTunnelsStepNeedsACycleThatGotThroughWhole(t *testing.T) {
 		{"held", &cycleRun{e: w.eng, cfHold: true, checked: true}, "not every tunnel is known"},
 		{"not checked", &cycleRun{e: w.eng, checked: false}, "not every tunnel is known"},
 		{"an account unread", &cycleRun{e: w.eng, checked: true, unreported: []TunnelView{{}}}, "1 tunnels are in accounts the tunnel run could not read"},
+		{"a tunnel no credential reaches", &cycleRun{e: w.eng, checked: true, tunnels: []reconcile.TunnelState{{Name: "pco-abc123", AccountID: "acc9", ID: "t9", Exists: true}}},
+			"no credential reaches tunnel pco-abc123 in account acc9"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := store.CARotation{Node: "pve3", StartedAt: t0}

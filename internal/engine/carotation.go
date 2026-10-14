@@ -198,7 +198,7 @@ func (c *cycleRun) undone(rec *store.CARotation, step string) bool {
 		return false
 	}
 	for _, t := range c.tunnels {
-		if t.Exists && t.ID != "" && t.CredentialID != "" && !rotatedThrough(rec.TunnelsRotated, t.ID) {
+		if t.Exists && t.ID != "" && !rotatedThrough(rec.TunnelsRotated, t.ID) {
 			return true
 		}
 	}
@@ -388,9 +388,19 @@ func (c *cycleRun) rotateTunnels(rec *store.CARotation) (bool, string) {
 	case len(c.unreported) > 0:
 		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels", fmt.Errorf("%d tunnels are in accounts the tunnel run could not read", len(c.unreported)))
 	}
+	var unreached []string
+	for _, t := range c.tunnels {
+		if t.Exists && t.ID != "" && t.CredentialID == "" {
+			unreached = append(unreached, fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID))
+		}
+	}
+	if len(unreached) > 0 {
+		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels",
+			fmt.Errorf("no credential reaches %s: add one for the account with pco credential add", andList(unreached)))
+	}
 	save := func() error { return c.e.d.Store.SaveCARotation(*rec) }
 	for _, t := range c.tunnels {
-		if !t.Exists || t.ID == "" || t.CredentialID == "" || rotatedThrough(rec.TunnelsRotated, t.ID) {
+		if !t.Exists || t.ID == "" || rotatedThrough(rec.TunnelsRotated, t.ID) {
 			continue
 		}
 		fresh := !slices.Contains(rec.Rotated, t.ID)
