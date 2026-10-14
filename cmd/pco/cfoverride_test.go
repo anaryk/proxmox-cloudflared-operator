@@ -17,6 +17,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
@@ -191,6 +192,9 @@ func startOverriddenDaemon(t *testing.T, vars map[string]string) overriddenDaemo
 	require.NoError(t, s.Init())
 	require.NoError(t, s.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("pve-secret-0123456789")}))
 	require.NoError(t, s.SaveInstall(store.Install{ID: "0123456789ab", CreatedAt: t0}))
+	// The node takes the lease, which a check of a credential needs.
+	require.NoError(t, s.SaveNode(store.NodeEntry{Name: "pve1", Since: t0}))
+	require.NoError(t, s.SaveWriter(planner.Writer{InstallID: "0123456789ab", Generation: 1, Nonce: "n1"}))
 	require.NoError(t, s.SaveCredential(store.Credential{ID: "cred1", Label: "main", Kind: "scoped", Token: store.NewSecret("tok-0123456789"), AddedAt: t0}))
 	me, err := user.Current()
 	require.NoError(t, err)
@@ -203,7 +207,8 @@ func startOverriddenDaemon(t *testing.T, vars map[string]string) overriddenDaemo
 		}
 		return vars[name]
 	}
-	r.env.daemon = daemon.Deps{Notifier: notify, Accounts: meAsWeb{me}, Systemd: noSystemd{}, Prober: noProber{}}
+	r.env.daemon = daemon.Deps{Notifier: notify, Accounts: meAsWeb{me}, Systemd: noSystemd{}, Prober: noProber{},
+		Lease: standaloneLease(t, base, "pve1")}
 	cmd := newRootCmdWith(r.env)
 	errOut := &testutil.SyncBuffer{}
 	cmd.SetErr(errOut)

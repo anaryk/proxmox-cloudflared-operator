@@ -149,6 +149,8 @@ type Deps struct {
 	DHCPReadyWait time.Duration
 	// Appliance is what only the daemon of an appliance uses.
 	Appliance ApplianceDeps
+	// Lease is what the lease of the host is kept with.
+	Lease LeaseDeps
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -221,12 +223,15 @@ func (d Deps) withDefaults() Deps {
 
 // clients returns the factory of the Cloudflare clients: the one the deps
 // were given, or the daemon's own, which spends budget requests of each
-// credential in 5 minutes.
-func (d Deps) clients(budget int) engine.ClientFactory {
+// credential in 5 minutes. regate, when set, is asked again before a write
+// the rate limit held for a while.
+func (d Deps) clients(budget int, regate func(ctx context.Context) error) engine.ClientFactory {
 	if d.NewClient != nil {
 		return d.NewClient
 	}
-	return newCloudflareClients(d.CloudflareURL, d.Now, budget).New
+	f := newCloudflareClients(d.CloudflareURL, d.Now, budget)
+	f.regate = regate
+	return f.New
 }
 
 func (c Config) check() error {
@@ -300,12 +305,21 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	if deps.Gateway == nil {
 		deps.Gateway = gateway.NewHost(gateway.NewNamespaceNft(gateway.Namespace), gateway.NewHostNft(), log)
 	}
+	hl, err := newHostLease(cfg.Node, st, cfg.Paths, deps.Lease, log)
+	if err != nil {
+		return fmt.Errorf("preparing the lease: %w", err)
+	}
 	gw := newGatewayPart(deps.Gateway, cfg.Paths.Local, deps.Now, log)
 	gw.start(ctx)
-	eng, client, filter, conns, err := build(cfg, deps, st, token, settings, restart, gw)
+	eng, client, filter, conns, err := build(cfg, deps, st, token, settings, restart, gw, hl)
 	if err != nil {
 		return err
 	}
+	// The keeper runs from before the engine to after it: the engine writes
+	// only under the lease, and the lease is given back once it stopped.
+	hl.start(eng)
+	defer hl.end(eng)
+	hl.awaitFirstTry(ctx)
 	dh := newDHCPPart(st, cfg.Node, gw, true, eng.DHCPLeases(), deps, eng.NoteDHCP, log)
 	defer dh.start(ctx)()
 	env := &doctor.HostEnv{
@@ -436,7 +450,8 @@ func routedGuests(st *store.Store, log zerolog.Logger) func() []model.GuestRef {
 // nowhere else. restart stops the daemon for systemd to start it again. The
 // resolver probes through the legs of gw that are up, and the engine syncs
 // gw.
-func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings, restart func(), gw *gatewayPart) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
+func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings, restart func(), gw *gatewayPart,
+	hl *hostLease) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
 	client, err := pve.New(pve.Config{
 		BaseURL:     cfg.PVEURL,
 		TokenID:     token.TokenID,
@@ -468,7 +483,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		StartOnly: func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Restart:   restart,
 		Fleet:     engine.NewLocalFleet(agent.Deps{Resolver: res, Connectors: conns, Egress: filter}),
-		NewClient: deps.clients(settings.CloudflareBudget),
+		NewClient: holdingClients(deps.clients(settings.CloudflareBudget, regate(hl)), hl.keeper),
 		Node:      cfg.Node,
 		Now:       deps.Now,
 		Log:       log,
@@ -483,7 +498,11 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Guests: managednet.NewHostConfigurer(setup.NewHostRunner(), cfg.Node),
 
 		StartOnlyFields: wiredFields(),
-		HoldCycle:       holdHook(cfg, deps.Sleep, log),
+
+		Lease:     hl.keeper,
+		Quorum:    hl.quorate,
+		Cluster:   hl.Cluster,
+		HoldCycle: holdHook(cfg, deps.Sleep, log),
 	}
 	managedReaders(&ed, client, cfg.Node)
 	eng, err := engine.New(ed)

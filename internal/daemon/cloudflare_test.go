@@ -72,7 +72,7 @@ func newRateLimited(t *testing.T) *rateLimited {
 // share their map, make each of these requests reach the server.
 func TestClientsOfOneCredentialShareOneBudget(t *testing.T) {
 	cf := newRateLimited(t)
-	build := Deps{CloudflareURL: cf.srv.URL}.withDefaults().clients(cfapi.DefaultBudget)
+	build := Deps{CloudflareURL: cf.srv.URL}.withDefaults().clients(cfapi.DefaultBudget, nil)
 	credential := func(id string) store.Credential {
 		return store.Credential{ID: id, Label: id, Token: store.NewSecret("tok-" + id + "-0123456789")}
 	}
@@ -143,7 +143,7 @@ func TestARefusedTokenIsNotTheOneOfTheStore(t *testing.T) {
 	w := newWorld(t)
 	fake := httptest.NewServer(cffake.Handler(w.cf, cffake.WithToken("another-token-0123456789")))
 	t.Cleanup(fake.Close)
-	build := Deps{CloudflareURL: fake.URL + "/client/v4"}.withDefaults().clients(cfapi.DefaultBudget)
+	build := Deps{CloudflareURL: fake.URL + "/client/v4"}.withDefaults().clients(cfapi.DefaultBudget, nil)
 
 	api, err := build(store.Credential{ID: testCred, Label: "main", Token: store.NewSecret(cfToken)})
 	require.NoError(t, err)
@@ -173,7 +173,7 @@ func TestTheClientsSpendTheBudgetOfTheSettings(t *testing.T) {
 		sent   int32
 	}{{1000, 1}, {1150, 2}} {
 		hits.Store(0)
-		api, err := Deps{CloudflareURL: srv.URL}.withDefaults().clients(tc.budget)(cred)
+		api, err := Deps{CloudflareURL: srv.URL}.withDefaults().clients(tc.budget, nil)(cred)
 		require.NoError(t, err)
 
 		_, err = api.VerifyToken(t.Context())

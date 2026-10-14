@@ -12,7 +12,7 @@ The package installs six systemd units, in `/usr/lib/systemd/system`.
 
 | Unit | What it does |
 |---|---|
-| `pco.service` | The daemon, [`pco daemon`](cli/pco-daemon.md). It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service`, `pveproxy.service` and `pco-netns.service`, and the only unit ordered after it is `pco-web.service`: no connector waits for it. It does not wait for the guests, and they do not wait for it, those managed by HA included. |
+| `pco.service` | The daemon, [`pco daemon`](cli/pco-daemon.md). It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. Its watchdog is 90 seconds: the daemon pings it while its cycles make progress, and a daemon whose cycle hangs is restarted (see [the lease](#the-lease)). It starts after `network-online.target`, `pve-cluster.service`, `corosync.service`, `pveproxy.service` and `pco-netns.service`, so that it stops, and gives the lease back, before them, and the only unit ordered after it is `pco-web.service`: no connector waits for it. It does not wait for the guests, and they do not wait for it, those managed by HA included. |
 | `pco-egress.service` | Loads the egress filter by running `pco egress load`, a hidden command that puts the table in place with the resolvers of the node and no targets, and exits. It is a one-shot unit that stays active, and it is ordered before `pco.service`. Setup enables and starts it, so the table is loaded at every boot, also before a connector exists, and uninstall disables it. The connector units require it, so starting a connector starts it too. Do not restart it to load the table again: every connector restarts with it. `pco egress load` does that. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel, `cloudflared` with the files of the tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 | `pco-web.service` | The web interface, [`pco web`](cli/pco-web.md). It runs as the user `pco-web`, starts after `network-online.target`, `pve-cluster.service` and `pco.service`, restarts after 2 seconds when it stops, and reads its address from `/etc/default/pco-web`. `pco setup` enables it, unless it is given `--no-web`. An upgrade of the package restarts it if it ran. |
@@ -292,6 +292,10 @@ daemon holds when:
   account of the zone, and not the whole cycle;
 - there is no writer identity, or the writer is stale or foreign (see
   [Troubleshooting](troubleshooting.md));
+- on the host, the cluster is not quorate, this node does not hold the lease, the lease is
+  fenced, or the controller only observes because the store is older than what the agents
+  remember or was made in another cluster (see [the lease](#the-lease)): then nothing at all
+  is written, to the store as well;
 - the guests that hold hostnames drop out of Proxmox's listing in numbers that look like a
   failure and not like their removal. Proxmox lists none of them, or more than five and
   more than 30 per cent are gone: this is what an API token that lost its privileges looks
@@ -659,6 +663,37 @@ daemon holds when the node registry names another node. On a cluster, install it
 whose guests you want to publish. The guests of the other nodes are listed by Proxmox and
 their routes are read, but they can only be proven at `observed`; see [Identity](identity.md).
 The appliance is one for a cluster too; see [the appliance on a cluster](#the-appliance-on-a-cluster).
+
+## The lease
+
+On the host one node writes: the one that holds the lease, a lock directory in the cluster
+filesystem, `/etc/pve/priv/lock/pco-leader`, taken and kept the way the HA manager of Proxmox
+keeps its own. A node that stands alone holds it too, as the cluster filesystem runs in local
+mode there. The daemon refreshes the lock every 10 seconds and writes only while its last
+refresh is at most a few seconds old, the cluster is quorate by `/etc/pve/.members`, read every
+two seconds, and nothing stood still in between; `pco status --json` shows the lease under
+`lease`.
+
+Each time a node takes the lease anew it draws a new epoch, one generation higher, which it
+writes into `leader.json` and the sentinel of every tunnel. That happens once after an
+upgrade to this release, and after every stop that gave the lease back: a clean stop or
+restart of the daemon gives it back, and the next start takes it with a new generation. A
+daemon that ended without giving it back, as after `kill -9` or a restart by the watchdog,
+finds the lock of its node and boot still its own and keeps the epoch. After a crash or a
+power loss of the node, the lock expires two minutes after its last refresh, and the daemon
+takes it then; until then it writes nothing.
+
+A controller writes nothing, and says why, while the store is older than what the agents
+remember, went back under it, or was made in another cluster: after a restore of
+`/etc/pve/pco`, or a copy of a node's disk. [`pco promote`](cli/pco-promote.md) shows what
+differs and, confirmed, draws a new epoch above every sentinel of the install at Cloudflare
+and every epoch an agent reported, and sets observe-only mode until `pco apply`.
+
+The engine has a deadline of 75 seconds per cycle, and pings the watchdog of systemd only
+while a cycle runs that began less than 75 seconds ago, or while it waits for the next one;
+a daemon whose engine hangs is restarted within 90 seconds and keeps its epoch. The
+Cloudflare credentials are read into memory only while the node holds a valid lease, and
+dropped when it loses it or is fenced.
 
 ## The appliance
 

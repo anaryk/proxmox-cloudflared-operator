@@ -322,7 +322,8 @@ func TestASignalStopsTheDaemonCleanly(t *testing.T) {
 
 			notify := &readyNotifier{ready: make(chan struct{})}
 			r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
-			r.env.daemon = daemon.Deps{Notifier: notify, Accounts: noAccounts{}, Systemd: noSystemd{}, Prober: noProber{}}
+			r.env.daemon = daemon.Deps{Notifier: notify, Accounts: noAccounts{}, Systemd: noSystemd{}, Prober: noProber{},
+				Lease: standaloneLease(t, base, "pve1")}
 			cmd := newRootCmdWith(r.env)
 			var errOut testutil.SyncBuffer
 			cmd.SetErr(&errOut)

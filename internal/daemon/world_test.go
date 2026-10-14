@@ -463,6 +463,9 @@ type world struct {
 	cycles atomic.Int64
 	cfg    Config
 	deps   Deps
+	// leaseFS is the lock of the lease, lockDir the directory it makes.
+	leaseFS *dirFS
+	lockDir string
 }
 
 func newWorld(t *testing.T) *world {
@@ -541,6 +544,7 @@ func newWorld(t *testing.T) *world {
 			return ctx.Err()
 		},
 	}
+	w.standaloneLease(t, dir)
 	return w
 }
 

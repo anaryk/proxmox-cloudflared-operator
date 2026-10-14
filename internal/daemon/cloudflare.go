@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -17,6 +18,9 @@ type cloudflareClients struct {
 	baseURL string // empty: the Cloudflare API
 	now     func() time.Time
 	budget  int
+	// regate is asked again before a write that the rate limit held for a
+	// while; nil where nothing gates the writes.
+	regate func(ctx context.Context) error
 
 	mu       sync.Mutex
 	limiters map[string]*cfapi.Limiter
@@ -33,6 +37,7 @@ func (f *cloudflareClients) New(c store.Credential) (cfapi.API, error) {
 		BaseURL: f.baseURL,
 		Token:   c.Token.Reveal(),
 		Limiter: f.limiter(c.ID),
+		Regate:  f.regate,
 	})
 }
 
