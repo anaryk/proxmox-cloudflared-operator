@@ -70,6 +70,8 @@ func serve(t *testing.T, e *Engine) daemon {
 	t.Helper()
 	socket := filepath.Join(testutil.ShortDir(t), "pco", "pco.sock")
 	srv := api.New(e, "1.2.3", []uint32{uint32(os.Getuid())}, zerolog.Nop())
+	// The scenario is driven as root drives it, whoever runs the tests.
+	srv.SetRootUID(uint32(os.Getuid()))
 	if uid := os.Getuid(); uid != 0 {
 		srv.SetWebUID(uint32(uid))
 	}
