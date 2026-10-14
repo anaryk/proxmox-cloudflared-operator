@@ -22,7 +22,6 @@ const (
 	poolComment = "pco appliances"
 
 	ctHostname = "pco"
-	ctTags     = "pco-appliance;pco-combined"
 	stateDir   = "/var/lib/pco"
 
 	markerFile    = stateDir + "/.volume"

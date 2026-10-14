@@ -909,6 +909,10 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 	}
 	if gone {
 		fail(r.removeSDNNote(vmid))
+		fail(r.delist(ctx, vmid, s.manifest))
+	}
+	if kindOf(s.cfg["tags"]) == KindAgent {
+		r.ask.Info("on the controller, pco node forget %s removes the node from the install", r.node)
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("the uninstall did not finish: %s; run it again to finish the rest", strings.Join(failed, "; "))

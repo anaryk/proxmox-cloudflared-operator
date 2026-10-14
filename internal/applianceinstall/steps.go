@@ -71,7 +71,7 @@ func (r *run) createArgs(vmid int, desc string) []string {
 		"--onboot", "1",
 		"--startup", "order=1,up=20",
 		"--pool", poolID,
-		"--tags", ctTags,
+		"--tags", ctTags(r.o.kindName()),
 		"--description", desc,
 	}
 }
@@ -470,6 +470,15 @@ func (r *run) bootstrap(mode string, macs []string) ([]byte, error) {
 	}
 	if mode == appliance.ModeRecover {
 		b.InstallID = r.o.InstallID
+	}
+	switch r.o.kindName() {
+	case KindAgent:
+		b.Kind, b.InstallID = KindAgent, r.o.joinInstall()
+	case KindController:
+		b.Kind = KindController
+		if b.Storage, err = r.storageFacts(context.Background()); err != nil {
+			return nil, err
+		}
 	}
 	for _, a := range r.addrs {
 		b.NodeAddrs = append(b.NodeAddrs, a.Prefix.Addr())

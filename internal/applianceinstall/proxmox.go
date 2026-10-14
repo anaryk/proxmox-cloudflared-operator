@@ -502,6 +502,7 @@ type clusterGuest struct {
 	VMID flexInt `json:"vmid"`
 	Node string  `json:"node"`
 	Pool string  `json:"pool"`
+	Tags string  `json:"tags"`
 }
 
 func clusterGuests(ctx context.Context, r setup.Runner) ([]clusterGuest, error) {

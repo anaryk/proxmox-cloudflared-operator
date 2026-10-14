@@ -45,6 +45,9 @@ func (v PVEVersion) Supported() bool { return v.major == 9 || v.major == 8 && v.
 // String is the version as pveversion printed it, such as 9.0.10.
 func (v PVEVersion) String() string { return v.text }
 
+// Major is the major version, such as 9.
+func (v PVEVersion) Major() int { return v.major }
+
 // privileges is what role PCO grants: reading the guests, the node, the
 // addresses the guest agent reports, the SDN and the pools, without which the
 // cluster resources leave out the pool of every guest. Proxmox VE 8 has the

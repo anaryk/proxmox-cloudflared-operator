@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,15 @@ type Options struct {
 	Recover       bool   // with Repair: the volume holds no state
 	InstallID     string // with Repair and Recover: the install to adopt
 	Resume        string `json:"-"` // a journal to finish
+	// Kind is KindController or KindAgent; empty is KindCombined.
+	Kind string
+	// JoinToken is an agent's join token, from --join-file or --join -; it
+	// is never in the journal.
+	JoinToken string `json:"-"`
+	// HA makes a controller a Proxmox HA resource, kept on HANodes when
+	// they are given.
+	HA      bool
+	HANodes []string
 }
 
 func (o *Options) defaults() {
@@ -158,6 +168,9 @@ func (o Options) check() error {
 		return fmt.Errorf("--gate-tag %q: %w", o.GateTag, err)
 	}
 	if _, _, err := parseIP(o.IP); err != nil {
+		return err
+	}
+	if err := o.checkKind(); err != nil {
 		return err
 	}
 	return checkNameservers(o.Nameservers)
@@ -305,6 +318,9 @@ type run struct {
 	unlock  func()
 	resumed bool
 	web     struct{ url, fingerprint string } // of the web interface, once started
+	// controller is the controller container an agent's install grants
+	// its container to; none before the preflight found it.
+	controller clusterGuest
 }
 
 func (i *Installer) newRun(o Options, kind string) *run {
@@ -326,6 +342,12 @@ const (
 	stepPush      = "push"
 	stepWeb       = "web"
 	stepProtect   = "protection"
+	stepJoin      = "join"
+	stepGrant     = "agent grant"
+	stepEnlist    = "agent address"
+	stepEndpoint  = "agent endpoint"
+	stepStorage   = "storage audit"
+	stepHA        = "ha"
 )
 
 type step struct {
@@ -334,6 +356,37 @@ type step struct {
 }
 
 func (r *run) installSteps() []step {
+	switch r.o.kindName() {
+	case KindAgent:
+		// An agent has no web interface and registers no tags: those are
+		// the controller's.
+		return []step{
+			{stepPreflight, r.preflight},
+			{stepTemplate, r.prepareTemplate},
+			{stepPool, r.ensurePool},
+			{stepContainer, r.createContainer},
+			{stepAccess, r.denyAccess},
+			{stepProxmox, r.ensureProxmox},
+			{stepGrant, r.grantAgent},
+			{stepStart, r.start},
+			{stepEnlist, r.enlist},
+			{stepJoin, r.pushJoin},
+			{stepPush, r.push},
+			{stepProtect, r.protect},
+		}
+	case KindController:
+		steps := r.combinedSteps()
+		steps = slices.Insert(steps, slices.IndexFunc(steps, func(s step) bool { return s.name == stepStart }),
+			step{stepStorage, r.auditStorage}, step{stepEndpoint, r.endpointRule})
+		if r.o.HA {
+			steps = append(steps, step{stepHA, r.makeHA})
+		}
+		return steps
+	}
+	return r.combinedSteps()
+}
+
+func (r *run) combinedSteps() []step {
 	return []step{
 		{stepPreflight, r.preflight},
 		{stepTemplate, r.prepareTemplate},
@@ -413,6 +466,14 @@ func (r *run) skip(name string) bool {
 
 func (r *run) summary() {
 	vmid := r.j.VMID
+	if r.o.kindName() == KindAgent {
+		r.ask.Info("pco agent lxc/%d is installed on %s, in pool %s; it joins its controller with the token pushed onto its volume", vmid, r.node, poolID)
+		r.ask.Info("next:")
+		r.ask.Info("  pct exec %d -- pco agent status        (its certificate's fingerprint)", vmid)
+		r.ask.Info("  pco node admit %s --fingerprint <at least 8 hex digits of it>        (on the controller)", r.node)
+		r.ask.Warn("snapshots, clones and storage replication of lxc/%d carry its secrets, the API token and the run tokens of its connectors", vmid)
+		return
+	}
 	r.ask.Info("pco appliance lxc/%d is installed on %s, in pool %s", vmid, r.node, poolID)
 	r.ask.Info("  token: %s", tokenID(vmid))
 	r.ask.Info("  Proxmox API: %s, verified as %s against %s", r.j.Endpoint.Address, r.j.Endpoint.ServerName, r.j.Endpoint.Via)

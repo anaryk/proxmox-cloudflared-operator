@@ -44,6 +44,12 @@ func (r *run) preflight(ctx context.Context) error {
 	if err := r.otherInstalls(); err != nil {
 		return err
 	}
+	if err := r.checkCluster(ctx); err != nil {
+		return err
+	}
+	if r.o.HA {
+		r.explainHA()
+	}
 	if err := r.firewall(ctx); err != nil {
 		return err
 	}
@@ -271,7 +277,7 @@ func (r *run) otherInstalls() error {
 			continue
 		}
 		for _, name := range sortedKeys(u.Tokens) {
-			if other, ok := applianceOf(name); ok && other != r.j.VMID {
+			if other, ok := applianceOf(name); ok && other != r.j.VMID && r.o.kindName() == KindCombined {
 				found = append(found, fmt.Sprintf("another appliance lxc/%d exists (its token %s): one appliance serves a cluster", other, setup.UserID+"!"+name))
 			}
 		}

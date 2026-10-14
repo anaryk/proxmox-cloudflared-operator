@@ -447,7 +447,7 @@ func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Pool: "web", Yes: true}))
 	e.guestOnPconet()
 	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true, policyIn: "ACCEPT", policyOut: "ACCEPT",
-		rules: []fakeRule{{"net0", ""}, pcoRule("net1"), {"net1", "backup agent"}, pcoRule("net1")}, ipsets: []string{"ipfilter-net1"}}
+		rules: []fakeRule{{iface: "net0"}, pcoRule("net1"), {iface: "net1", comment: "backup agent"}, pcoRule("net1")}, ipsets: []string{"ipfilter-net1"}}
 	e.node.attachments = []map[string]any{attachedTo105("10.203.118.5")}
 	o := uninstallOptions()
 	o.DetachManaged = true
@@ -455,7 +455,7 @@ func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 	require.NoError(t, e.in.Uninstall(t.Context(), 100, o), e.ask.text())
 
 	require.NotContains(t, e.node.cts[105].cfg, "net1")
-	require.Equal(t, &fakeGuestFirewall{rules: []fakeRule{{"net0", ""}, {"net1", "backup agent"}}, ipsets: []string{}}, e.node.guestFirewalls[105],
+	require.Equal(t, &fakeGuestFirewall{rules: []fakeRule{{iface: "net0"}, {iface: "net1", comment: "backup agent"}}, ipsets: []string{}}, e.node.guestFirewalls[105],
 		"the firewall as it was, but for the admin's rule")
 	require.Empty(t, e.node.sdn.zones)
 	stopped := slices.Index(e.node.ran, "pct exec 100 --keep-env 0 -- systemctl stop pco.service")

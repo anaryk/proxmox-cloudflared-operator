@@ -80,6 +80,12 @@ type ApplianceManifest struct {
 	// NoAccess are the lines the installer added to keep principals out of
 	// the appliance, which uninstall takes back.
 	NoAccess []NoAccessLine `json:"noAccess,omitempty"`
+	// Enlisted is the address of an agent container that its install put
+	// into ipset pco-agents of the controller lxc/<Controller> on
+	// ControllerNode, which uninstall takes out again.
+	Enlisted       string `json:"enlisted,omitempty"`
+	Controller     int    `json:"controller,omitempty"`
+	ControllerNode string `json:"controllerNode,omitempty"`
 }
 
 // NoAccessLine is a line of the access control list the installer added for

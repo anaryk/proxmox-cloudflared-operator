@@ -159,6 +159,11 @@ type fakeNode struct {
 	managedSubnet string
 	// guestFirewalls are the firewalls of guests other than appliances.
 	guestFirewalls map[int]*fakeGuestFirewall
+	// sharedStorage says that every storage is shared; replication are the
+	// replication jobs of the cluster; ha are the ha-manager commands run.
+	sharedStorage bool
+	replication   []map[string]any
+	ha            []string
 
 	pcoVersion string // of the template's pco
 	secrets    int
@@ -192,10 +197,11 @@ func newFakeNode(t *testing.T) *fakeNode {
 		creating:  map[int]int{},
 		users:     []*fakeUser{{ID: "root@pam", Enabled: true}},
 		roles: map[string][]string{
-			"Administrator": {"Sys.Modify", "Sys.Audit", "VM.Audit", "VM.Console", "VM.Config.Network", "Permissions.Modify", "Pool.Allocate"},
-			"PVEVMUser":     {"VM.Audit", "VM.Console", "VM.PowerMgmt", "VM.Backup", "VM.Config.CDROM", "VM.Config.Cloudinit"},
-			"PVEAuditor":    {"VM.Audit", "Sys.Audit", "Datastore.Audit"},
-			"NoAccess":      {},
+			"Administrator":       {"Sys.Modify", "Sys.Audit", "VM.Audit", "VM.Console", "VM.Config.Network", "Permissions.Modify", "Pool.Allocate"},
+			"PVEVMUser":           {"VM.Audit", "VM.Console", "VM.PowerMgmt", "VM.Backup", "VM.Config.CDROM", "VM.Config.Cloudinit"},
+			"PVEAuditor":          {"VM.Audit", "Sys.Audit", "Datastore.Audit"},
+			"PVEDatastoreAuditor": {"Datastore.Audit"},
+			"NoAccess":            {},
 		},
 		acl:        []fakeACL{{Path: "/", Type: "user", UGID: "root@pam", Role: "Administrator"}},
 		pools:      map[string]*fakePool{},
@@ -221,14 +227,15 @@ type fakeGuestFirewall struct {
 	policyIn, policyOut string
 	rules               []fakeRule
 	ipsets              []string
+	entries             map[string][]map[string]string // the entries of each ipset
 }
 
 // fakeRule is a rule of a guest's firewall: its card and its comment, by
 // which pco's rules are told (pco:<install id>).
-type fakeRule struct{ iface, comment string }
+type fakeRule struct{ iface, comment, source, dport string }
 
 // pcoRule is a rule pco put on a card.
-func pcoRule(iface string) fakeRule { return fakeRule{iface, "pco:0123456789ab"} }
+func pcoRule(iface string) fakeRule { return fakeRule{iface: iface, comment: "pco:0123456789ab"} }
 
 // guestFirewall answers the calls of the firewall of a container.
 func (f *fakeNode) guestFirewall(verb, rest string, args []string) (string, error) {
@@ -262,9 +269,38 @@ func (f *fakeNode) guestFirewall(verb, rest string, args []string) (string, erro
 			out = append(out, map[string]any{"name": name})
 		}
 		return asJSON(out), nil
-	case verb == "delete" && strings.HasPrefix(tail, "ipset/"):
+	case verb == "delete" && strings.HasPrefix(tail, "ipset/") && strings.Count(tail, "/") == 1:
 		fw.ipsets = slices.DeleteFunc(fw.ipsets, func(n string) bool { return n == strings.TrimPrefix(tail, "ipset/") })
 		return "", nil
+	case verb == "create" && tail == "ipset":
+		if slices.Contains(fw.ipsets, flag(args, "--name")) {
+			return "", fmt.Errorf("ipset '%s' already exists", flag(args, "--name"))
+		}
+		fw.ipsets = append(fw.ipsets, flag(args, "--name"))
+		return "", nil
+	case verb == "create" && tail == "rules":
+		fw.rules = append(fw.rules, fakeRule{comment: flag(args, "--comment"), source: flag(args, "--source"), dport: flag(args, "--dport")})
+		return "", nil
+	case strings.HasPrefix(tail, "ipset/"):
+		name, cidr, _ := strings.Cut(strings.TrimPrefix(tail, "ipset/"), "/")
+		if fw.entries == nil {
+			fw.entries = map[string][]map[string]string{}
+		}
+		switch {
+		case verb == "create" && cidr == "":
+			if !slices.Contains(fw.ipsets, name) {
+				return "", fmt.Errorf("no such IPSet '%s'", name)
+			}
+			fw.entries[name] = append(fw.entries[name], map[string]string{"cidr": flag(args, "--cidr"), "comment": flag(args, "--comment")})
+			return "", nil
+		case verb == "get" && cidr == "":
+			return asJSON(fw.entries[name]), nil
+		case verb == "delete" && cidr != "":
+			fw.entries[name] = slices.DeleteFunc(fw.entries[name], func(e map[string]string) bool { return e["cidr"] == cidr })
+			return "", nil
+		}
+	}
+	switch {
 	case verb == "get" && tail == "options":
 		return asJSON(map[string]any{"enable": onOffInt(fw.enabled), "policy_in": fw.policyIn, "policy_out": fw.policyOut, "digest": "o1"}), nil
 	case verb == "set" && tail == "options":
@@ -453,6 +489,9 @@ func (f *fakeNode) dispatch(ctx context.Context, line, name string, args []strin
 		}
 	case "pvesm":
 		return f.pvesm(args)
+	case "ha-manager":
+		f.ha = append(f.ha, strings.Join(args, " "))
+		return "", nil
 	case "systemctl":
 		if line == "systemctl is-active pve-firewall" {
 			if f.fwService != "active" {
@@ -507,8 +546,15 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 	if strings.HasPrefix(path, "/cluster/sdn/") && !plainVnets || path == "/cluster/sdn" {
 		return f.sdnCommand(verb, path, args)
 	}
-	if rest, ok := strings.CutPrefix(path, "/nodes/"+f.name+"/lxc/"); ok && strings.Contains(rest, "/firewall/") {
+	if node, rest, ok := strings.Cut(strings.TrimPrefix(path, "/nodes/"), "/lxc/"); ok && strings.HasPrefix(path, "/nodes/") &&
+		strings.Contains(rest, "/firewall/") && (node == f.name || slices.Contains(slices.Collect(maps.Values(f.elsewhere)), node)) {
 		return f.guestFirewall(verb, rest, args)
+	}
+	switch {
+	case verb == "get" && strings.HasPrefix(path, "/storage/"):
+		return asJSON(map[string]any{"storage": strings.TrimPrefix(path, "/storage/"), "shared": b01(f.sharedStorage)}), nil
+	case verb == "get" && path == "/cluster/replication":
+		return asJSON(f.replication), nil
 	}
 	switch {
 	case verb == "get" && path == "/nodes/"+f.name+"/firewall/options":
@@ -609,13 +655,18 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 	case verb == "get" && path == "/cluster/resources":
 		var out []map[string]any
 		for _, id := range slices.Sorted(maps.Keys(f.cts)) {
-			out = append(out, map[string]any{"id": fmt.Sprintf("lxc/%d", id), "type": "lxc", "vmid": id, "node": f.name, "pool": f.poolOf(id)})
+			out = append(out, map[string]any{"id": fmt.Sprintf("lxc/%d", id), "type": "lxc", "vmid": id, "node": f.name, "pool": f.poolOf(id),
+				"tags": f.cts[id].cfg["tags"]})
 		}
 		for _, id := range slices.Sorted(maps.Keys(f.vms)) {
 			out = append(out, map[string]any{"id": fmt.Sprintf("qemu/%d", id), "type": "qemu", "vmid": id, "node": f.name})
 		}
 		for _, id := range slices.Sorted(maps.Keys(f.elsewhere)) {
-			out = append(out, map[string]any{"id": fmt.Sprintf("lxc/%d", id), "type": "lxc", "vmid": id, "node": f.elsewhere[id], "pool": f.poolOf(id)})
+			row := map[string]any{"id": fmt.Sprintf("lxc/%d", id), "type": "lxc", "vmid": id, "node": f.elsewhere[id], "pool": f.poolOf(id)}
+			if ct := f.otherCTs[id]; ct != nil {
+				row["tags"] = ct.cfg["tags"]
+			}
+			out = append(out, row)
 		}
 		return asJSON(out), nil
 	case verb == "get" && path == "/access/permissions":
