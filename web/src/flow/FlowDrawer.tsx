@@ -1,9 +1,10 @@
-import type { ReactNode } from 'react'
+import { lazy, type ReactNode, Suspense } from 'react'
 
 import { useApp } from '../api/store'
 import type { State, TrafficView } from '../api/types.gen'
 import { CopyCommand } from '../components/CopyCommand'
 import { Drawer } from '../components/Drawer'
+import { Skeleton } from '../components/Skeleton'
 import { Time } from '../components/Time'
 import { TrafficChart } from '../components/TrafficChart'
 import { Untrusted } from '../components/Untrusted'
@@ -22,6 +23,9 @@ interface Shown {
   title: ReactNode
   body: ReactNode
 }
+
+// The pages of the cluster are loaded when they are first shown.
+const NodeDetail = lazy(() => import('../pages/nodes/NodeDetail').then((m) => ({ default: m.NodeDetail })))
 
 const keyOf = (r: Pick<FlowRow, 'hostname' | 'owner'>) => `${r.hostname} ${r.owner}`
 
@@ -79,6 +83,15 @@ function nodeShown(st: State, traffic: TrafficView | undefined, n: FlowNode): Sh
     case 'edge':
     case 'connector':
       return { title: label, body: <TunnelDetail key={n.ref} accountId={n.ref ?? ''} variant="drawer" /> }
+    case 'replica':
+      return {
+        title: label,
+        body: (
+          <Suspense fallback={<Skeleton lines={6} label="Loading the node" />}>
+            <NodeDetail key={n.ref} name={n.ref ?? ''} variant="drawer" />
+          </Suspense>
+        ),
+      }
     case 'rogue':
       return { title: label, body: <Rogue st={st} id={n.ref ?? ''} /> }
     case 'target': {

@@ -6,6 +6,7 @@ import type { State, TrafficView } from '../api/types.gen'
 import { partsIn } from '../components/Time'
 import { type CommandWords, rotateCommand } from '../text/words'
 import { rowItemId } from './keys'
+import { replicaOf } from './model'
 import type { MotionLoop } from './motion'
 import type { FlowEdge, FlowNode, MapExtras, Model, Motion, MotionEdge } from './types'
 
@@ -104,7 +105,7 @@ export function extrasOf(st: State, traffic: TrafficView | undefined, model: Mod
   const commands = new Map<string, CommandWords>()
   const concurrent = new Map<string, number>()
   const since = new Map<string, string>()
-  const tunnelOf = new Map(st.tunnels.map((t) => [t.accountId, t]))
+  const tunnelOf = new Map(st.tunnels.filter((t) => t.kind !== 'pinned').map((t) => [t.accountId, t]))
   for (const n of model.nodes) {
     if (n.kind === 'rogue') {
       const r = st.rogueConnectors.find((x) => x.id === n.ref)
@@ -113,11 +114,21 @@ export function extrasOf(st: State, traffic: TrafficView | undefined, model: Mod
       const t = tunnelOf.get(n.ref)
       const c = t?.id ? st.connectors.find((x) => x.tunnelId === t.id) : undefined
       if (c?.tokenRefused) commands.set(n.id, rotateCommand(st.tunnels, n.ref))
+    } else if (n.kind === 'replica') {
+      // Only this node's connector is known here; the others report theirs
+      // to the controller, which the node's page shows.
+      const r = replicaOf(n.id)
+      const t = r && r.node === st.node && !r.pinned ? tunnelOf.get(r.account) : undefined
+      const c = t?.id ? st.connectors.find((x) => x.tunnelId === t.id) : undefined
+      if (r && c?.tokenRefused) commands.set(n.id, rotateCommand(st.tunnels, r.account))
     }
   }
   for (const e of model.edges) {
     if (e.style !== 'trunk') continue
     const t = tunnelOf.get(e.from.slice('edge:'.length))
+    // On a cluster the figures are this node's trunk alone.
+    const r = replicaOf(e.to)
+    if (r && r.node !== st.node) continue
     const tt = t?.id ? traffic?.tunnels.find((x) => x.tunnelId === t.id) : undefined
     const last = tt?.samples.at(-1)
     if (!tt || !last) continue

@@ -27,6 +27,7 @@ export const mapWords = {
 // What the cards say beside what the model gives them.
 export const cardWords = {
   notRun: 'not run by pco',
+  replica: 'replica',
   refused: 'Cloudflare refuses its token',
   approval: 'approval',
   heldBy: 'held by',
@@ -206,6 +207,10 @@ export function nodeLabel(n: FlowNode, carried?: PathFigure): string {
       const unchecked = n.tags?.includes('unchecked') ? ', not checked in the last cycle' : ''
       return `Connector on ${marked(n.label)}${tunnel ? ` for tunnel ${tunnel}` : ''}: ${marked(n.state ?? '')}${rest.length > 0 ? `, ${rest.join(', ')}` : ''}${unchecked}`
     }
+    case 'replica': {
+      const [tunnel, ...rest] = lines
+      return `Replica ${marked(n.label)}${tunnel ? ` of tunnel ${tunnel}` : ''}: ${marked(n.state ?? '')}${rest.length > 0 ? `, ${rest.join(', ')}` : ''}`
+    }
     case 'rogue':
       return `Connector ${marked(n.label)}${lines.length > 0 ? `, ${lines.join(', ')}` : ''}`
     case 'path':
@@ -217,6 +222,7 @@ export function nodeLabel(n: FlowNode, carried?: PathFigure): string {
     }
     case 'group':
       if (n.band === 'hostnames') return `${marked(n.label)}: ${countsText(n.counts)}, lists their routes`
+      if (n.band === 'connector') return `${marked(n.label)}${lines[0] ? ` of tunnel ${lines[0]}` : ''}, opens them`
       return `${marked(n.label)}, ${marked(n.state ?? '')}, opens them`
   }
   return marked(n.label)

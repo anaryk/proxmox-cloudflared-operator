@@ -38,7 +38,7 @@ export function movingEdges(edges: readonly FlowEdge[], layout: Layout): MotionE
 }
 
 const stateIcon = (state: string) => (state === 'unreachable' ? FailIcon : state === 'withdrawn' ? WithdrawnIcon : OkIcon)
-const kindIcon = { zone: GlobeIcon, edge: GlobeIcon, connector: TunnelIcon, rogue: TunnelIcon, path: NetworkIcon, target: GuestIcon, group: GlobeIcon }
+const kindIcon = { zone: GlobeIcon, edge: GlobeIcon, connector: TunnelIcon, replica: TunnelIcon, rogue: TunnelIcon, path: NetworkIcon, target: GuestIcon, group: GlobeIcon }
 
 // CardBody is what a card shows: a header, the rows of a zone card and the
 // access points of a target card.

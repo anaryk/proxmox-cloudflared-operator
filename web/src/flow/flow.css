@@ -332,6 +332,23 @@
   }
 }
 
+/* A replica: the node as a chip in the colour of its readiness. */
+.fm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0 8px;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  font: 600 12px var(--mono);
+  line-height: 18px;
+}
+
+.fm-replica .fm-head {
+  margin-bottom: 0;
+}
+
 /* lines */
 
 .fm-edge .fm-line {

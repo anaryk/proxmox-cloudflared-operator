@@ -45,7 +45,9 @@ export interface FlowPort {
 export interface FlowNode {
   id: string
   band: Band
-  kind: 'zone' | 'edge' | 'connector' | 'rogue' | 'path' | 'target' | 'group'
+  // A replica is a node that runs the connector of a tunnel, on a cluster;
+  // a group in the connector band is the replicas of a tunnel folded.
+  kind: 'zone' | 'edge' | 'connector' | 'replica' | 'rogue' | 'path' | 'target' | 'group'
   label: string
   state?: string
   rows?: FlowRow[]

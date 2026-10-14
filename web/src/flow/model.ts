@@ -3,7 +3,8 @@
 // Nothing here knows where a node is drawn; layout.ts places them and
 // collapse.ts folds them to fit.
 
-import type { ConnectorStatus, RouteTraffic, RouteView, State, TrafficView, TunnelTraffic, TunnelView, ZoneView } from '../api/types.gen'
+import type { ConnectorStatus, NodeView, ReplicaView, RouteTraffic, RouteView, State, TrafficView, TunnelTraffic, TunnelView, ZoneView } from '../api/types.gen'
+import { moveText, placementText, replicaLevelText, targetsText } from '../pages/nodes/nodes'
 import { compareOwners, legOf, legState, routeKey } from '../text/routes'
 import { cardWords } from '../text/flow'
 import { connectorText, verifiedText } from '../text/words'
@@ -75,6 +76,27 @@ export function pathOf(r: Pick<RouteView, 'path'>): PathRef {
 export const tunnelNodeId = (account: string): string => `edge:${account}`
 export const connectorNodeId = (account: string): string => `connector:${account}`
 
+// On a cluster the connector band holds a replica per node and tunnel: the
+// shared tunnel of an account on every node, a tunnel pinned to a node on
+// that node alone, behind an edge node of its own.
+export const pinnedEdgeId = (account: string, node: string): string => `edge:${account}:${node}`
+export const replicaNodeId = (account: string, node: string, pinned = false): string => `replica:${account}:${node}${pinned ? ':pinned' : ''}`
+
+// replicaOf reads a replica's id back: the account of its tunnel, its
+// node, and whether the tunnel is pinned to it.
+export function replicaOf(id: string): { account: string; node: string; pinned: boolean } | undefined {
+  const [kind, account, node, pinned] = id.split(':')
+  if (kind !== 'replica' || !account || !node) return undefined
+  return { account, node, pinned: pinned === 'pinned' }
+}
+
+// The state a replica card is drawn in: ready, or why not.
+export function replicaState(n: NodeView | undefined): string {
+  if (!n) return 'unknown'
+  if (n.replicaReady) return 'ready'
+  return n.state === 'active' ? 'not ready' : n.state || 'unknown'
+}
+
 function targetNode(r: RouteView, t: Target | undefined): { id: string; label: string; ref: string; lines: string[] } | undefined {
   if (r.guest) {
     const ref = `${r.guest.kind}/${r.guest.vmid}`
@@ -108,14 +130,24 @@ class Index {
   readonly shared = new Map<string, number>() // routes on each target
   readonly records = new Map<string, { type: string; content: string }>()
   readonly holders = new Map<string, RouteView>()
+  // On a cluster: the tunnels pinned to a node, by name, and the nodes of
+  // the registry, by name.
+  readonly pinned = new Map<string, TunnelView>()
+  readonly nodes = new Map<string, NodeView>()
+  readonly cluster: boolean
 
   constructor(
     readonly st: State,
     tv: TrafficView | undefined,
   ) {
+    this.cluster = st.nodes.length > 0
+    for (const n of st.nodes) this.nodes.set(n.name, n)
     for (const c of st.credentials) for (const a of c.report?.accounts ?? []) if (!this.names.has(a.id)) this.names.set(a.id, a.name)
     for (const z of st.zones) this.zones.set(z.name, z)
-    for (const t of st.tunnels) this.tunnels.set(t.accountId, t)
+    for (const t of st.tunnels) {
+      if (t.kind === 'pinned') this.pinned.set(t.name, t)
+      else this.tunnels.set(t.accountId, t)
+    }
     const accountOf = new Map(st.tunnels.filter((t) => t.id).map((t) => [t.id, t.accountId]))
     for (const c of st.connectors) {
       const account = accountOf.get(c.tunnelId)
@@ -141,9 +173,22 @@ class Index {
   }
 
   // A tunnel is labelled by its account and the start of its id: every
-  // tunnel of an install has the same name.
+  // tunnel of an install has the same name; one pinned to a node by the
+  // node.
   tunnelLabel(t: TunnelView): string {
+    if (t.kind === 'pinned') return `${this.accountName(t.accountId)} · pinned to ${t.node ?? ''}`
     return t.id ? `${this.accountName(t.accountId)} · ${t.id.slice(0, 8)}` : this.accountName(t.accountId)
+  }
+
+  // The edge of a route: the shared tunnel of its account, or the tunnel
+  // pinned to the node its placement names.
+  edgeOf(r: RouteView, account: string): { id: string; label: string; tunnel?: TunnelView } {
+    const p = r.placement
+    if (this.cluster && p?.kind === 'pinned' && p.node) {
+      const t = this.pinned.get(p.tunnel)
+      return { id: pinnedEdgeId(account, p.node), label: t ? this.tunnelLabel(t) : `${this.accountName(account)} · pinned to ${p.node}`, tunnel: t }
+    }
+    return { id: tunnelNodeId(account), label: this.accountName(account), tunnel: this.tunnels.get(account) }
   }
 
   // zoneOf is the zone a hostname is in: the route's own, else the longest
@@ -279,12 +324,36 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
 
   // The tunnels, their connectors and the connectors pco does not run.
   for (const t of [...st.tunnels].sort((a, b) => byName(a.accountId, b.accountId))) {
+    if (t.kind === 'pinned') continue
     const c = ix.connectors.get(t.accountId)
     const tt = t.id ? ix.traffic.get(t.id) : undefined
     const label = ix.tunnelLabel(t)
     const edgeId = tunnelNodeId(t.accountId)
     const lines = edgeLines(t, c, tt)
     nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label, state: verifiedText(t), ref: t.accountId, ...(lines.length > 0 ? { lines } : {}) })
+    if (ix.cluster) {
+      // Every node of the registry runs the shared tunnel's connector, or
+      // says why not, once this node runs it; this node's trunk carries the
+      // figures it measured. A route adds the replicas of its tunnel.
+      if (!c) continue
+      for (const n of [...ix.nodes.values()].filter((n) => n.state !== 'removed').sort((a, b) => byName(a.name, b.name))) {
+        const id = replicaNodeId(t.accountId, n.name)
+        nodes.set(id, replicaNode(id, n, label))
+        const trunk: FlowEdge = { id: `${edgeId}>${id}`, from: edgeId, to: id, style: 'trunk', lanes: 1 }
+        if (n.name === st.node) {
+          trunk.lanes = Math.min(4, Math.max(1, tt?.haConnections ?? c.connections))
+          const now = ix.latest(c.tunnelId)
+          if (now) {
+            trunk.rate = now.rps
+            trunk.errors = now.errors
+            if (now.stale) trunk.stale = true
+          }
+          if (t.unchecked || now?.stale) trunk.muted = true
+        }
+        link(trunk)
+      }
+      continue
+    }
     if (!c) continue
     const id = connectorNodeId(t.accountId)
     const node: FlowNode = { id, band: 'connector', kind: 'connector', label: st.node || 'this node', state: connectorText(c), ref: t.accountId, lines: connectorLines(label, t, tt) }
@@ -299,6 +368,16 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     }
     if (t.unchecked || now?.stale) trunk.muted = true
     link(trunk)
+  }
+  // The tunnels pinned to a node, each with its node as its one replica.
+  for (const t of [...ix.pinned.values()].sort((a, b) => byName(a.name, b.name))) {
+    if (!t.node) continue
+    const edgeId = pinnedEdgeId(t.accountId, t.node)
+    const label = ix.tunnelLabel(t)
+    nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label, state: verifiedText(t), ref: t.accountId, ...(t.held ? { lines: [t.held] } : {}) })
+    const id = replicaNodeId(t.accountId, t.node, true)
+    nodes.set(id, replicaNode(id, ix.nodes.get(t.node), label, t.node))
+    link({ id: `${edgeId}>${id}`, from: edgeId, to: id, style: 'trunk', lanes: 1 })
   }
   for (const r of [...st.rogueConnectors].sort((a, b) => byName(a.id, b.id))) {
     const id = `rogue:${r.id}`
@@ -340,24 +419,41 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     ;(card.routes ??= []).push(key)
     const account = ix.accountOf(r)
     if (account === undefined) continue
-    const t = ix.tunnels.get(account)
-    const edgeId = tunnelNodeId(account)
+    const { id: edgeId, label: edgeLabel, tunnel: t } = ix.edgeOf(r, account)
     if (!nodes.has(edgeId)) {
-      nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label: ix.accountName(account), ref: account })
+      nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label: edgeLabel, ref: account })
     }
     link({ id: `${card.id}>${edgeId}`, from: card.id, to: edgeId, style: 'hairline' }, key, undefined, r.state === 'frozen')
     touched(edgeId, key)
     // Without a connector on this node the chain ends at the edge: nothing
-    // past it would be joined to anything.
-    const connectorId = connectorNodeId(account)
-    const trunk = edges.get(`${edgeId}>${connectorId}`)
-    if (!trunk) continue
-    trunk.routes.add(key)
-    touched(connectorId, key)
+    // past it would be joined to anything. On a cluster the chain goes on
+    // through every replica of the route's tunnel.
+    const pinned = r.placement?.kind === 'pinned'
+    const connectors: string[] = []
+    if (ix.cluster) {
+      for (const rv of r.replicas) {
+        const id = replicaNodeId(account, rv.node, pinned)
+        if (!nodes.has(id)) nodes.set(id, replicaNode(id, ix.nodes.get(rv.node), edgeLabel, rv.node))
+        if (!edges.has(`${edgeId}>${id}`)) link({ id: `${edgeId}>${id}`, from: edgeId, to: id, style: 'trunk', lanes: 1 })
+        connectors.push(id)
+      }
+    } else {
+      const connectorId = connectorNodeId(account)
+      if (edges.has(`${edgeId}>${connectorId}`)) connectors.push(connectorId)
+    }
+    if (connectors.length === 0) continue
+    let stale = false
+    for (const id of connectors) {
+      const trunk = edges.get(`${edgeId}>${id}`)
+      if (!trunk) continue
+      trunk.routes.add(key)
+      if (trunk.edge.stale) stale = true
+      touched(id, key)
+    }
     if (!downstream.has(r.state)) continue
     // An unchecked tunnel, or a trunk whose figures are stale, greys
     // everything downstream of the edge.
-    const muted = r.state === 'frozen' || !!t?.unchecked || !!trunk.edge.stale
+    const muted = r.state === 'frozen' || !!t?.unchecked || stale
 
     const t2 = targetOf(r.service)
     const tn = targetNode(r, t2)
@@ -372,7 +468,11 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     }
     target.routes.add(key)
     const f = ix.figureOf(r, t2)
-    link({ id: `${connectorId}>${path.id}`, from: connectorId, to: path.id, style: 'plain' }, key, t2 ? f : undefined, muted)
+    for (const connectorId of connectors) {
+      // The figures of this node's egress filter are this node's line.
+      const own = !ix.cluster || replicaOf(connectorId)?.node === st.node
+      link({ id: `${connectorId}>${path.id}`, from: connectorId, to: path.id, style: 'plain' }, key, own && t2 ? f : undefined, muted)
+    }
 
     if (t2) {
       const portId = `${tn.id}|${t2.target}`
@@ -447,6 +547,15 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
   }
 }
 
+// replicaNode is the card of a node in the connector band: the node by its
+// name, whether its connector of the tunnel is ready, and what it reports
+// of its targets.
+function replicaNode(id: string, n: NodeView | undefined, tunnel: string, name = n?.name ?? ''): FlowNode {
+  const lines = [tunnel]
+  if (n) lines.push(targetsText(n))
+  return { id, band: 'connector', kind: 'replica', label: n?.name ?? name, state: replicaState(n), ref: n?.name ?? name, lines }
+}
+
 // The chain list: a route as the steps of its chain, in words.
 
 export interface ChainStep {
@@ -504,14 +613,23 @@ function routeChain(ix: Index, r: RouteView): Chain {
     steps.push({ key: 'edge', name: 'Edge', level: 'fail', text: account === undefined ? 'no tunnel carries this name' : `no tunnel in account ${ix.accountName(account)}` })
     return chain
   }
-  const verified = verifiedText(t)
-  steps.push({ key: 'edge', name: 'Edge', level: verified === 'yes' ? 'ok' : 'warn', text: `${ix.tunnelLabel(t)} · verified: ${verified}${t.held ? `: ${t.held}` : ''}` })
-  const c = ix.connectors.get(t.accountId)
-  if (!c) {
-    steps.push({ key: 'connector', name: 'Connector', level: 'fail', text: 'no connector on this node' })
+  const edge = ix.edgeOf(r, t.accountId)
+  const verified = verifiedText(edge.tunnel ?? t)
+  steps.push({ key: 'edge', name: 'Edge', level: verified === 'yes' ? 'ok' : 'warn', text: `${edge.tunnel ? ix.tunnelLabel(edge.tunnel) : edge.label} · verified: ${verified}${t.held ? `: ${t.held}` : ''}` })
+  if (ix.cluster && (r.placement || r.replicas.length > 0)) {
+    if (r.placement) {
+      const p = r.placement
+      steps.push({ key: 'placement', name: 'Placement', level: p.kind === 'pinned' || p.move ? 'warn' : 'ok', text: `${placementText(p)}${p.move ? ` · ${moveText(p.move)}` : ''}` })
+    }
+    steps.push(replicasStep(r.replicas))
   } else {
-    const level = !c.active ? 'fail' : c.ready && !c.tokenRefused && !c.metricsPortHeld ? 'ok' : 'warn'
-    steps.push({ key: 'connector', name: 'Connector', level, text: `${ix.st.node || 'this node'} · ${connectorText(c)}` })
+    const c = ix.connectors.get(t.accountId)
+    if (!c) {
+      steps.push({ key: 'connector', name: 'Connector', level: 'fail', text: 'no connector on this node' })
+    } else {
+      const level = !c.active ? 'fail' : c.ready && !c.tokenRefused && !c.metricsPortHeld ? 'ok' : 'warn'
+      steps.push({ key: 'connector', name: 'Connector', level, text: `${ix.st.node || 'this node'} · ${connectorText(c)}` })
+    }
   }
   if (r.state === 'held' || r.state === 'frozen') {
     steps.push({ key: 'rule', name: 'Rule', level: 'warn', text: r.state === 'held' ? `503: ${r.reason ?? 'served by nobody'}` : (r.reason ?? 'account frozen') })
@@ -534,6 +652,19 @@ function routeChain(ix: Index, r: RouteView): Chain {
   const f = t2 ? ix.figureOf(r, t2) : undefined
   if (f && t2) chain.figure = { target: t2.target, rate: f.flowsPerSec, shared: ix.shared.get(t2.target) ?? 1, stale: f.stale }
   return chain
+}
+
+// replicasStep says how the route fares on each replica of its tunnel: the
+// level each proved, port (attested) where the hosting node vouched, and
+// what fails where.
+function replicasStep(replicas: readonly ReplicaView[]): ChainStep {
+  const words = replicas.map((rv) => {
+    if (!rv.ok) return `${rv.node}: not reached${rv.reason ? ` (${rv.reason})` : ''}`
+    return `${rv.node}: ${replicaLevelText(rv)}${rv.inSet ? '' : ', not in its set yet'}`
+  })
+  const ok = replicas.filter((rv) => rv.ok && rv.inSet).length
+  const level = replicas.length === 0 ? 'fail' : ok === replicas.length ? 'ok' : replicas.some((rv) => rv.ok) ? 'warn' : 'fail'
+  return { key: 'replicas', name: 'Replicas', level, text: words.length > 0 ? words.join(' · ') : 'no replica reports it' }
 }
 
 // buildChains is every hostname of the state as its chain, ordered by

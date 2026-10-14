@@ -5,7 +5,7 @@
 // chain or one neighbourhood whole.
 
 import { routeKey } from '../text/routes'
-import { noPath } from './model'
+import { noPath, replicaOf } from './model'
 import type { FlowEdge, FlowNode, FlowRow, Model } from './types'
 
 export type Level = 'full' | 'folded' | 'collapsed'
@@ -38,6 +38,12 @@ export function levelOf(n: number, previous?: Level): Level {
 
 // Expanding this opens every folded card and group.
 export const expandAll = '*'
+
+// Above this many replicas of one tunnel the connector band shows one card
+// for them, "replicas 7/7 ready".
+export const foldedReplicas = 6
+
+export const replicasId = (edge: string) => `replicas:${edge}`
 
 export const moreId = (zone: string) => `more:${zone}`
 
@@ -89,7 +95,10 @@ export function focusOn(m: Model, focus: string): { routes: Set<string>; nodes: 
   } else if (kind === 'tunnel') {
     ofNode(`edge:${value}`)
     ofNode(`connector:${value}`)
-    for (const n of m.nodes) if (n.kind === 'rogue' && m.edges.some((e) => e.from === `edge:${value}` && e.to === n.id)) nodes.add(n.id)
+    for (const n of m.nodes) {
+      if (n.kind === 'rogue' && m.edges.some((e) => e.from === `edge:${value}` && e.to === n.id)) nodes.add(n.id)
+      if (n.kind === 'replica' && replicaOf(n.id)?.account === value && !replicaOf(n.id)?.pinned) ofNode(n.id)
+    }
   } else if (kind === 'route') {
     for (const r of rows) if (r.id === focus) routes.add(keyOf(r))
   } else if (byId.has(focus)) {
@@ -275,6 +284,73 @@ function foldTargets(m: Model, chosen: (n: FlowNode, state: string) => boolean, 
   return { nodes, edges: edges.sort((a, b) => byName(a.id, b.id)) }
 }
 
+// foldReplicas folds the replicas of a tunnel into one card when there are
+// more than foldedReplicas of them ("replicas 7/7 ready"), with one trunk
+// into it and one line from it to each path; a group the user opened stays
+// open.
+export function foldReplicas(m: Model, expanded: ReadonlySet<string>): Model {
+  const byId = new Map(m.nodes.map((n) => [n.id, n]))
+  const members = new Map<string, FlowNode[]>()
+  for (const e of m.edges) {
+    const to = byId.get(e.to)
+    if (e.style !== 'trunk' || to?.kind !== 'replica') continue
+    members.set(e.from, [...(members.get(e.from) ?? []), to])
+  }
+  const into = new Map<string, string>()
+  const added: FlowNode[] = []
+  for (const [edge, replicas] of members) {
+    const id = replicasId(edge)
+    if (replicas.length <= foldedReplicas || expanded.has(expandAll) || expanded.has(id)) continue
+    const ready = replicas.filter((n) => n.state === 'ready').length
+    const routes = [...new Set(replicas.flatMap((n) => n.routes ?? []))]
+    const [first] = replicas
+    added.push({
+      id,
+      band: 'connector',
+      kind: 'group',
+      label: `replicas ${ready}/${replicas.length} ready`,
+      state: ready === replicas.length ? 'ready' : 'not ready',
+      ref: edge,
+      routes,
+      ...(first?.lines?.[0] ? { lines: [first.lines[0]] } : {}),
+    })
+    for (const n of replicas) into.set(n.id, id)
+  }
+  if (into.size === 0) return m
+
+  const edges: FlowEdge[] = []
+  const merged = new Map<string, { e: FlowEdge; routes: Set<string>; muted: boolean[]; rates: { rate: number; stale: boolean }[]; lanes: number }>()
+  for (const e of m.edges) {
+    const from = into.get(e.from)
+    const to = into.get(e.to)
+    if (!from && !to) {
+      edges.push(e)
+      continue
+    }
+    const id = `${from ?? e.from}>${to ?? e.to}`
+    let g = merged.get(id)
+    if (!g) {
+      g = { e: { id, from: from ?? e.from, to: to ?? e.to, style: e.style }, routes: new Set(), muted: [], rates: [], lanes: 0 }
+      merged.set(id, g)
+    }
+    for (const k of e.routes ?? []) g.routes.add(k)
+    g.muted.push(!!e.muted)
+    g.lanes += e.lanes ?? 0
+    if (e.rate !== undefined) g.rates.push({ rate: e.rate, stale: !!e.stale })
+  }
+  for (const { e, routes, muted, rates, lanes } of merged.values()) {
+    const out: FlowEdge = { ...e, routes: [...routes] }
+    if (e.style === 'trunk') out.lanes = Math.min(4, Math.max(1, lanes))
+    const fresh = rates.filter((r) => !r.stale)
+    if (rates.length > 0) out.rate = (fresh.length > 0 ? fresh : rates).reduce((sum, r) => sum + r.rate, 0)
+    if (rates.length > 0 && fresh.length === 0) out.stale = true
+    if (muted.length > 0 && muted.every(Boolean)) out.muted = true
+    edges.push(out)
+  }
+  const nodes = [...m.nodes.filter((n) => !into.has(n.id)), ...added]
+  return { nodes, edges: edges.sort((a, b) => byName(a.id, b.id)) }
+}
+
 // shape is the default view of a level.
 function shape(m: Model, level: Level, problems: boolean, expanded: ReadonlySet<string>): Model {
   if (level === 'full') {
@@ -423,7 +499,7 @@ export function collapse(model: Model, opts: CollapseOptions): { model: Model; l
     viewLevel = mapLevel(view)
   }
   const problems = opts.problems ?? viewLevel === 'collapsed'
-  const fitted = fit(shape(view, viewLevel, problems, opts.expanded), opts.previousGrouped ?? false)
+  const fitted = fit(shape(foldReplicas(view, opts.expanded), viewLevel, problems, opts.expanded), opts.previousGrouped ?? false)
   return { model: fitted.model, level, grouped: fitted.grouped }
 }
 

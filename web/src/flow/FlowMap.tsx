@@ -21,6 +21,7 @@ import { ConnectorNode } from './nodes/ConnectorNode'
 import { EdgeNode } from './nodes/EdgeNode'
 import type { CardProps } from './nodes/parts'
 import { PathNode } from './nodes/PathNode'
+import { ReplicaNode } from './nodes/ReplicaNode'
 import { RogueNode } from './nodes/RogueNode'
 import { TargetCard } from './nodes/TargetCard'
 import { ZoneCard } from './nodes/ZoneCard'
@@ -74,12 +75,14 @@ function cardOf(n: FlowNode): ComponentType<CardProps> {
       return EdgeNode
     case 'connector':
       return ConnectorNode
+    case 'replica':
+      return ReplicaNode
     case 'rogue':
       return RogueNode
     case 'path':
       return PathNode
     case 'group':
-      return n.band === 'hostnames' ? ZoneCard : TargetCard
+      return n.band === 'hostnames' ? ZoneCard : n.band === 'connector' ? ReplicaNode : TargetCard
   }
   return TargetCard
 }
@@ -430,7 +433,7 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
     const activate = (id: string) => {
       const { nav, props } = latest.current
       const item = nav.byId.get(id)
-      if (item?.row?.kind === 'more' || (item?.node.kind === 'group' && item.node.band === 'targets')) props.onExpand(id)
+      if (item?.row?.kind === 'more' || (item?.node.kind === 'group' && item.node.band !== 'hostnames')) props.onExpand(id)
       else props.onSelect(id)
     }
     const over = (e: PointerEvent) => {
@@ -577,7 +580,7 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
                 ring={rings.get(node.id)}
                 selected={selected === node.id}
                 ports={portsOf.get(node.id)}
-                refused={node.kind === 'connector' && extras?.commands?.has(node.id)}
+                refused={(node.kind === 'connector' || node.kind === 'replica') && extras?.commands?.has(node.id)}
                 still={node.kind === 'target' ? reducedMotion : undefined}
                 rate={carried.get(node.id)?.rate}
                 rateStale={carried.get(node.id)?.stale}

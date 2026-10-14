@@ -25,7 +25,7 @@ const FlowPanel = lazy(() => loadPart(() => import('../flow/FlowMap')).then((m) 
 
 // The kinds of focus that name one thing, as the map and the address bar
 // write them; anything else in the search box is words to look for.
-const named = /^(hostname|guest|zone|tunnel|route|edge|connector|rogue|path|address|guests|group|more|zones):/
+const named = /^(hostname|guest|zone|tunnel|route|edge|connector|replica|replicas|rogue|path|address|guests|group|more|zones):/
 
 // eventsOf is the filter of the live events for what the map focuses on.
 export function eventsOf(focus: string | undefined): EventFilter {
@@ -43,7 +43,9 @@ export function eventsOf(focus: string | undefined): EventFilter {
     case 'tunnel':
     case 'edge':
     case 'connector':
-      return { account: [value] }
+      return { account: [value.split(':')[0] ?? value] }
+    case 'replica':
+      return { account: [value.split(':')[0] ?? value] }
     case 'zone':
     case 'address':
       return { text: value }
