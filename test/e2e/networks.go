@@ -33,8 +33,14 @@ func (s *suite) attach(t testing.TB, bridge string, vlan int, addr string) engin
 	if vlan != 0 {
 		seg += ":" + strconv.Itoa(vlan)
 	}
-	out, err := s.pcoCombined("network", "attach", seg, "--address", addr, "--yes")
-	t.Logf("pco network attach %s --address %s:\n%s", seg, addr, out)
+	args := []string{"network", "attach", seg, "--address", addr, "--yes"}
+	// The port that stands for a NIC makes the bridge one with a physical
+	// uplink, which pco attaches to only when told so; it leads nowhere.
+	if _, err := s.run("ip", "link", "show", "dev", bridgePort(bridge)); err == nil {
+		args = append(args, "--confirm-uplink")
+	}
+	out, err := s.pcoCombined(args...)
+	t.Logf("pco %s:\n%s", strings.Join(args, " "), out)
 	require.NoError(t, err)
 	return s.waitLeg(t, store.SegmentID(bridge, vlan), true)
 }
