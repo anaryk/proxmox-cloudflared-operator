@@ -411,6 +411,15 @@ if [ "$pco" = ours ]; then
 	if [ -d /etc/pve/pco ] || [ -d /etc/pve/priv/pco ]; then
 		warn "the store of pco in /etc/pve is still there"
 	fi
+	# The lock of the lease, which uninstall removes on a node that stands
+	# alone; one that holds a file is never removed by pco and stays.
+	if [ -d /etc/pve/priv/lock/pco-leader ]; then
+		if rmdir /etc/pve/priv/lock/pco-leader 2>/dev/null; then
+			warn "the lock /etc/pve/priv/lock/pco-leader was still there and was removed"
+		else
+			warn "the lock /etc/pve/priv/lock/pco-leader is still there and could not be removed"
+		fi
+	fi
 
 	# The gateway namespace and the host's tables and routes for it, which
 	# only pco uninstall removes, and should have.

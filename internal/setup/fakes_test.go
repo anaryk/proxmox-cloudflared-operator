@@ -265,6 +265,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		corosync:      filepath.Join(base, "pve", "corosync.conf"),
 		localCorosync: filepath.Join(base, "corosync", "corosync.conf"),
 		pveRootCA:     filepath.Join(base, "pve", "pve-root-ca.pem"),
+		leaseLock:     filepath.Join(base, "pve", "priv", "lock", "pco-leader"),
 		addrs:         func() ([]netip.Addr, error) { return e.addrs, nil },
 		keyring:       filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
 		sources:       filepath.Join(base, "sources", "cloudflared.sources"),

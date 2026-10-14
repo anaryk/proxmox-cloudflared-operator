@@ -142,6 +142,7 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if err := u.stopDaemon(ctx); err != nil {
 		return err
 	}
+	u.removeLeaseLock()
 	if o.DetachManaged {
 		u.detachManaged(ctx)
 	}

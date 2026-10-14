@@ -117,10 +117,12 @@ func (k *Keeper) contend(ctx context.Context, stored store.LeaderRecord, found b
 		return
 	}
 	var mine string
-	// A node that stands alone takes its own lock after a reboot too: no
-	// other node can have held it since. The claim draws a new epoch for the
-	// new boot.
-	if found && stored.Node == k.cfg.Node && (stored.Incarnation == k.cfg.Incarnation || k.standalone()) {
+	// A node that stands alone takes its own lock after a reboot too, and a
+	// lock that leader.json explains by no node, as after a recovery of the
+	// store: no other node can have made it, and pmxcfs accepting the
+	// refresh says so. The claim draws a new epoch.
+	ours := stored.Node == k.cfg.Node && stored.Incarnation == k.cfg.Incarnation
+	if found && (ours || (stored.Node == "" || stored.Node == k.cfg.Node) && k.standalone()) {
 		start := k.stamp()
 		k.mu.Lock()
 		mtime := k.nextMtime(start.wall)

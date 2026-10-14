@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // standaloneLab is a node that stands alone, holding the lease.
@@ -67,6 +69,43 @@ func TestAStandaloneNodeTakesItsOwnLockAtOnceAfterAReboot(t *testing.T) {
 	same := l.add("pve1", "pve1/boot-2")
 	l.run(time.Second)
 	require.Equal(t, drawn, same.epoch(), "one new epoch a boot")
+}
+
+// A lock that leader.json explains by no node, as after a recovery of the
+// store wrote a fresh one while the lock of the daemon uninstalled before was
+// still there, is taken at once by a node that stands alone: nobody else can
+// have made it, and pmxcfs accepting the refresh says it is this node's. One
+// new epoch is drawn, as for any lock that was there already.
+func TestAStandaloneNodeTakesALockThatLeaderJSONGivesToNobody(t *testing.T) {
+	l, m := standaloneLab(t)
+	before := m.epoch()
+	m.exit()
+	l.cfs.writeLeader(store.LeaderRecord{Writer: planner.Writer{InstallID: installID, Generation: before.Generation + 1, Nonce: "rec0vere"}})
+
+	again := l.add("pve1", "pve1/boot-1")
+	l.run(time.Second)
+
+	require.True(t, again.holds())
+	require.Equal(t, before.Generation+2, again.epoch().Generation)
+	require.Equal(t, "pve1", l.leader().Node)
+	require.Equal(t, "pve1/boot-1", l.leader().Incarnation)
+	require.Zero(t, l.cfs.count("pve1", "unlock"))
+	require.NoError(t, again.gate())
+}
+
+// A node of a cluster that finds a lock leader.json gives to nobody waits for
+// it to expire: another node may have made it.
+func TestANodeOfAClusterWaitsForALockThatLeaderJSONGivesToNobody(t *testing.T) {
+	l, m := standaloneLab(t)
+	m.exit()
+	l.cfs.writeLeader(store.LeaderRecord{Writer: setupWriter})
+	l.alone.Store(false)
+
+	booted := l.add("pve1", "pve1/boot-1")
+	l.run(10 * time.Second)
+
+	require.False(t, booted.holds())
+	require.Positive(t, l.cfs.count("pve1", "unlock"))
 }
 
 // A node of a cluster gives the lease back on a clean stop, and waits for its

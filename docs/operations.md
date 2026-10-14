@@ -680,7 +680,10 @@ writes into `leader.json` and the sentinel of every tunnel. That happens once af
 upgrade to this release. A node that stands alone, with no cluster in `/etc/pve/.members` and
 no other node registered, has nobody to give the lease to: a clean stop or restart of the
 daemon keeps the lock, and the next start of the same boot keeps the epoch; after a reboot or
-a power loss it takes its own lock at once and draws one new epoch for the new boot. A node of
+a power loss it takes its own lock at once and draws one new epoch for the new boot, as it
+does for a lock that `leader.json` gives to no node, as after `pco setup --recover`. `pco
+uninstall` removes the lock such a node kept, so that a later setup does not wait two minutes
+for it to expire. A node of
 a cluster gives the lease back on a clean stop, so that another node takes it within seconds,
 and its next start takes it with a new generation; a daemon that ended without giving it back,
 as after `kill -9` or a restart by the watchdog, finds the lock of its node and boot still its

@@ -119,7 +119,7 @@ The files of `meta/`, `bindings/` and `agent/` are objects of the same envelope.
 | `/run/pco/pco.sock.lock` | The lock of the socket, which keeps a second daemon from taking its path. | `0600` |
 | `/run/pco/lease.lock` | The lock that keeps a second keeper of the lease on the node from starting: the cluster filesystem takes a refresh of the lease from the node, not from the process. | `0600` |
 | `/run/pco/hold-cycle` | Only with `PCO_TEST_HOOKS=1`: while it exists, a cycle holds as it begins. Nothing makes it; the test suites do. | as made |
-| `/etc/pve/priv/lock/pco-leader` | The lease of the host: an empty directory in the cluster filesystem that the node holding it refreshes every 10 seconds, and removes when it gives the lease back. pmxcfs removes it two minutes after its last refresh when another node asks. Nothing may be put inside it: a lock that holds a file never expires. | as the cluster filesystem sets |
+| `/etc/pve/priv/lock/pco-leader` | The lease of the host: an empty directory in the cluster filesystem that the node holding it refreshes every 10 seconds, and removes when it gives the lease back; on a node that stands alone the daemon keeps it when it stops, and `pco uninstall` removes it. pmxcfs removes it two minutes after its last refresh when another node asks. Nothing may be put inside it: a lock that holds a file never expires. | as the cluster filesystem sets |
 | `/run/pco/.pco.sock.new/` | Where the daemon binds the socket before it renames it to its place, so that it is reachable all at once and in its final state. A crash may leave it, and the next start removes it. | `0700` |
 
 The directory of the socket must be named `pco`, and its parent must belong to the user the

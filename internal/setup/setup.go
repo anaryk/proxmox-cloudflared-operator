@@ -28,6 +28,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
@@ -187,6 +188,9 @@ type host struct {
 	corosync      string
 	localCorosync string
 	pveRootCA     string
+	// leaseLock is the lock of the lease in the cluster filesystem, which
+	// uninstall removes on a node that stands alone.
+	leaseLock string
 	// addrs are the addresses of the node, for cluster.agentNetwork.
 	addrs    func() ([]netip.Addr, error)
 	keyring  string   // the key of Cloudflare's apt repository
@@ -225,6 +229,7 @@ func nodeHost() host {
 		corosync:      members.CorosyncFile,
 		localCorosync: members.CorosyncLocalFile,
 		pveRootCA:     members.RootCAFile,
+		leaseLock:     lease.DefaultLock,
 		addrs:         interfaceAddrs,
 		keyring:       "/usr/share/keyrings/cloudflare-main.gpg",
 		sources:       "/etc/apt/sources.list.d/cloudflared.sources",
