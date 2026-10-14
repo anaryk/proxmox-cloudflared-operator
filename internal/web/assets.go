@@ -97,7 +97,7 @@ func (a *assets) mount(r gin.IRouter) {
 	get("/assets/*name", file)
 	get("/licenses.txt", file)
 	get("/", page)
-	for _, p := range []string{"/routes", "/guests", "/edge", "/networks", "/events", "/doctor", "/settings", "/setup", "/signin"} {
+	for _, p := range []string{"/routes", "/guests", "/edge", "/networks", "/nodes", "/agent", "/events", "/doctor", "/settings", "/setup", "/signin"} {
 		get(p, page)
 		get(p+"/*rest", page)
 	}
