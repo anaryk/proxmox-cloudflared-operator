@@ -34,8 +34,11 @@ const (
 	s18Tag   = 9355
 )
 
+// The guests of the attached networks refuse a card on the managed network:
+// under the automatic consent of S21 they would get one, and their routes
+// would be served through it rather than through their leg.
 func (s *suite) s17Guest() guest {
-	return s.in(guest{vmid: s17VMID, bridge: isolatedBridge, addr: sameAddr, notes: "cf-tunnel: e2e-s17.ZONE -> :8080"})
+	return s.in(guest{vmid: s17VMID, bridge: isolatedBridge, addr: sameAddr, notes: "cf-tunnel: e2e-s17.ZONE -> :8080" + markerLine})
 }
 
 // ensureS17 makes the guest of S17 on pcot1 and attaches the network, unless
@@ -56,7 +59,7 @@ func (s *suite) ensureS17(t *testing.T) (guest, engine.RouteView) {
 }
 
 func (s *suite) s19Guest() guest {
-	return s.in(guest{vmid: s19VMID, bridge: secondBridge, addr: sameAddr, notes: "cf-tunnel: e2e-s19b.ZONE -> :8080"})
+	return s.in(guest{vmid: s19VMID, bridge: secondBridge, addr: sameAddr, notes: "cf-tunnel: e2e-s19b.ZONE -> :8080" + markerLine})
 }
 
 // ensureS19 makes the second guest, at the same address on pcot2, and
