@@ -37,6 +37,9 @@ func (k *Keeper) acquire(ctx context.Context, recheck bool) {
 // mayAcquire reads leader.json and says why this node may not try now.
 func (k *Keeper) mayAcquire(ctx context.Context) (stored store.LeaderRecord, found bool, why string) {
 	if ok, why := k.cfg.Eligible(); !ok {
+		// A node that may not be the controller still names the one that
+		// is, for whoever asks it.
+		k.see(ctx)
 		return stored, false, "this node may not be the controller: " + why
 	}
 	k.mu.Lock()
@@ -59,6 +62,23 @@ func (k *Keeper) mayAcquire(ctx context.Context) (stored store.LeaderRecord, fou
 	k.seen, k.seenFound = stored, found
 	k.mu.Unlock()
 	return stored, found, mayTry(stored, found, k.cfg.Node, k.cfg.Guard(), k.cfg.Clocks.Now())
+}
+
+// see reads leader.json for what State names as the holder; a read that
+// fails keeps what was seen.
+func (k *Keeper) see(ctx context.Context) {
+	var stored store.LeaderRecord
+	var found bool
+	err := k.bounded(ctx, func() (err error) {
+		stored, _, found, err = k.cfg.Store.Leader()
+		return err
+	})
+	if err != nil {
+		return
+	}
+	k.mu.Lock()
+	k.seen, k.seenFound = stored, found
+	k.mu.Unlock()
 }
 
 // mkdir makes the lock with a plain mkdir. The directory of the locks is made

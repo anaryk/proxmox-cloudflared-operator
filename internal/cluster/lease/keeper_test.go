@@ -91,6 +91,23 @@ func TestANodeThatDoesNotHoldTheLeaseNamesItsHolder(t *testing.T) {
 	require.Empty(t, st.Record.Node)
 }
 
+// A node that may not be the controller still names the one that is, so
+// that its API can send an admin there.
+func TestANodeThatMayNotHoldTheLeaseNamesItsHolder(t *testing.T) {
+	l := newLab(t, "pve1", "pve2")
+	pve1, pve2 := l.m("pve1"), l.m("pve2")
+	pve2.mu.Lock()
+	pve2.notEligble = "set not to be the controller"
+	pve2.mu.Unlock()
+	l.runUntil(time.Minute, pve1.holds)
+	l.run(AcquireEvery + 2*time.Second)
+
+	st := pve2.k.State()
+	require.False(t, st.Holder)
+	require.Equal(t, "pve1", st.Record.Node)
+	require.Contains(t, st.Waiting, "may not be the controller")
+}
+
 func TestTheHolderFencesSixtySecondsAfterItsLastGoodRefresh(t *testing.T) {
 	l := newLab(t, "pve1")
 	pve1 := l.m("pve1")
