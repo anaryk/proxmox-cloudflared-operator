@@ -65,6 +65,9 @@ are never sent on: a page left open on a node that lost the lease gets `not_cont
 its actions, with the controller's address
 ([API](api.md#on-a-node-that-is-not-the-controller)), and reloading it goes to the controller.
 [Security](security.md#on-a-node-that-is-not-the-controller) says what that redirect discloses.
+The redirect reaches the controller only where its pco web listens on that address:
+`pco setup` writes the node's address into `/etc/default/pco-web`, and a node whose
+`PCO_WEB_LISTEN` was set to `127.0.0.1` sends you to a page that does not answer.
 
 The page is built for Chrome and Edge 120, Firefox 115 and Safari 17, and later versions.
 
@@ -282,6 +285,13 @@ The map draws every hostname's way from Cloudflare to its guest, in five columns
 | path | bridge and VLAN a route was proven on, or the network a route is reached through | the VLAN as the guest's card has it, and `direct`; a route reached through a leg of pco's own has the card of its network, `vmbr1 · attach` or `pconet · managed`; routes proven on no bridge, such as manual routes to an address, share one card |
 | target | guest, or address of a manual route | a line for each published port, with the identity level |
 
+On a cluster the connector column holds a card for each node that runs a connector of the
+tunnel, a replica, with a chip in the colour of its readiness, and a tunnel pinned to a node has
+an edge card of its own, `Main · pinned to pve2`, with a line to that node alone. Above six
+replicas of one tunnel they fold into one card, `replicas 7/7 ready`, which opens on a click. A
+replica opens its node in the drawer. In the list view a route of a cluster has two more steps:
+its placement, and how each replica reaches its target.
+
 Hovering or focusing a card shows its chain and dims the rest; a click, or Enter, opens its
 details in a drawer. The search box focuses the map on one hostname, guest, zone or tunnel: it
 then shows that chain whole, and the live events below follow it.
@@ -374,7 +384,7 @@ A row opens the route in a drawer, or as a page of its own on a phone. Its addre
 
 | Tab | Shows |
 |---|---|
-| Overview | The state and why, warnings, the owner, zone, service and level, the ingress rule pco plans for it, the tunnel, the path the address was proven on with when the proof was last stored and since when the guest is bound there, for a route reached through a leg a Via line (`attach vmbr1: leg up, service 198.18.1.0 → 10.77.0.11`, or why the leg is not up), every candidate address with where it came from and what its check found, `managed` for an address pco leased on its managed network, and the connections opened to the target over the last 15 minutes. |
+| Overview | The state and why, warnings, the owner, zone, service and level, the ingress rule pco plans for it, the tunnel, the path the address was proven on with when the proof was last stored and since when the guest is bound there, for a route reached through a leg a Via line (`attach vmbr1: leg up, service 198.18.1.0 → 10.77.0.11`, or why the leg is not up), every candidate address with where it came from and what its check found, `managed` for an address pco leased on its managed network, and the connections opened to the target over the last 15 minutes. On a cluster also the placement (the shared tunnel, or the node the route is pinned to and why), a move between tunnels under way with the step it is at, and each replica with the level it proved, whether it reaches the target and holds it in its egress set, and what fails. `port (attested by pve1)` is a port proven by the forwarding table of pve1, the node that runs the guest, and is never shown without that node; when the path was proven on another node than the guest's, the page says that its port is where that node sees the guest, not the guest's own port. |
 | Diagnosis of the current holder | `pco diagnose` for the hostname, run when asked: the daemon walks the chain of the route that holds the hostname, from the claim to an answer of the guest, and stops at the first step that fails. The tab is there only on the route the daemon would diagnose. |
 | Timeline | The events of the route, from memory and from the event log on the node, newest first, with the admin who caused each. |
 | Claim | Who holds the hostname, since when, and who waits for it. |
@@ -552,7 +562,9 @@ The tunnel of the install in each account, told apart by the name of the account
 eight characters of its id, since every tunnel of an install has the same name: whether its
 configuration is verified, which version runs on how many connectors, its connector on this node
 and how many connectors pco does not run. Tunnels no credential sees any more are listed first,
-with a link to their entry in the plan.
+with a link to their entry in the plan. On a cluster a tunnel pinned to a node shares the
+account of the shared one and is told apart by the node, `Main · pinned to pve2`; its page is
+`/edge/tunnels/<account>?tunnel=<name>`.
 
 A tunnel opens its page: the account, name and id, the credential, the configuration version,
 the connector with its id, the version of cloudflared, its edge locations and round trips, the
@@ -566,6 +578,44 @@ connector of the tunnel, so the daemon takes it from root only.
 |---|---|---|---|---|
 | Confirm in the plan | Opens the entry of the tunnel in the plan. | admin | the [confirmation](#confirming-what-waits) | `pco apply --confirm-deletes` |
 | Copy, in the red block of a tunnel with a connector pco does not run | Copies `pco tunnel rotate --account <account>`, to run on the node. | admin and reader | none | `pco tunnel rotate --account <account>` |
+
+## Nodes
+
+On a cluster the navigation has Nodes, with a count of the nodes that need someone: one that
+waits for admission, one whose join token was used more than once (contested), one whose agent
+went quiet, and those the new CA refuses after a rotation. A node alone has no such page.
+
+The page has the lease (the node that holds it, its address, the generation and how long ago it
+was refreshed), the cluster (quorum and quorum device, the members of the Proxmox cluster,
+whether every node runs a forwarding-table watch), a row for each node of the registry and the
+addresses blocked on every node. A row has the node's state, role, its agent (when it was last
+heard, whether it watches, its build and protocol), whether its replica of the shared tunnel is
+ready, its targets (verified, failing, below the identity minimum, pinned to it), when its
+certificate expires and how far its clock is from the controller's. A row opens the node in a
+drawer, or as a page of its own, `/nodes/<name>`, with the routes pinned to it, those it is a
+replica of with how it reaches each, the uses of its join token and its events.
+
+| Action | What it does | Who | Confirmation | Command line |
+|---|---|---|---|---|
+| Join token… (`POST /api/v1/cluster/join-tokens`) | Makes a join token for an appliance agent of the node you name, shown once, with the line that uses it. | admin | a dialog | `pco cluster join-token --node <node>` |
+| Hand off the lease… (`POST /api/v1/cluster/handoff`) | Hands the lease to another active node, or to whichever takes it. | admin | a dialog | `pco cluster handoff` |
+| Admit… (`POST /api/v1/nodes/:name/admit`) | Admits a node that waits. An appliance agent is admitted with the fingerprint of its certificate, which `pco agent status` prints in its container; the page refuses one that is not hex, or too short, before it sends anything, and shows the daemon's refusal of one that is not the enrolled certificate's. The dialog lists every use of the join token, from where and as which container. | admin | a dialog | `pco node admit <name> --fingerprint <sha256>` |
+| Drain…, End the drain… (`POST /api/v1/nodes/:name/drain`, `POST /api/v1/nodes/:name/undrain`) | Takes a node out of the replicas of the shared tunnel, and puts it back. The last ready replica is drained only when you say so. | admin | a dialog | `pco node drain <name>`, `pco node undrain <name>` |
+| Forget… (`POST /api/v1/nodes/:name/forget`) | Takes a node out of the install: its entry is removed, its agent refused, its pinned tunnels deleted and, while `cluster.rotateOnForget` is on, the secret of the shared tunnel rotated. A node whose disk is out of your hands is forgotten as compromised, which only root on the controller may ask for, and only after `pvecm delnode`: the dialog shows both lines. | admin | the name of the node typed | `pco node forget <name>` |
+| End a block (`POST /api/v1/cluster/unblock`) | Ends the block of an address whose guest's MAC was seen on the port of another guest. | admin | a dialog | `pco cluster unblock <address>` |
+
+The banners above every page say what the cluster went through: the controller moved (from,
+to, generation, when), a hand-off under way, a controller that is fenced or behind what the
+agents remember, a controller that took over and waits for the agents before it writes, a node
+whose coverage was lost, a CA rotation, addresses blocked on every node, an upgrade that has not
+finished, and a cluster that is not quorate.
+
+### This node
+
+On a node that does not hold the lease, while no controller is known, the page is that of the
+node's own agent, This node (`GET /api/v1/local/agent`, for an admin): the controller it follows, the epoch, the snapshot it applied last
+and how old it is, its connectors, its egress set and gateway, and its local problems. Every
+action is refused there; the controller's pages are served on the controller.
 
 ## Events
 
@@ -617,8 +667,9 @@ Identity, Manual routes, Timing, Limits, Zones and Gate tag, each with its range
 `read at start` where a change needs a restart of the daemon. What the daemon finds wrong with
 the settings is listed first. The page checks what it can as you type, and the daemon checks
 every save; its answer wins and is shown at the field. The settings of the managed network are
-not on the page: they are set in the file. First-run setup, in the head, opens the
-[setup](#first-run-setup).
+not on the page: they are set in the file. On a cluster the `cluster` block is shown key by key as
+the file has it, and a save keeps it as it was read; it too is set in the file. First-run setup,
+in the head, opens the [setup](#first-run-setup).
 
 Settings are saved at the revision they were read at. When someone else saved in between, a
 dialog shows what they changed and what you changed, marks a setting changed on both sides, and
