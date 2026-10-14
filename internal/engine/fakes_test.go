@@ -862,6 +862,8 @@ type env struct {
 	members     func() members.Members
 	maintenance func(context.Context) (map[string]pve.Maintenance, error)
 	fallbacks   func() []string
+	// agentFirewall is what the firewall holds of the agent channel.
+	agentFirewall func(ctx context.Context) (AgentFirewall, error)
 	// What the lifecycle of the nodes asks of the daemon: each read when it
 	// is called, so that a test sets it after the engine was made.
 	closeNode func(node string)
@@ -943,21 +945,22 @@ func (e *env) newEngineWith(conns agent.Connectors) *Engine {
 		OwnUser:   "pco@pve",
 		OwnSoft:   e.ownSoft,
 
-		Identity:    e.identity,
-		Quorate:     e.quorate,
-		Incarnation: e.incarnation,
-		EpochDrawn:  e.epochDrawn,
-		Gateway:     e.gateway,
-		Networks:    e.networks,
-		Guests:      e.guests,
-		Lease:       e.lease,
-		Quorum:      e.quorum,
-		Cluster:     e.cluster,
-		HoldCycle:   e.holdCycle,
-		Remote:      e.remote,
-		Members:     e.members,
-		Maintenance: e.maintenance,
-		Fallbacks:   e.fallbacks,
+		Identity:      e.identity,
+		Quorate:       e.quorate,
+		Incarnation:   e.incarnation,
+		EpochDrawn:    e.epochDrawn,
+		Gateway:       e.gateway,
+		Networks:      e.networks,
+		Guests:        e.guests,
+		Lease:         e.lease,
+		Quorum:        e.quorum,
+		Cluster:       e.cluster,
+		HoldCycle:     e.holdCycle,
+		Remote:        e.remote,
+		Members:       e.members,
+		Maintenance:   e.maintenance,
+		Fallbacks:     e.fallbacks,
+		AgentFirewall: e.agentFirewall,
 		Close: func(node string) {
 			if e.closeNode != nil {
 				e.closeNode(node)

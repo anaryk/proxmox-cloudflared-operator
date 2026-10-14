@@ -20,6 +20,9 @@ type ClusterFacts struct {
 	// PinnedEmpty are the tunnels pinned to a node that served no route
 	// and that no record pointed at in the last cycle, with since when.
 	PinnedEmpty []PinnedEmpty
+	// AgentRule is what the firewall holds of the channel of the agents
+	// that send no status.
+	AgentRule AgentRuleFacts
 }
 
 // PinnedEmpty is a tunnel pinned to a node that serves nothing.
@@ -43,6 +46,7 @@ func (e *Engine) ClusterFacts() ClusterFacts {
 	out := f.facts
 	out.ReadyReplicas = maps.Clone(out.ReadyReplicas)
 	out.PinnedEmpty = slices.Clone(out.PinnedEmpty)
+	out.AgentRule.Silent = slices.Clone(out.AgentRule.Silent)
 	return out
 }
 
@@ -77,4 +81,5 @@ func (e *Engine) noteFacts(c *cycleRun) {
 		f.facts.CloudflareAt = c.now
 	}
 	f.facts.ReadyReplicas, f.facts.PinnedEmpty = ready, empty
+	f.facts.AgentRule = e.agentRule.facts
 }

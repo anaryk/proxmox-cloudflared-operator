@@ -109,6 +109,7 @@ func TestAHealthyClusterOnTheController(t *testing.T) {
 		"cluster members":                     "every node of the install is a member of the cluster",
 		"agent channel":                       "every node online sends its status",
 		"agent address":                       "no agent listens on a link of corosync",
+		"agent firewall":                      "every agent sends its status; the firewall was not read for them",
 		"clock skew":                          "the clocks of the nodes agree within 2s",
 		"node versions":                       "every node runs the same build",
 		"certificates":                        "no certificate of a node ends within 30 days, nor the CA within a year",
@@ -172,6 +173,22 @@ func TestTheChecksOfAClusterFindFaults(t *testing.T) {
 		{"a node online never heard", func(st *engine.State, c *fakeCluster) {
 			c.members.Nodes = append(c.members.Nodes, members.Member{Name: "pve4", ID: 4, Online: true})
 		}, "agent channel", LevelFail, ".members lists 1 node online that has sent no status: pve4", ""},
+		{"an agent cut off by the firewall", func(_ *engine.State, c *fakeCluster) {
+			c.facts.AgentRule = engine.AgentRuleFacts{Silent: []string{"pve3"},
+				Gap: "the datacenter firewall is on without the rule IN ACCEPT -p tcp -dport 8644 -source +pco-nodes",
+				Fix: "pco setup --repair puts it back on a node that took it"}
+		}, "agent firewall", LevelFail,
+			"the agent of pve3 sends no status, and the datacenter firewall is on without the rule IN ACCEPT -p tcp -dport 8644 -source +pco-nodes",
+			"pco setup --repair puts it back on a node that took it"},
+		{"a firewall that cannot be read", func(_ *engine.State, c *fakeCluster) {
+			c.facts.AgentRule = engine.AgentRuleFacts{Silent: []string{"pve2", "pve3"}, Err: "HTTP 403: Permission check failed"}
+		}, "agent firewall", LevelWarn,
+			"the agents of pve2, pve3 send no status, and the datacenter firewall could not be read: HTTP 403: Permission check failed",
+			"pvesh get /cluster/firewall/rules shows it; the token of pco reads it with Sys.Audit on /, which pco setup --repair gives it"},
+		{"a firewall that admits a silent agent", func(_ *engine.State, c *fakeCluster) {
+			c.facts.AgentRule = engine.AgentRuleFacts{Silent: []string{"pve3"}}
+		}, "agent firewall", LevelOK,
+			"the datacenter firewall admits the agent channel of pve3; pco doctor on it says why its agent sends no status", ""},
 		{"an agent on a corosync link", func(st *engine.State, _ *fakeCluster) { st.Nodes[1].AgentAddress = netip.MustParseAddr("192.168.10.2") },
 			"agent address", LevelWarn, "the agent of pve2 (192.168.10.2) listens on a link of corosync, whose traffic it then competes with",
 			"set cluster.agentNetwork to another network in the settings, then restart pco on every node"},

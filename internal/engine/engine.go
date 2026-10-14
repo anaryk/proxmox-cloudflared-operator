@@ -165,6 +165,10 @@ type Deps struct {
 	// on; nil where it falls back on none.
 	Fallbacks   func() []string
 	Maintenance func(ctx context.Context) (map[string]pve.Maintenance, error)
+	// AgentFirewall reads what the firewall of Proxmox VE holds of the
+	// agent channel, while an agent sends no status; nil where it is not
+	// read.
+	AgentFirewall func(ctx context.Context) (AgentFirewall, error)
 
 	// nodes: Close ends the connections of a node's agent, which a node
 	// that was forgotten loses before anything is rotated; Corosync reads
@@ -264,6 +268,8 @@ type Engine struct {
 	verified map[tunnelRef][]egress.Target
 	// caught is what catchUp keeps of the epoch it last ran in.
 	caught catchUpMemory
+	// agentRule is the last read of the firewall for the silent agents.
+	agentRule agentRuleMemory
 	// writes are the writes of guests' cards handed the agents of other
 	// nodes.
 	writes pveWrites

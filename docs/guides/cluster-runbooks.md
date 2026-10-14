@@ -258,6 +258,12 @@ as a connector is restarted only while the other node's replica is ready.
 ```
 
 `pco node list` shows those nodes `unknown`. On each of them, `pco doctor` fails `agent dial`.
+When the datacenter firewall is what cuts them off, the controller says so too, and its
+`pco doctor` fails `agent firewall`:
+
+```text
+the agents of node2, node3 send no status, and the datacenter firewall is on without the rule IN ACCEPT -p tcp -dport 8644 -source +pco-nodes: pco setup --repair puts it back on a node that took it, or pvesh create /cluster/firewall/rules --type in --action ACCEPT --proto tcp --dport 8644 --source +pco-nodes --enable 1
+```
 
 **What it means.** Corosync, on its own network, sees the nodes, so the controller holds the
 lease and nobody takes over; but their agents cannot reach it on TCP 8644. They serve on from

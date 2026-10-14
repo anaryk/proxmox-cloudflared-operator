@@ -59,11 +59,30 @@ func (c *clusterPart) wire(ed *engine.Deps, client *pve.Client, multi *pve.Multi
 		st, err := client.HAStatus(ctx)
 		return st.Maintenance, err
 	}
+	ed.AgentFirewall = func(ctx context.Context) (engine.AgentFirewall, error) { return agentFirewall(ctx, client) }
 	ed.Close = c.closeNode
 	ed.Corosync = c.readCorosync
 	ed.Endpoints = c.endpoints
 	ed.Reissue = c.reissue
 	ed.Fleet.Also(c.events.Add, c.trigger)
+}
+
+// agentFirewall reads what the datacenter firewall holds of the agent
+// channel; nothing more while it is off.
+func agentFirewall(ctx context.Context, client *pve.Client) (engine.AgentFirewall, error) {
+	o, err := client.ClusterFirewallOptions(ctx)
+	if err != nil || !o.Enabled {
+		return engine.AgentFirewall{}, err
+	}
+	rules, err := client.ClusterFirewallRules(ctx)
+	if err != nil {
+		return engine.AgentFirewall{}, err
+	}
+	nodes, found, err := client.ClusterIPSet(ctx, engine.AgentChannelIPSet)
+	if err != nil {
+		return engine.AgentFirewall{}, err
+	}
+	return engine.AgentFirewall{On: true, Rules: rules, HasNodes: found, Nodes: nodes}, nil
 }
 
 // readCorosync reads corosync.conf from the cluster filesystem.

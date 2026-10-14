@@ -170,7 +170,7 @@ func clusterChecks(st engine.State, src ClusterSource, now time.Time) []Finding 
 	mem, memErr := src.Members()
 	cs, csErr := src.Corosync()
 	out = append(out,
-		checkChannel(st, mem, memErr), checkAgentAddress(st.Nodes, cs, csErr), checkSkew(st.Nodes), checkVersions(st.Nodes),
+		checkChannel(st, mem, memErr), checkAgentFirewall(facts.AgentRule), checkAgentAddress(st.Nodes, cs, csErr), checkSkew(st.Nodes), checkVersions(st.Nodes),
 		checkCertificates(st.Nodes, src, now), checkCloudflareReach(facts, now), checkPinned(facts, now))
 	out = append(out, checkReplicas(st, facts)...)
 	return out
@@ -272,6 +272,33 @@ func checkChannel(st engine.State, mem members.Members, err error) Finding {
 		count(len(silent), "node", "nodes"), verb(len(silent), "has", "have"), strings.Join(silent, ", ")),
 		"check cluster.agentNetwork and that the datacenter firewall admits tcp/8644 from the ipset pco-nodes; "+
 			"pco doctor on each of them says whether its agent reaches the controller")
+}
+
+// checkAgentFirewall fails while the controller found that the datacenter
+// firewall cuts off the agents that send it no status: a rule of the agent
+// channel deleted or disabled, or an address missing from its ipset, which
+// leaves the node only unknown.
+func checkAgentFirewall(f engine.AgentRuleFacts) Finding {
+	const check = "agent firewall"
+	if len(f.Silent) == 0 {
+		return ok(check, "every agent sends its status; the firewall was not read for them")
+	}
+	agents := "the agent of " + f.Silent[0] + " sends"
+	if len(f.Silent) > 1 {
+		agents = "the agents of " + strings.Join(f.Silent, ", ") + " send"
+	}
+	switch {
+	case f.Err != "":
+		return warn(check, agents+" no status, and the datacenter firewall could not be read: "+f.Err,
+			"pvesh get /cluster/firewall/rules shows it; the token of pco reads it with Sys.Audit on /, which pco setup --repair gives it")
+	case f.Gap != "":
+		return fail(check, agents+" no status, and "+f.Gap, f.Fix)
+	}
+	why := "; pco doctor on it says why its agent sends no status"
+	if len(f.Silent) > 1 {
+		why = "; pco doctor on each says why its agent sends no status"
+	}
+	return ok(check, "the datacenter firewall admits the agent channel of "+strings.Join(f.Silent, ", ")+why)
 }
 
 // checkAgentAddress warns for an agent that listens on a link of corosync:

@@ -211,6 +211,13 @@ func (c *Client) GuestFirewallRules(ctx context.Context, node string, ref model.
 	if err := c.get(ctx, endpoint, nil, &rows); err != nil {
 		return nil, "", fmt.Errorf("fetching the firewall rules of %s: %w", ref, err)
 	}
+	rules, digest := rulesOf(rows)
+	return rules, digest, nil
+}
+
+// rulesOf are the rules of a listing in their order, with the digest of the
+// configuration they were read in.
+func rulesOf(rows []firewallRuleWire) ([]FirewallRule, string) {
 	rules := make([]FirewallRule, 0, len(rows))
 	var digest string
 	for _, w := range rows {
@@ -223,7 +230,7 @@ func (c *Client) GuestFirewallRules(ctx context.Context, node string, ref model.
 		digest = cmp.Or(digest, w.Digest)
 	}
 	slices.SortStableFunc(rules, func(a, b FirewallRule) int { return a.Pos - b.Pos })
-	return rules, digest, nil
+	return rules, digest
 }
 
 // AddGuestFirewallRule adds an in or out rule to a guest's firewall under

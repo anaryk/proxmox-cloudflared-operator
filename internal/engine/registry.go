@@ -141,6 +141,7 @@ func (c *cycleRun) registryStep() {
 	}
 	c.noStatus(reports, listed)
 	c.noFallback()
+	c.agentRule(reports, listed)
 }
 
 // observeNode applies what this cycle saw of node n to its entry: Proxmox's
