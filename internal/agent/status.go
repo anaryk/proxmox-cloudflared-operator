@@ -241,6 +241,15 @@ func (a *Agent) Heartbeat(h agentproto.Heartbeat) {
 	a.hb, a.hbAt, a.heardAt = &h, now, now
 }
 
+// HeardLive says whether, at now, a heartbeat less than within old came from
+// a controller that called its lease valid: the node of an agent that hears
+// one never tries to take the lease from it.
+func (a *Agent) HeardLive(now time.Time, within time.Duration) bool {
+	a.heardMu.Lock()
+	defer a.heardMu.Unlock()
+	return a.hb != nil && a.hb.LeaseValid && now.Sub(a.hbAt) < within
+}
+
 // hear notes that a controller answered now.
 func (a *Agent) hear() {
 	now := a.d.Now()

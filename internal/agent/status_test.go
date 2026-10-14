@@ -73,6 +73,21 @@ func TestAHeartbeatOfALowerEpochIsIgnored(t *testing.T) {
 	require.Empty(t, v.ReadyReplicas)
 }
 
+// A node hears a live controller only through a heartbeat that called its
+// lease valid, and only for a while.
+func TestHeardLive(t *testing.T) {
+	e := newEnv(t)
+	e.apply(e.snapshot())
+	require.False(t, e.agent.HeardLive(e.clock.now(), 30*time.Second), "no heartbeat yet")
+
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch1})
+	require.False(t, e.agent.HeardLive(e.clock.now(), 30*time.Second), "a controller whose lease is not valid")
+
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch1, LeaseValid: true})
+	require.True(t, e.agent.HeardLive(e.clock.now().Add(29*time.Second), 30*time.Second))
+	require.False(t, e.agent.HeardLive(e.clock.now().Add(30*time.Second), 30*time.Second))
+}
+
 func TestAResultSurvivesItsWireForm(t *testing.T) {
 	failing := t0.Add(-time.Minute)
 	for _, res := range []resolve.Result{

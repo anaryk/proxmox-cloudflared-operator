@@ -1,0 +1,204 @@
+package engine
+
+import (
+	"cmp"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+const (
+	problemStoreWentBack = "the store went backwards (restored?); pco promote adopts it"
+	problemBehindHost    = "the store is older than what the agents remember (restored?); " +
+		"pco promote shows the differences and draws a new epoch"
+	problemOtherCluster = "this store was made in cluster %s (%s); pco promote here makes this cluster its writer"
+	// problemClusterUnknown is a cluster whose identity cannot be read.
+	problemClusterUnknown = "the identity of this cluster cannot be read (%v); nothing is written"
+	// problemAwaitReports names the nodes whose agents have not reported
+	// since this tenure began: the first write waits for every one of them,
+	// as one may remember an epoch the store does not.
+	problemAwaitReports = "waiting for the agents of %s to report before the first write of this tenure; nothing is written"
+)
+
+// sameCluster holds every write of a store that was made in another
+// cluster: restored there, or the image of a node copied elsewhere. The
+// identity of a cluster is the fingerprint of its CA, which Proxmox makes
+// once and never rotates.
+func (c *cycleRun) sameCluster() bool {
+	read := c.e.d.Cluster
+	if read == nil {
+		return true
+	}
+	here, err := read()
+	if err != nil {
+		c.hold(c.problem(problemClusterUnknown, err))
+		return false
+	}
+	c.cluster = here
+	rec := c.install.Cluster
+	if rec == nil || rec.CASHA256 == here.CASHA256 {
+		return true
+	}
+	c.holdBehind(c.problem(problemOtherCluster, clusterName(*rec), rec.CASHA256))
+	return false
+}
+
+// clusterName is the name of a cluster for a message.
+func clusterName(id store.ClusterIdentity) string {
+	return cmp.Or(id.Name, "of a node standing alone")
+}
+
+// recordCluster stores the identity of the cluster with the install when it
+// has none, as a store made before it was recorded, or no name while the
+// cluster has one now: a node set up alone and joined to a cluster since.
+// It runs only once the lease let this cycle write.
+func (c *cycleRun) recordCluster() {
+	here := c.cluster
+	if here.CASHA256 == "" {
+		return
+	}
+	rec := c.install.Cluster
+	if rec != nil && (rec.Name != "" || here.Name == "") {
+		return
+	}
+	inst := c.install
+	inst.Cluster = &here
+	if err := c.e.d.Store.SaveInstall(inst); err != nil {
+		c.problem("saving the identity of the cluster with the install: %v", err)
+		return
+	}
+	c.install = inst
+}
+
+// startTenure begins the store's record of what this tenure writes when the
+// lease is of an epoch this process has not written under yet: a read that
+// finds one of those objects at a lower revision, or gone, says that the
+// store went back under the writer.
+func (c *cycleRun) startTenure(st lease.State) {
+	e := c.e
+	if sameWriterEpoch(e.tenure, st.Writer) {
+		return
+	}
+	e.d.Store.StartTenure()
+	e.tenure, e.tenureAt, e.tenureWrote = st.Writer, c.now, false
+}
+
+// sameWriterEpoch says whether two writers are of one epoch.
+func sameWriterEpoch(a, b planner.Writer) bool {
+	return a.InstallID == b.InstallID && a.Generation == b.Generation && a.Nonce == b.Nonce
+}
+
+// agentsReported hands the lease the epoch every agent follows, and before
+// the first write of the tenure holds the cycle until every node that is
+// neither down nor removed has reported since the tenure began. An agent
+// that follows an epoch leader.json does not explain makes the controller
+// behind: the store went back, or a second controller writes. An agent that
+// lost what it remembered cannot say so, but another one can, which is why
+// the first write waits for all of them.
+func (c *cycleRun) agentsReported() bool {
+	l := c.e.d.Lease
+	if ep, found, err := c.e.d.Store.AgentEpoch(); err == nil && found {
+		l.ReportedEpoch(agentproto.Epoch(ep))
+	}
+	reports := c.e.fleet.Reports(c.ctx, 0, nil)
+	for _, name := range slices.Sorted(maps.Keys(reports)) {
+		if ep := reports[name].Status.EpochSeen; ep.Nonce != "" {
+			l.ReportedEpoch(ep)
+		}
+	}
+	if c.e.tenureWrote {
+		return true
+	}
+	nodes, err := c.e.d.Store.Nodes()
+	if err != nil {
+		c.hold(c.storeProblem("reading the node registry", err))
+		return false
+	}
+	if missing := unreported(nodes, reports, c.e.tenureAt); len(missing) > 0 {
+		c.hold(c.problem(problemAwaitReports, strings.Join(missing, ", ")))
+		return false
+	}
+	c.e.tenureWrote = true
+	return true
+}
+
+// unreported are the nodes of the registry, neither down nor removed, whose
+// agents have not reported since the tenure began at since.
+func unreported(nodes []store.NodeEntry, reports map[string]NodeReport, since time.Time) []string {
+	var out []string
+	for _, n := range nodes {
+		if n.State == store.NodeDown || n.State == store.NodeRemoved {
+			continue
+		}
+		if r, ok := reports[n.Name]; !ok || r.ReceivedAt.Before(since) {
+			out = append(out, n.Name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// leaseEvent says what changed of the lease since the last cycle: this node
+// took it or lost it, it was fenced or resumed, or the controller is behind.
+func (c *cycleRun) leaseEvent(st lease.State) {
+	now, said := leaseSaid(st), c.e.leaseSaid
+	if now == said.state && sameWriterEpoch(st.Writer, said.writer) {
+		return
+	}
+	c.e.leaseSaid = leaseSaidAs{state: now, writer: st.Writer}
+	epoch := fmt.Sprintf("generation %d", st.Writer.Generation)
+	ev := Event{At: c.now, Kind: kindLease, Subject: c.e.d.Node}
+	switch now {
+	case leaseWaiting:
+		if said.state == "" || said.state == leaseWaiting {
+			return
+		}
+		ev.Level, ev.Message = levelWarn, "this node no longer holds the lease: "+cmp.Or(st.Waiting, "the tenure ended")
+	case leaseBehind:
+		ev.Level, ev.Message = levelError, fmt.Sprintf("behind at %s: %s; nothing is written until pco promote", epoch, st.Behind)
+	case leaseFenced:
+		ev.Level, ev.Message = levelWarn, fmt.Sprintf("fenced at %s: %s", epoch, st.Fenced)
+	case leaseHeld:
+		ev.Level = levelInfo
+		switch {
+		case said.state == leaseFenced && sameWriterEpoch(st.Writer, said.writer):
+			ev.Message = "resumed at " + epoch
+		default:
+			ev.Message = "acquired at " + epoch
+		}
+	}
+	c.events = append(c.events, ev)
+}
+
+// The states of the lease the events tell apart.
+const (
+	leaseWaiting = "waiting"
+	leaseHeld    = "held"
+	leaseFenced  = "fenced"
+	leaseBehind  = "behind"
+)
+
+// leaseSaidAs is the state of the lease the last event told of.
+type leaseSaidAs struct {
+	state  string
+	writer planner.Writer
+}
+
+func leaseSaid(st lease.State) string {
+	switch {
+	case !st.Holder:
+		return leaseWaiting
+	case st.Behind != "":
+		return leaseBehind
+	case !st.Valid:
+		return leaseFenced
+	}
+	return leaseHeld
+}

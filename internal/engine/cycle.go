@@ -156,6 +156,10 @@ type cycleRun struct {
 	// agentRefused says that the agent would not follow this cycle's
 	// desired state: the cycle feeds it nothing.
 	agentRefused bool
+	// cluster is the identity of the cluster the node is in, as this cycle
+	// read it; leaseHeld says that the lease let the cycle write nothing.
+	cluster   store.ClusterIdentity
+	leaseHeld bool
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -181,7 +185,9 @@ func (c *cycleRun) run() State {
 	c.watchTunnels()
 	c.showRollouts()
 	c.showNetworks()
-	c.saveMemory()
+	if !c.leaseHeld {
+		c.saveMemory()
+	}
 	c.noteRogueConnectors()
 	c.sayWaiting()
 	if !c.checked {
@@ -269,6 +275,10 @@ func (c *cycleRun) prepare() bool {
 		c.e.egress = node.EgressSet()
 	}
 	c.readWriter()
+	if !c.leaseAdmits() {
+		c.leaseHeld = true
+		return false
+	}
 	switch err := c.e.recall(c.install.ID); {
 	case err != nil:
 		c.storeHold = true

@@ -803,6 +803,11 @@ type env struct {
 	// engines neither.
 	guests  managednet.Configurer
 	managed func(d *Deps)
+	// The host's lease, the quorum read and the identity of the cluster;
+	// nil gives the engines none.
+	lease   Lease
+	quorum  func() (bool, time.Time)
+	cluster func() (store.ClusterIdentity, error)
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -885,6 +890,9 @@ func (e *env) newEngineWith(conns agent.Connectors) *Engine {
 		Gateway:     e.gateway,
 		Networks:    e.networks,
 		Guests:      e.guests,
+		Lease:       e.lease,
+		Quorum:      e.quorum,
+		Cluster:     e.cluster,
 	}
 	if e.acc != nil {
 		d.Access = e.acc

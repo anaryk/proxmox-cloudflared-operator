@@ -1,0 +1,296 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+// holderWait is how long a promotion that made this cluster the store's
+// waits for the lease, which the keeper takes at its next poll.
+const holderWait = 20 * time.Second
+
+// Promote makes this node the writer of a store the controller only
+// observes: one restored from an earlier copy, behind what the agents
+// remember, or made in another cluster. Without confirm it only says what
+// differs between the store and what the agents and Cloudflare say. With
+// it, the store is made this cluster's, and a new epoch is drawn above every
+// sentinel of the install at Cloudflare and every epoch an agent reported;
+// the settings are set to observe-only, so that what the controller would
+// change is shown before pco apply lets it. On the host only: the appliance
+// recovers with pco appliance recover.
+func (e *Engine) Promote(ctx context.Context, confirm bool) (PromoteResult, error) {
+	if e.d.Lease == nil {
+		return PromoteResult{}, fmt.Errorf("%w: pco promote is for the host profile; an appliance draws a new epoch with pco appliance recover", ErrRefused)
+	}
+	if err := e.acquireAdmin(ctx); err != nil {
+		return PromoteResult{}, err
+	}
+	defer e.release()
+
+	inst, found, err := e.d.Store.Install()
+	switch {
+	case err != nil:
+		return PromoteResult{}, fmt.Errorf("reading the install identity: %w", err)
+	case !found:
+		return PromoteResult{}, fmt.Errorf("%w: %s", ErrRefused, problemNotSetUp)
+	}
+	res := PromoteResult{Differences: e.differences(ctx, inst)}
+	if !confirm {
+		return res, nil
+	}
+
+	// A store that went back takes no write until a tenure begins anew: the
+	// admin adopts it as it is.
+	e.d.Store.StartTenure()
+	e.tenure = planner.Writer{}
+	if err := e.adoptCluster(inst); err != nil {
+		return res, err
+	}
+	if err := e.awaitHolder(ctx); err != nil {
+		return res, err
+	}
+	seed, err := e.promotionSeed(ctx, inst.ID)
+	if err != nil {
+		return res, err
+	}
+	if err := e.d.Lease.Promote(ctx, seed); err != nil {
+		return res, fmt.Errorf("drawing a new epoch: %w", err)
+	}
+	if err := e.observeOnly(); err != nil {
+		return res, err
+	}
+	st := e.d.Lease.State()
+	e.d.Store.StartTenure()
+	e.tenure, e.tenureAt, e.tenureWrote = st.Writer, e.d.Now(), false
+	res.Drawn, res.Generation, res.Nonce = true, st.Writer.Generation, st.Writer.Nonce
+	msg := fmt.Sprintf("promoted to generation %d; observe-only until pco apply", st.Writer.Generation)
+	e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: kindLease, Subject: e.d.Node, Message: msg, Actor: ActorOf(ctx)})
+	e.adminEvent(ctx, e.d.Node, msg)
+	e.Trigger()
+	return res, nil
+}
+
+// differences says what the store and the agents' reports, and Cloudflare,
+// say differently: the epoch of each agent, the nodes, the revisions the
+// tenure wrote, the cluster, the generation of the sentinels.
+func (e *Engine) differences(ctx context.Context, inst store.Install) []DifferenceView {
+	out := []DifferenceView{}
+	rec, _, found, err := e.d.Store.Leader()
+	stored := "none"
+	switch {
+	case err != nil:
+		stored = "unreadable: " + err.Error()
+	case found:
+		stored = epochText(rec.Writer)
+	}
+	if ep, ok, err := e.d.Store.AgentEpoch(); err == nil && ok && (!found || !sameEpochAs(rec.Writer, agentproto.Epoch(ep))) {
+		out = append(out, DifferenceView{Subject: "epoch the agent of " + e.d.Node + " remembers", Store: stored, Reported: agentproto.Epoch(ep).String()})
+	}
+	reports := e.fleet.Reports(ctx, 0, nil)
+	for _, name := range slices.Sorted(maps.Keys(reports)) {
+		ep := reports[name].Status.EpochSeen
+		if ep.Nonce != "" && (!found || !sameEpochAs(rec.Writer, ep)) {
+			out = append(out, DifferenceView{Subject: "epoch the agent of " + name + " follows", Store: stored, Reported: ep.String()})
+		}
+	}
+	if nodes, err := e.d.Store.Nodes(); err == nil {
+		registered := make(map[string]bool, len(nodes))
+		for _, n := range nodes {
+			registered[n.Name] = true
+			if _, ok := reports[n.Name]; !ok && n.State != store.NodeRemoved {
+				out = append(out, DifferenceView{Subject: "node " + n.Name, Store: "registered" + stateText(n.State), Reported: "no report"})
+			}
+		}
+		for _, name := range slices.Sorted(maps.Keys(reports)) {
+			if !registered[name] {
+				out = append(out, DifferenceView{Subject: "node " + name, Store: "not registered", Reported: "reports"})
+			}
+		}
+	}
+	if err := e.d.Store.WentBack(); err != nil {
+		out = append(out, DifferenceView{Subject: "revisions", Store: err.Error(), Reported: "written by this controller"})
+	}
+	if read := e.d.Cluster; read != nil {
+		if here, err := read(); err == nil && inst.Cluster != nil && inst.Cluster.CASHA256 != here.CASHA256 {
+			out = append(out, DifferenceView{Subject: "cluster",
+				Store: clusterName(*inst.Cluster) + " (" + inst.Cluster.CASHA256 + ")", Reported: clusterName(here) + " (" + here.CASHA256 + ")"})
+		}
+	}
+	switch highest, err := e.highestSentinel(ctx, inst.ID); {
+	case err != nil:
+		out = append(out, DifferenceView{Subject: "sentinels at Cloudflare", Store: stored, Reported: "not read: " + err.Error()})
+	case !found || highest > rec.Generation:
+		out = append(out, DifferenceView{Subject: "sentinels at Cloudflare", Store: stored, Reported: fmt.Sprintf("generation %d", highest)})
+	}
+	return out
+}
+
+func epochText(w planner.Writer) string { return fmt.Sprintf("%d.%s", w.Generation, w.Nonce) }
+
+func sameEpochAs(w planner.Writer, e agentproto.Epoch) bool {
+	return w.Generation == e.Generation && w.Nonce == e.Nonce
+}
+
+func stateText(state string) string {
+	if state == "" {
+		return ""
+	}
+	return ", " + state
+}
+
+// adoptCluster makes the cluster this node is in the store's, when the store
+// names another one: the admin said so by confirming a promotion.
+func (e *Engine) adoptCluster(inst store.Install) error {
+	read := e.d.Cluster
+	if read == nil || inst.Cluster == nil {
+		return nil
+	}
+	here, err := read()
+	if err != nil {
+		return fmt.Errorf("reading the identity of this cluster: %w", err)
+	}
+	if inst.Cluster.CASHA256 == here.CASHA256 {
+		return nil
+	}
+	inst.Cluster = &here
+	if err := e.d.Store.SaveInstall(inst); err != nil {
+		return fmt.Errorf("making this cluster the store's: %w", err)
+	}
+	return nil
+}
+
+// awaitHolder waits, for a while, until this node holds the lease: a node
+// whose store was of another cluster takes it only now.
+func (e *Engine) awaitHolder(ctx context.Context) error {
+	wait, cancel := e.timeout(ctx, holderWait)
+	defer cancel()
+	for {
+		st := e.d.Lease.State()
+		if st.Holder {
+			return nil
+		}
+		tick, stop := e.after(time.Second)
+		select {
+		case <-wait.Done():
+			stop()
+			why := st.Waiting
+			if why == "" {
+				why = "the lease keeper has not tried yet"
+			}
+			return fmt.Errorf("%w: this node does not hold the lease: %s", ErrRefused, why)
+		case <-tick:
+		}
+	}
+}
+
+// promotionSeed is the generation a promotion draws above: the highest of
+// the sentinels of the install at Cloudflare and of the epochs the agents
+// reported. A sentinel that cannot be read could hold a higher one, so it
+// refuses the promotion rather than leave a guess.
+func (e *Engine) promotionSeed(ctx context.Context, installID string) (int, error) {
+	seed, err := e.highestSentinel(ctx, installID)
+	if err != nil {
+		return 0, fmt.Errorf("%w: the generation at Cloudflare cannot be read: %w", ErrRefused, err)
+	}
+	if ep, found, err := e.d.Store.AgentEpoch(); err == nil && found && ep.InstallID == installID {
+		seed = max(seed, ep.Generation)
+	}
+	for _, r := range e.fleet.Reports(ctx, 0, nil) {
+		if ep := r.Status.EpochSeen; ep.InstallID == installID {
+			seed = max(seed, ep.Generation)
+		}
+	}
+	return seed, nil
+}
+
+// highestSentinel is the highest generation of a writer of the install in
+// the sentinels of its tunnels, through every stored credential; 0 when
+// there is none.
+func (e *Engine) highestSentinel(ctx context.Context, installID string) (int, error) {
+	creds, err := e.d.Store.Credentials()
+	if err != nil {
+		return 0, fmt.Errorf("reading the credentials: %w", err)
+	}
+	if len(creds) == 0 {
+		return 0, errors.New("no Cloudflare credential is stored")
+	}
+	highest := 0
+	for _, cred := range creds {
+		api, err := e.d.NewClient(cred)
+		if err != nil {
+			return 0, fmt.Errorf("credential %s: %w", cred.ID, err)
+		}
+		g, err := sentinelOf(ctx, api, installID)
+		if err != nil {
+			return 0, fmt.Errorf("credential %s: %w", cred.ID, err)
+		}
+		highest = max(highest, g)
+	}
+	return highest, nil
+}
+
+// sentinelOf is the highest generation of the install in the sentinels of
+// the tunnels one credential sees, in the accounts it lists and those of its
+// zones.
+func sentinelOf(ctx context.Context, api cfapi.API, installID string) (int, error) {
+	listed, err := api.Accounts(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("listing the accounts: %w", err)
+	}
+	zones, err := api.Zones(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("listing the zones: %w", err)
+	}
+	accounts := map[string]bool{}
+	for _, a := range listed {
+		accounts[a.ID] = true
+	}
+	for _, z := range zones {
+		accounts[z.AccountID] = true
+	}
+	highest := 0
+	for _, account := range slices.Sorted(maps.Keys(accounts)) {
+		tunnels, err := api.Tunnels(ctx, account, planner.TunnelName(installID))
+		if err != nil {
+			return 0, fmt.Errorf("listing the tunnels of account %s: %w", account, err)
+		}
+		for _, t := range tunnels {
+			cfg, err := api.TunnelConfig(ctx, account, t.ID)
+			if err != nil {
+				return 0, fmt.Errorf("reading the configuration of tunnel %s (%s): %w", t.Name, t.ID, err)
+			}
+			for _, rule := range cfg.Ingress {
+				if w, ok := planner.ParseSentinel(rule.Hostname); ok && w.InstallID == installID {
+					highest = max(highest, w.Generation)
+				}
+			}
+		}
+	}
+	return highest, nil
+}
+
+// observeOnly sets the settings to observe-only, which a new epoch drawn by
+// hand begins with.
+func (e *Engine) observeOnly() error {
+	s, err := e.d.Store.Settings()
+	if err != nil {
+		return fmt.Errorf("reading the settings: %w", err)
+	}
+	if s.ObserveOnly {
+		return nil
+	}
+	s.ObserveOnly = true
+	if err := e.d.Store.SaveSettings(s); err != nil {
+		return fmt.Errorf("setting observe-only: %w", err)
+	}
+	return nil
+}

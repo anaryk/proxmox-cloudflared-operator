@@ -83,6 +83,9 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 		if err := e.refusedAsCopy(); err != nil {
 			return CredentialView{}, err
 		}
+		if err := e.leaseRefused(ctx); err != nil {
+			return CredentialView{}, err
+		}
 	}
 	cred, err := e.credential(id)
 	if err != nil {

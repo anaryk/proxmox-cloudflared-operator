@@ -40,7 +40,7 @@ func (e *Engine) recheck(ctx context.Context) {
 		return
 	}
 	defer e.rechecking.Store(false)
-	if e.storeHeld.Load() {
+	if e.storeHeld.Load() || !e.leaseHolds() {
 		return
 	}
 	install, err := e.installID()
@@ -94,6 +94,9 @@ func (e *Engine) checkNew(ctx context.Context) {
 		return
 	}
 	defer e.rechecking.Store(false)
+	if !e.leaseHolds() {
+		return
+	}
 	install, creds := e.neverChecked(ctx)
 	if len(creds) == 0 {
 		return

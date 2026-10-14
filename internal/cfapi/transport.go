@@ -69,7 +69,17 @@ type Options struct {
 	Limiter *Limiter
 
 	UserAgent string // default "pco/<version>"
+
+	// Regate, when set, is asked again before a request that changes
+	// something is sent after the limiter held it for longer than
+	// RegateAfter: the permission to write it was given before the wait.
+	// An error is the answer to the request, which is not sent.
+	Regate func(ctx context.Context) error
 }
+
+// RegateAfter is the longest wait for the rate limit after which a request
+// that changes something asks Options.Regate again.
+const RegateAfter = time.Second
 
 // Client talks to the Cloudflare API. It is safe for concurrent use.
 type Client struct {
@@ -78,6 +88,7 @@ type Client struct {
 	hc        *http.Client
 	limiter   *Limiter
 	userAgent string
+	regate    func(ctx context.Context) error
 }
 
 // New checks opts and returns a client for them. Errors never repeat the
@@ -114,6 +125,7 @@ func New(opts Options) (*Client, error) {
 		hc:        hc,
 		limiter:   opts.Limiter,
 		userAgent: opts.UserAgent,
+		regate:    opts.Regate,
 	}
 	if c.limiter == nil {
 		c.limiter = NewDefaultLimiter(time.Now)
@@ -232,8 +244,14 @@ func (c *Client) roundTrip(ctx context.Context, method, path string, query url.V
 		}
 		payload = bytes.NewReader(encoded)
 	}
+	began := c.limiter.now()
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("waiting for the rate limit: %w", err)
+	}
+	if waited := c.limiter.now().Sub(began); method != http.MethodGet && c.regate != nil && waited > RegateAfter {
+		if err := c.regate(ctx); err != nil {
+			return nil, fmt.Errorf("the request waited %s for the rate limit, and may not be sent now: %w", waited, err)
+		}
 	}
 
 	u := c.base.JoinPath(path)

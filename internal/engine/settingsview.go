@@ -97,6 +97,9 @@ func (e *Engine) SaveSettings(ctx context.Context, rev int, s store.Settings) (S
 		return SettingsView{}, nil, fieldError("observeOnly", "observeOnly: leaving observe-only mode is not a setting, "+
 			"so that what it changes is shown first; use apply (pco apply)")
 	}
+	if err := e.checkUpgradeFinished(s); err != nil {
+		return SettingsView{}, nil, err
+	}
 	if err := e.checkManagedSubnet(ctx, old, s); err != nil {
 		return SettingsView{}, nil, err
 	}
@@ -276,5 +279,27 @@ func (e *Engine) RequestRestart(ctx context.Context) error {
 	defer e.release()
 	e.adminEvent(ctx, "", "a restart of the daemon is asked for: it stops now, and systemd starts it again")
 	e.d.Restart()
+	return nil
+}
+
+// problemFinishUpgrade refuses the settings of a cluster while an upgrade
+// from an earlier release is not finished: that release reads the settings
+// file strictly, and one it refuses would leave a node that goes back to it
+// without a daemon.
+const problemFinishUpgrade = "finish the upgrade first (pco cluster finish-upgrade): the previous release would refuse the settings file"
+
+// checkUpgradeFinished refuses a cluster setting while an upgrade from an
+// earlier release is not finished.
+func (e *Engine) checkUpgradeFinished(s store.Settings) error {
+	if s.Cluster.IsZero() {
+		return nil
+	}
+	_, unfinished, err := e.d.Store.UpgradeState()
+	switch {
+	case err != nil:
+		return fmt.Errorf("reading whether an upgrade is unfinished: %w", err)
+	case unfinished:
+		return fieldError("cluster", problemFinishUpgrade)
+	}
 	return nil
 }

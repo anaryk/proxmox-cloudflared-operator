@@ -138,6 +138,15 @@ type Deps struct {
 	// which isolates the cards on the managed network there; nil where the
 	// daemon cannot, which adds no card in the appliance.
 	Firewall managednet.FirewallAPI
+
+	// Lease is the lease on the host, which a cycle must hold to write
+	// anything; nil in the appliance, which has none. Quorum is the newest
+	// read of the members file, whether the cluster is quorate and when the
+	// read began, and Cluster the identity of the cluster the node is in;
+	// both nil where there is no members file to read.
+	Lease   Lease
+	Quorum  func() (quorate bool, at time.Time)
+	Cluster func() (store.ClusterIdentity, error)
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -323,6 +332,18 @@ type Engine struct {
 
 	// traffic is what the daemon sampled of the connectors' traffic.
 	traffic traffic
+
+	// cycleCtx is the context of the cycle that runs, for the gate the
+	// writer callback asks; guarded by the cycle lock.
+	cycleCtx context.Context
+	// tenure is the epoch of the lease this process last wrote under, which
+	// the store keeps the revisions of, tenureAt when a cycle first saw it,
+	// and tenureWrote that every agent reported since; leaseSaid is what the
+	// last event said of the lease. All guarded by the cycle lock.
+	tenure      planner.Writer
+	tenureAt    time.Time
+	tenureWrote bool
+	leaseSaid   leaseSaidAs
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.
@@ -436,6 +457,8 @@ func (e *Engine) Cycle(ctx context.Context) State {
 		return e.State()
 	}
 	defer e.release()
+	e.cycleCtx = ctx
+	defer func() { e.cycleCtx = nil }()
 
 	c := e.newCycle(ctx)
 	st := c.run()
@@ -546,20 +569,6 @@ func (e *Engine) publish(st State, events []Event, l listing, served map[string]
 	e.notify.state(st.stateNotice())
 	e.stateMu.Unlock()
 	e.events.add(append(events, changes(prev, st)...)...)
-}
-
-// writer is the callback of both reconcilers: the identity read at the start
-// of the cycle and leader.json as it is stored now, read afresh on every call.
-// The reconcilers run only within a cycle, under the cycle lock.
-func (e *Engine) writer() (us, stored planner.Writer, err error) {
-	w, found, err := e.d.Store.Writer()
-	switch {
-	case err != nil:
-		return e.us, planner.Writer{}, err
-	case !found:
-		return e.us, planner.Writer{}, errors.New("leader.json is missing")
-	}
-	return e.us, w, nil
 }
 
 // request is a one-shot request of the admin.

@@ -155,6 +155,9 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 	if err := e.refusedAsCopy(); err != nil {
 		return TunnelRotation{}, err
 	}
+	if err := e.leaseRefused(ctx); err != nil {
+		return TunnelRotation{}, err
+	}
 	s, err := e.d.Store.Settings()
 	if err != nil {
 		return TunnelRotation{}, fmt.Errorf("reading the settings: %w", err)
