@@ -364,6 +364,9 @@ func registryWhy(st *store.Store, node string) string {
 	if err != nil {
 		return fmt.Sprintf("the node registry cannot be read: %v", err)
 	}
+	if why := protocolWhy(nodes); why != "" {
+		return why
+	}
 	for _, n := range nodes {
 		if n.Name != node {
 			continue
@@ -386,6 +389,25 @@ func schemaReason(paths store.Paths) string {
 		return fmt.Sprintf("the schema of the store cannot be read: %v", err)
 	case v > store.SchemaVersion():
 		return fmt.Sprintf("%s has schema %d, and this build reads up to %d", at, v, store.SchemaVersion())
+	}
+	return ""
+}
+
+// protocolWhy is why this build may not be the controller of the nodes: one
+// that is neither down nor removed declared versions of the agent protocol
+// this build does not speak. An entry that declared none is of a node set up
+// before the protocol existed, which runs no agent to speak to.
+func protocolWhy(nodes []store.NodeEntry) string {
+	ours := agentproto.Range{Min: agentproto.ProtocolMin, Max: agentproto.ProtocolMax}
+	for _, n := range nodes {
+		if n.State == store.NodeDown || n.State == store.NodeRemoved || n.Protocol == (store.ProtocolRange{}) {
+			continue
+		}
+		theirs := agentproto.Range{Min: n.Protocol.Min, Max: n.Protocol.Max}
+		if _, ok := agentproto.Negotiate(theirs, ours); !ok {
+			return fmt.Sprintf("node %s speaks the agent protocol %d to %d, this build %d to %d",
+				n.Name, theirs.Min, theirs.Max, ours.Min, ours.Max)
+		}
 	}
 	return ""
 }

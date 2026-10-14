@@ -149,8 +149,10 @@ type Deps struct {
 	DHCPReadyWait time.Duration
 	// Appliance is what only the daemon of an appliance uses.
 	Appliance ApplianceDeps
-	// Lease is what the lease of the host is kept with.
-	Lease LeaseDeps
+	// Lease is what the lease of the host is kept with, and Cluster what
+	// a node of a cluster serves and follows the controller with.
+	Lease   LeaseDeps
+	Cluster ClusterDeps
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -287,6 +289,9 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	if err != nil {
 		return fmt.Errorf("opening the store: %w", err)
 	}
+	// The store keeps the cluster copies of what a controller on another
+	// node inherits once it knows the node.
+	st.SetNode(cfg.Node)
 	token, err := readPVEToken(ctx, st, deps.Sleep, log)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -311,10 +316,12 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	gw := newGatewayPart(deps.Gateway, cfg.Paths.Local, deps.Now, log)
 	gw.start(ctx)
-	eng, client, filter, conns, err := build(cfg, deps, st, token, settings, restart, gw, hl)
+	cp := newClusterPart(cfg, deps, st, hl, log)
+	eng, client, filter, conns, err := build(cfg, deps, st, token, settings, restart, gw, hl, cp)
 	if err != nil {
 		return err
 	}
+	cp.attach(eng)
 	// The keeper runs from before the engine to after it: the engine writes
 	// only under the lease, and the lease is given back once it stopped.
 	hl.start(eng)
@@ -350,7 +357,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	ports := func(ctx context.Context) { gw.watchPorts(ctx, deps.WatchPorts, deps.Sleep) }
 	sources := newSourceWatch(gw, st, eng, deps, log)
 	wd := newWatchdog(deps.Notifier, eng.Healthy, deps.Now, log)
-	beside := []func(context.Context){watch, keep, traffic.run, ports, sources.keep, wd.run}
+	beside := []func(context.Context){watch, keep, traffic.run, ports, sources.keep, wd.run, cp.run}
 	if cfg.profile() == store.ProfileHost {
 		web := newWebKeeper(cfg, deps, client, eng.NoteWeb, log)
 		env.Web = web.facts
@@ -359,6 +366,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
 	gid, uids, web := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
+	srv.SetRole(cp)
 	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, dh.awaitBound, log, beside...)
@@ -451,14 +459,8 @@ func routedGuests(st *store.Store, log zerolog.Logger) func() []model.GuestRef {
 // resolver probes through the legs of gw that are up, and the engine syncs
 // gw.
 func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings, restart func(), gw *gatewayPart,
-	hl *hostLease) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
-	client, err := pve.New(pve.Config{
-		BaseURL:     cfg.PVEURL,
-		TokenID:     token.TokenID,
-		Secret:      token.Secret.Reveal(),
-		CAFile:      cfg.PVECAFile,
-		NodeCertDir: deps.PVECertDir,
-	})
+	hl *hostLease, cp *clusterPart) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
+	client, err := proxmoxClient(cfg, deps, token, hl)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
 	}
@@ -505,6 +507,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		HoldCycle: holdHook(cfg, deps.Sleep, log),
 	}
 	managedReaders(&ed, client, cfg.Node)
+	cp.wire(&ed, client)
 	eng, err := engine.New(ed)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the engine: %w", err)
