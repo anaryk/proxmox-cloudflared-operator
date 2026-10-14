@@ -54,6 +54,8 @@ type placementMemory struct {
 	// nothing.
 	tokens     map[string]string
 	emptySince map[tunnelRef]time.Time
+	// ids are the connector ids the agents of other nodes reported.
+	ids agentIDs
 }
 
 // coverageView is coverage as one cycle judges it.

@@ -66,17 +66,22 @@ func (c *cycleRun) watchConnectors(existing []reconcile.TunnelState, now []conne
 }
 
 // noteOwnIDs remembers the id /ready gives each connector of the node that is
-// ready, and forgets the ids not seen for accountsFreshFor.
+// ready, and in a cluster that of every agent that may run its tunnel, and
+// forgets the ids not seen for accountsFreshFor.
 func (c *cycleRun) noteOwnIDs(statuses []connector.Status) {
+	own := func(tunnel, id string) {
+		if c.e.ownIDs[tunnel] == nil {
+			c.e.ownIDs[tunnel] = make(map[string]time.Time)
+		}
+		c.e.ownIDs[tunnel][id] = c.now
+	}
 	for _, st := range statuses {
 		if !st.Ready || st.ConnectorID == "" {
 			continue
 		}
-		if c.e.ownIDs[st.TunnelID] == nil {
-			c.e.ownIDs[st.TunnelID] = make(map[string]time.Time)
-		}
-		c.e.ownIDs[st.TunnelID][st.ConnectorID] = c.now
+		own(st.TunnelID, st.ConnectorID)
 	}
+	c.noteAgentIDs(own)
 	for tunnel, ids := range c.e.ownIDs {
 		maps.DeleteFunc(ids, func(_ string, seen time.Time) bool { return !c.ownStill(seen) })
 		if len(ids) == 0 {
@@ -115,7 +120,7 @@ func (c *cycleRun) connectorsDue(t reconcile.TunnelState, rollout bool) bool {
 // known of the tunnel stays.
 func (c *cycleRun) compareConnectors(t reconcile.TunnelState, conns []cfapi.Connector, now []connector.Status) {
 	own := readyIDs(t.ID, now)
-	if len(own) == 0 {
+	if len(own) == 0 && !c.agentRuns(t.ID) {
 		return
 	}
 	for id, seen := range c.e.ownIDs[t.ID] {
