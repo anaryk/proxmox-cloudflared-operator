@@ -125,7 +125,7 @@ type pass struct {
 	moved       map[string]bool     // the hostnames whose guest this pass found elsewhere than their stored binding
 	blocked     map[netip.Addr]bool // the blocks in force, of the whole install
 	verified    map[string]bool     // the target keys that verified
-	attested    map[string]bool     // the target keys proven at port through another node's attestation
+	attested    map[string]string   // the target keys proven at port through another node's attestation, to that node
 	conns       []connector.Status
 	egress      string       // how the egress filter took the set
 	setErr      error        // why the egress filter did not take it
@@ -140,7 +140,7 @@ func (a *Agent) newPass(ctx context.Context, s agentproto.Snapshot) *pass {
 		a: a, ctx: ctx, s: s, now: a.d.Now(),
 		results: map[string]resolve.Result{}, served: map[string]resolve.Result{}, held: map[string]string{},
 		lost: map[netip.Addr]bool{}, moved: map[string]bool{}, blocked: map[netip.Addr]bool{}, verified: map[string]bool{},
-		attested: map[string]bool{},
+		attested: map[string]string{},
 	}
 }
 

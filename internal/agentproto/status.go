@@ -50,14 +50,17 @@ type Status struct {
 
 // TargetReport is how a target of the snapshot fares on the agent's node.
 type TargetReport struct {
-	Key         string     `json:"key"`
-	Addr        netip.Addr `json:"addr,omitzero"`
-	Level       string     `json:"level,omitempty"`
-	Attested    bool       `json:"attested,omitempty"`
-	OK          bool       `json:"ok"`
-	Reason      string     `json:"reason,omitempty"`
-	VerifiedAt  time.Time  `json:"verifiedAt,omitzero"`
-	InEgressSet bool       `json:"inEgressSet"`
+	Key      string     `json:"key"`
+	Addr     netip.Addr `json:"addr,omitzero"`
+	Level    string     `json:"level,omitempty"`
+	Attested bool       `json:"attested,omitempty"`
+	// AttestedBy is the node whose attestation the level stands on, when
+	// Attested.
+	AttestedBy  string    `json:"attestedBy,omitempty"`
+	OK          bool      `json:"ok"`
+	Reason      string    `json:"reason,omitempty"`
+	VerifiedAt  time.Time `json:"verifiedAt,omitzero"`
+	InEgressSet bool      `json:"inEgressSet"`
 	// Result is the resolving node's resolve.Result, in its own form.
 	Result json.RawMessage `json:"result,omitempty"`
 }

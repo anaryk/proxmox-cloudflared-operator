@@ -11,6 +11,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -692,9 +693,10 @@ func (c *cycleRun) replicaViews(rt model.Route, record placed, replicas []string
 			// Only a host agent reads a forwarding table: an appliance
 			// agent's word of an attested port is not shown as one.
 			tr := f.targets[rt.Hostname]
-			v.Level, v.Attested, v.OK, v.Reason, v.InSet = tr.Level, tr.Attested && f.host, tr.OK, tr.Reason, tr.InEgressSet
-			v.AttestedBy = c.attestingNode(rt, v.Attested)
-			v.Attested = v.AttestedBy != ""
+			v.Level, v.OK, v.Reason, v.InSet = tr.Level, tr.OK, tr.Reason, tr.InEgressSet
+			if tr.Attested && f.host && c.hostsGuest(rt, tr.AttestedBy) {
+				v.Attested, v.AttestedBy = true, tr.AttestedBy
+			}
 		} else {
 			v.Reason = "no report"
 		}
@@ -703,18 +705,19 @@ func (c *cycleRun) replicaViews(rt model.Route, record placed, replicas []string
 	return out
 }
 
-// attestingNode is the node whose forwarding table vouched for the port of
-// rt's guest, the one the inventory says runs it, when the replica's level
-// stands on an attestation; an attestation of a guest the inventory does not
-// place is shown as none.
-func (c *cycleRun) attestingNode(rt model.Route, attested bool) string {
-	if !attested || rt.Guest == nil {
-		return ""
+// hostsGuest says whether node is the one the inventory says runs rt's
+// guest, and a host of the registry: an attestation a replica names is shown
+// only from there, so that neither a replica naming another node, nor one of
+// where the guest ran before it moved, nor an appliance passes for one.
+func (c *cycleRun) hostsGuest(rt model.Route, node string) bool {
+	if node == "" || rt.Guest == nil {
+		return false
 	}
-	if g, ok := c.snap.Guest(*rt.Guest); ok {
-		return g.Node
+	if f, ok := c.fleet.nodes[node]; !ok || entryKind(f.entry) != string(pki.KindHost) {
+		return false
 	}
-	return ""
+	g, ok := c.snap.Guest(*rt.Guest)
+	return ok && g.Node == node
 }
 
 // savePlacements stores the placements of the routes, once the DNS run of

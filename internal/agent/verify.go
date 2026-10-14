@@ -52,8 +52,8 @@ func (p *pass) verifyAll() {
 	for i, t := range targets[:started] {
 		p.results[t.Key] = out[i].Result
 		p.served[t.Key] = cloneResult(out[i].Result)
-		if out[i].Attested {
-			p.attested[t.Key] = true
+		if out[i].Attested && t.Attestation != nil {
+			p.attested[t.Key] = t.Attestation.Node
 		}
 	}
 }

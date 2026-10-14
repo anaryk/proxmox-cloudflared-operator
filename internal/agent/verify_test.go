@@ -75,6 +75,7 @@ func TestATargetAnotherNodeChoseIsVerifiedWithWhatTheSnapshotAndTheHeartbeatSay(
 	require.Equal(t, remoteAddr, r.Addr)
 	require.Equal(t, "port", r.Level)
 	require.True(t, r.Attested)
+	require.Equal(t, otherNode, r.AttestedBy, "the node whose attestation it stands on")
 	require.True(t, r.OK)
 	require.True(t, r.InEgressSet)
 	set, _ := e.egr.last()
@@ -155,6 +156,7 @@ func TestWhatTheAttestationLacksIsNotMadeUp(t *testing.T) {
 			r := report(st, "www.example.com")
 			require.Equal(t, "observed", r.Level)
 			require.False(t, r.Attested)
+			require.Empty(t, r.AttestedBy)
 			require.False(t, r.OK)
 			require.False(t, r.InEgressSet)
 			require.Equal(t, "identity level observed is below the required port", r.Reason)
@@ -182,6 +184,7 @@ func TestAnApplianceAgentPassesNoAttestationAndNoCoverage(t *testing.T) {
 	r := report(st, "www.example.com")
 	require.Equal(t, "observed", r.Level)
 	require.False(t, r.Attested)
+	require.Empty(t, r.AttestedBy)
 	require.True(t, r.OK, "observed meets the required level")
 }
 
@@ -283,6 +286,7 @@ func TestAVerifiedAddressIsOnlyAsFreshAsTheLastHeartbeat(t *testing.T) {
 	r := report(st, "www.example.com")
 	require.Equal(t, "observed", r.Level)
 	require.False(t, r.Attested)
+	require.Empty(t, r.AttestedBy)
 	require.False(t, r.InEgressSet)
 	set, _ := e.egr.last()
 	require.Empty(t, set)

@@ -21,6 +21,7 @@
       "addr": "10.0.0.21",
       "level": "port",
       "attested": true,
+      "attestedBy": "node1",
       "ok": true,
       "reason": "the forwarding table of node1 names the port of the guest",
       "verifiedAt": "2026-10-05T11:59:55Z",

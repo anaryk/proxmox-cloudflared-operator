@@ -359,7 +359,7 @@ func TestAReplicaIsShownAtItsOwnLevelAndARouteAtTheLowest(t *testing.T) {
 		w.settle()
 		attested := func(st *agentproto.Status) {
 			for i := range st.Targets {
-				st.Targets[i].Attested = true
+				st.Targets[i].Attested, st.Targets[i].AttestedBy = true, "pve1"
 			}
 		}
 		w.acts["pve2"].edit = attested
@@ -370,6 +370,51 @@ func TestAReplicaIsShownAtItsOwnLevelAndARouteAtTheLowest(t *testing.T) {
 		require.Equal(t, "pve1", replica(st, "www.example.com", "pve2").AttestedBy, "the node that runs the guest vouches")
 		require.False(t, replica(st, "www.example.com", "pve3").Attested, "an appliance agent proves no port")
 		require.Empty(t, replica(st, "www.example.com", "pve3").AttestedBy)
+	})
+	t.Run("an attesting node the inventory does not run the guest on", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve2"].edit = func(st *agentproto.Status) {
+			for i := range st.Targets {
+				st.Targets[i].Attested, st.Targets[i].AttestedBy = true, "pve2"
+			}
+		}
+		st := w.tick(time.Second)
+		v := replica(st, "www.example.com", "pve2")
+		require.False(t, v.Attested, "a replica cannot vouch for a guest of another node with its own table")
+		require.Empty(t, v.AttestedBy)
+		require.Equal(t, "port", v.Level, "its level stays its own word")
+	})
+	t.Run("an attesting node the guest left since", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve2"].edit = func(st *agentproto.Status) {
+			for i := range st.Targets {
+				st.Targets[i].Attested, st.Targets[i].AttestedBy = true, "pve1"
+			}
+		}
+		snap := w.inv.snapshot()
+		for i := range snap.Guests {
+			if snap.Guests[i].Node == "pve1" {
+				snap.Guests[i].Node = "pve3"
+			}
+		}
+		w.inv.set(snap)
+		st := w.tick(time.Second)
+		v := replica(st, "www.example.com", "pve2")
+		require.False(t, v.Attested, "the attestation was of where the guest ran before it moved")
+		require.Empty(t, v.AttestedBy)
+	})
+	t.Run("an attestation that names no node", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve2"].edit = func(st *agentproto.Status) {
+			for i := range st.Targets {
+				st.Targets[i].Attested = true
+			}
+		}
+		st := w.tick(time.Second)
+		require.False(t, replica(st, "www.example.com", "pve2").Attested)
 	})
 	t.Run("the lowest level over the replicas", func(t *testing.T) {
 		w := threeNodes(t)

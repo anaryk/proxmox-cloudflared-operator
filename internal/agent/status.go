@@ -102,7 +102,9 @@ func (p *pass) reports() ([]agentproto.TargetReport, map[string]egress.Target) {
 			r.Reason = "not resolved"
 		default:
 			served := p.served[t.Key]
-			r.Addr, r.Level, r.OK, r.Attested = res.Target.Addr, string(res.Level), p.verified[t.Key], p.attested[t.Key]
+			r.Addr, r.Level, r.OK = res.Target.Addr, string(res.Level), p.verified[t.Key]
+			r.AttestedBy = p.attested[t.Key]
+			r.Attested = r.AttestedBy != ""
 			r.Reason = cmp.Or(p.held[t.Key], res.Target.Reason)
 			switch b := served.Binding; {
 			case b != nil:
