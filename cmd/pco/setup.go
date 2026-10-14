@@ -29,7 +29,6 @@ type setupFlags struct {
 
 	managed, confirmSDNApply bool
 	noFirewallRule           bool
-	clusterPreview           bool
 }
 
 func (a *app) setupCmd() *cobra.Command {
@@ -52,9 +51,12 @@ func (a *app) setupCmd() *cobra.Command {
 			"install would never prune them: pco setup --recover adopts that install, and pco uninstall\n" +
 			"--keep-cloudflare removes pco from the node so that setup can start over. --new-install\n" +
 			"starts a new install beside them regardless.\n\n" +
-			"pco runs on one node of a cluster: setup on a further node, whose store the cluster\n" +
-			"filesystem shares, refuses. A new install records the identity of the cluster and makes the\n" +
-			"install's CA, with the node's own key and certificates.\n\n" +
+			"On a node of a Proxmox VE cluster whose store, shared by the cluster filesystem, holds an\n" +
+			"install that other nodes run, setup joins it: the node gets its key and certificates from the\n" +
+			"install's CA, which the first node makes, and an entry of the node registry as joining, which\n" +
+			"the controller admits; nothing changes at Cloudflare. Every node runs the same release of pco\n" +
+			"before a further node joins. A new install records the identity of the cluster and makes the\n" +
+			"CA.\n\n" +
 			"Once pco runs on more than one node, setup offers the datacenter firewall rule that admits\n" +
 			"the agent channel of the controller, TCP port 8644, from the nodes; a node alone needs none,\n" +
 			"and is not asked. The rule is IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset\n" +
@@ -79,7 +81,7 @@ func (a *app) setupCmd() *cobra.Command {
 			"  pco setup --yes --cf-token-file /root/cf-token --managed\n\n" +
 			"  # Adopt the install the token sees, after the store was lost\n" +
 			"  pco setup --recover --cf-token-file /root/cf-token\n\n" +
-			"  # Without a question, and without the firewall rule of the agent channel\n" +
+			"  # Join the install of the cluster from a further node, without the firewall rule\n" +
 			"  pco setup --yes --no-firewall-rule\n\n" +
 			"  # Put what Proxmox holds back after a restore of the node, with a web certificate and key of your own\n" +
 			"  pco setup --repair --web-cert own --web-cert-file /root/pco.example.com.crt --web-key-file /root/pco.example.com.key",
@@ -131,10 +133,6 @@ func (a *app) setupCmd() *cobra.Command {
 	flags.BoolVar(&f.managed, "managed", false, "make the managed network: the SDN zone pco and vnet pconet, applied under the SDN lock")
 	flags.BoolVar(&f.confirmSDNApply, "confirm-sdn-apply", false, "with --managed: apply the changes of others that are pending in the SDN along with pco's")
 	flags.BoolVar(&f.noFirewallRule, "no-firewall-rule", false, "do not add the datacenter firewall rule that admits the agent channel, TCP port 8644, from the nodes")
-	// Joining an install that another node runs is for testing the cluster
-	// support while the daemon drives one node only; it is not shown.
-	flags.BoolVar(&f.clusterPreview, "cluster-preview", false, "join the install another node of the cluster runs")
-	_ = flags.MarkHidden("cluster-preview")
 	cmd.MarkFlagsMutuallyExclusive("cf-token-file", "cf-token-stdin")
 	cmd.MarkFlagsMutuallyExclusive("repair", "recover")
 	cmd.MarkFlagsMutuallyExclusive("new-install", "repair")
@@ -147,7 +145,6 @@ func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, err
 		Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall, Verbose: f.verbose,
 		WebCert: f.webCert, WebCertFile: f.webCertFile, WebKeyFile: f.webKeyFile, WebListen: f.webListen, NoWeb: f.noWeb,
 		Managed: f.managed, ConfirmSDNApply: f.confirmSDNApply, Daemon: a.managedThroughDaemon,
-		ClusterPreview: f.clusterPreview,
 	}
 	no := false
 	if f.noTags {

@@ -214,12 +214,14 @@ connectors until `pco apply` on `node2`: Cloudflare's error 1033 for every one.
    ```
 
 When `node1` is lost for good, the store it left is still on the cluster filesystem and names
-it, and `pco setup` on `node2` refuses: `pco is already set up on node node1; cluster support
-arrives in a later release`. Save `/etc/pve/pco` and `/etc/pve/priv/pco` first, which every node
-of the cluster has, with `tar -czf /root/pco-node1-store.tar.gz /etc/pve/pco /etc/pve/priv/pco`:
+it, and `pco setup` on `node2` would join it, as a further node of an install that `node1`
+still runs as far as the registry says; `pco uninstall` on `node2` would then only take `node2`
+out of it and keep the store. Save `/etc/pve/pco` and `/etc/pve/priv/pco` first, which every
+node of the cluster has, with `tar -czf /root/pco-node1-store.tar.gz /etc/pve/pco /etc/pve/priv/pco`:
 the settings are the object in `data` of `/etc/pve/pco/meta/settings.json`, and the approvals,
-manual routes and segments are files of their own. Then, on `node2` with the
-package installed, `pco uninstall --yes --keep-cloudflare` removes that store, and nothing else,
+manual routes and segments are files of their own. Then remove the entry of the lost node,
+`/etc/pve/pco/nodes/node1.json`, so that `node2` is the last node of the install, and on `node2`
+with the package installed, `pco uninstall --yes --keep-cloudflare` removes that store, and nothing else,
 since `node2` has no manifest of its own. Recover as in step 4. The role and the user that
 `node1` made stay in Proxmox, and setup on `node2` uses them; it makes the token anew, as its
 secret went with the store. If `node1` comes back with its

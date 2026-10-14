@@ -114,10 +114,10 @@ type Options struct {
 	// admits the agent channel from the nodes; nil asks (default yes).
 	FirewallRule *bool
 
-	// ClusterPreview lets a node join an install that other nodes run. The
-	// daemon cannot drive more than one node yet, so a join is refused
-	// without it.
-	ClusterPreview bool
+	// firewallAlone offers the firewall rule to a node that stands alone,
+	// which is asked nothing of it otherwise: for the tests of the rule's
+	// steps on a first node.
+	firewallAlone bool
 }
 
 func (o Options) check() error {

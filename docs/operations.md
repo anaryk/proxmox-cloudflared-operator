@@ -657,10 +657,11 @@ routes of its tunnel are unreachable for a short moment while it reconnects:
 
 ## One node
 
-pco runs on one node. `pco setup` refuses on a second node of a cluster
-(`pco is already set up on node <name>; cluster support arrives in a later release`), and the
-daemon holds when the node registry names another node. On a cluster, install it on the node
-whose guests you want to publish. The guests of the other nodes are listed by Proxmox and
+pco serves from one node at a time. `pco setup` on a further node of a cluster joins the install,
+with a certificate of the install's CA and an entry of the node registry as joining; the node
+that holds the lease is the controller, and serves the routes with its connectors, and the
+others follow it and take over when it is lost. On a cluster, set it up first on the node whose
+guests you want to publish. The guests of the other nodes are listed by Proxmox and
 their routes are read, but they can only be proven at `observed`; see [Identity](identity.md).
 The appliance is one for a cluster too; see [the appliance on a cluster](#the-appliance-on-a-cluster).
 

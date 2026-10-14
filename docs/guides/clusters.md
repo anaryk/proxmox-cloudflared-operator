@@ -11,10 +11,11 @@ or may move between them.
 
 ## pco runs on one node
 
-In this release pco runs on one node of a cluster. Its state is on the cluster filesystem,
-`/etc/pve/pco`, and the node registry in it names the node that runs pco. `pco setup` on a
-second node refuses, with `pco is already set up on node node1; cluster support arrives in a
-later release`, and a daemon whose registry names another node holds every cycle.
+In this release pco serves from one node of a cluster at a time. Its state is on the cluster
+filesystem, `/etc/pve/pco`, and the node registry in it names the nodes. `pco setup` on a
+further node joins the install, with a certificate of the install's CA and an entry of the
+registry as joining. The node that holds the lease is the controller: it writes, and serves the
+routes. The other nodes follow it, and one of them takes over when it is lost.
 
 The connectors run on that node too, and every request to a published hostname passes through
 one of them. The guests of the other nodes are reached from it, across the network the nodes
@@ -36,8 +37,9 @@ flowchart LR
     conn -->|"the bridge and VLAN both nodes share"| g2
 ```
 
-Running pco on more than one node, and moving it to another node when its own fails, is
-planned for a later release; nothing does it today.
+When the controller's node fails, another node that runs pco takes the lease once it expired,
+about two minutes later, and starts the connectors there. Serving the routes from several nodes
+at once is planned for a later release.
 
 ## Which node to install on
 

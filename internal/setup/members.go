@@ -40,8 +40,7 @@ func (r *run) ensureCluster(ctx context.Context) error {
 }
 
 // readOthers reads which other nodes run the install: the registered ones
-// that were not removed. While the daemon drives one node only, a node does
-// not join them unless ClusterPreview says to.
+// that were not removed. A node joins them.
 func (r *run) readOthers() error {
 	nodes, err := r.st.Nodes()
 	if err != nil {
@@ -54,9 +53,6 @@ func (r *run) readOthers() error {
 		}
 	}
 	slices.Sort(r.others)
-	if len(r.others) > 0 && !r.o.ClusterPreview {
-		return fmt.Errorf("pco is already set up on node %s; cluster support arrives in a later release", r.others[0])
-	}
 	return nil
 }
 

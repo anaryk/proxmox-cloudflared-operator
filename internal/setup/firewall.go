@@ -208,9 +208,10 @@ func deleteRule(ctx context.Context, r Runner, rule fwRule) error {
 // took it before. It is offered because it is needed only when the firewall
 // of Proxmox VE is on, and never forced, since it changes a firewall the
 // admin runs. A node alone needs no agent channel, so the rule is offered
-// only with the join of further nodes.
+// only to a node that joins others; the node that joins adds the addresses
+// of those before it.
 func (r *run) ensureFirewall(ctx context.Context) error {
-	if !r.o.ClusterPreview || r.o.Repair && !r.manifest.FirewallRule {
+	if len(r.others) == 0 && !r.o.firewallAlone || r.o.Repair && !r.manifest.FirewallRule {
 		return nil
 	}
 	want := true

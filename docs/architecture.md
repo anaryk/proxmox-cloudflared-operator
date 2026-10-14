@@ -479,16 +479,19 @@ above it. See [Appliance](appliance.md#snapshots-backups-and-their-limits).
 
 ## pco on a cluster
 
-pco runs on one node of a cluster. `pco setup` on a second node refuses with
-`pco is already set up on node <name>; cluster support arrives in a later release`, and a daemon
-holds when the node registry names any node but its own. The guests of the other nodes are listed
-and their routes are read, but this node cannot see the forwarding tables of their bridges, so
-they are proven at `observed` at best, and are served only once `identityMinimum` is lowered to
-`observed` and their segment is acknowledged; see [Identity](identity.md#identityminimum).
+`pco setup` on a further node of a cluster joins the install, with a certificate of the
+install's CA and an entry of the node registry as joining. Every node runs the daemon; the node
+that holds the lease is the controller, the only one that writes, and the others run their agent,
+which follows the controller over the agent channel, TCP port 8644, and reports to it. The
+controller admits a node that joins once its agent reports, and marks a node `unknown` when its
+agent falls silent and `down` when the cluster lists it offline.
 
-The connectors run on the one node too. When that node is down, every published hostname is down
-with it. Moving pco to another node when its node fails is planned for a later release; nothing
-does it today.
+The routes are served from the controller's node: its connectors run there, and the guests of
+the other nodes are reached from it. This node cannot see the forwarding tables of the other
+nodes' bridges, so their guests are proven at `observed` at best, and are served only once
+`identityMinimum` is lowered to `observed` and their segment is acknowledged; see
+[Identity](identity.md#identityminimum). When the controller's node is lost, another node takes
+the lease once it has expired, about two minutes later, and starts the connectors there.
 
 The appliance is one for a cluster as well: it runs on one node, reaches the guests of every
 node that are on its segments, all at `observed`, and holds its writes while the cluster has no

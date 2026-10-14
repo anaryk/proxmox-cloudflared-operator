@@ -19,9 +19,12 @@ install would never prune them: pco setup `--recover` adopts that install, and p
 `--keep-cloudflare` removes pco from the node so that setup can start over. `--new-install`
 starts a new install beside them regardless.
 
-pco runs on one node of a cluster: setup on a further node, whose store the cluster
-filesystem shares, refuses. A new install records the identity of the cluster and makes the
-install's CA, with the node's own key and certificates.
+On a node of a Proxmox VE cluster whose store, shared by the cluster filesystem, holds an
+install that other nodes run, setup joins it: the node gets its key and certificates from the
+install's CA, which the first node makes, and an entry of the node registry as joining, which
+the controller admits; nothing changes at Cloudflare. Every node runs the same release of pco
+before a further node joins. A new install records the identity of the cluster and makes the
+CA.
 
 Once pco runs on more than one node, setup offers the datacenter firewall rule that admits
 the agent channel of the controller, TCP port 8644, from the nodes; a node alone needs none,
@@ -66,7 +69,7 @@ pco setup --yes --cf-token-file /root/cf-token --managed
 # Adopt the install the token sees, after the store was lost
 pco setup --recover --cf-token-file /root/cf-token
 
-# Without a question, and without the firewall rule of the agent channel
+# Join the install of the cluster from a further node, without the firewall rule
 pco setup --yes --no-firewall-rule
 
 # Put what Proxmox holds back after a restore of the node, with a web certificate and key of your own
