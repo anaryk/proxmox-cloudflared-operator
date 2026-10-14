@@ -171,11 +171,11 @@ func TestABadStatusIsRefusedForItsNodeAlone(t *testing.T) {
 	require.NoError(t, err)
 
 	for name, st := range map[string]agentproto.Status{
-		"of another node":             {Node: "pve3"},
-		"of an epoch no draw makes":   {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: agentproto.MaxGeneration + 1, Nonce: "x"}},
-		"of an epoch without a nonce": {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: 3}},
+		"of another node":                               {Node: "pve3"},
+		"of an epoch no draw makes":                     {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: agentproto.MaxGeneration + 1, Nonce: "x"}},
+		"of an epoch without a nonce":                   {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: 3}},
 		"of more service addresses than a gateway maps": {Node: otherNode, ServiceAddrs: serviceAddrs(agentproto.MaxServiceAddrs + 1)},
-		"larger than a status body": {Node: otherNode, Problems: []string{strings.Repeat("x", agentproto.MaxStatusBytes)}},
+		"larger than a status body":                     {Node: otherNode, Problems: []string{strings.Repeat("x", agentproto.MaxStatusBytes)}},
 	} {
 		_, err := f.Report(t.Context(), otherNode, st)
 		require.Error(t, err, name)

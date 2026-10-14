@@ -277,6 +277,56 @@ func TestALeaseThatCannotBeSavedAgainHoldsAllocation(t *testing.T) {
 	require.False(t, hasProblem(st, held), st.Problems)
 }
 
+// An address below the pool's next was given out once and is never given
+// again, whether the store maps it or not: a report that names it moves and
+// holds nothing, and the next allocation is past it.
+func TestAnAddressBelowThePoolIsNeverGivenAgain(t *testing.T) {
+	w, _ := legsWorld(t, func(w *world) {
+		require.NoError(t, w.store.SaveServicePool(netip.MustParseAddr("198.18.1.10")))
+		w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve1": "10.0.0.250", "pve2": "10.0.0.251", "pve3": "10.0.0.252"})
+		w.cardOn(102, "vmbr1")
+		w.res.goVia("db.example.com", "vmbr1")
+		for _, n := range []string{"pve2", "pve3"} {
+			w.acts[n].legs = map[string]string{"db.example.com": "vmbr1"}
+		}
+		w.acts["pve3"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.5")} }
+	})
+
+	w.runFor(time.Minute)
+
+	all, err := w.store.ServiceAddrs()
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	require.Equal(t, netip.MustParseAddr("198.18.1.10"), all[0].Service)
+}
+
+// What cannot be read keeps allocation held: the mappings of the store, the
+// whole inventory.
+func TestWhatCannotBeReadKeepsAllocationHeld(t *testing.T) {
+	t.Run("the mappings", func(t *testing.T) {
+		w := threeNodes(t)
+		w.mappings(t, 1)
+		dir := filepath.Join(w.paths.Cluster, "svcaddrs")
+		require.NoError(t, os.Chmod(dir, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+		st := w.tick(time.Second)
+
+		require.True(t, hasProblem(st, held+"reading the service addresses: "), st.Problems)
+	})
+
+	t.Run("an inventory that is not whole", func(t *testing.T) {
+		w, _ := legWorld(t)
+		snap := w.inv.snapshot()
+		snap.Complete = false
+		w.inv.set(snap)
+
+		w.tick(time.Second)
+
+		require.False(t, w.eng.caught.caughtUp, "the cards of a part of the guests were not looked at")
+	})
+}
+
 // Two guests with a managed card of one MAC both claim its address: neither
 // is given the lease, and that is said.
 func TestTwoCardsOfOneMACGetNoLease(t *testing.T) {

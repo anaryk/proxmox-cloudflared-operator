@@ -130,6 +130,10 @@ func (c *cycleRun) silentNodes() silence {
 // its lease has it: false when the leases could not be read, or a lease
 // could not be saved again, which is a problem line too.
 func (c *cycleRun) keepCardLeases() bool {
+	if !c.snap.Complete {
+		// The cards of the guests not read are not looked at.
+		return false
+	}
 	nets, err := c.e.d.Store.Networks()
 	if err != nil {
 		c.problem("reading the networks: %v", err)
