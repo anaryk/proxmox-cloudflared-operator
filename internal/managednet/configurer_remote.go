@@ -2,7 +2,6 @@ package managednet
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 )
 
 // ErrSent is the error of a change to a guest of another node, which was
@@ -33,23 +33,37 @@ type Remote interface {
 	Write(ctx context.Context, node string, w agentproto.PVEWrite) error
 }
 
-// SetRemote has the configurer change the guests of the other nodes through
-// their agents. It is called before the configurer is first used.
-func (h *HostConfigurer) SetRemote(r Remote) {
-	h.remote = r
-	h.through = cards{cfg: remoteConfig{host: hostConfig{run: h.run}, remote: r}}
+// GuestReader is the part of the Proxmox API client the host configurer
+// reads the guests of the other nodes with; *pve.Client is one.
+type GuestReader interface {
+	NextConfig(ctx context.Context, node string, ref model.GuestRef) (pve.GuestConfig, error)
+	PendingChanges(ctx context.Context, node string, vmid int) ([]string, error)
 }
 
-// remoteConfig is the configuration of a guest of another node: read with
-// pvesh, which reaches every node of the cluster, and changed by the agent
-// of the guest's node.
+// SetRemote has the configurer change the guests of the other nodes through
+// their agents, reading them through api. It is called before the
+// configurer is first used.
+func (h *HostConfigurer) SetRemote(r Remote, api GuestReader) {
+	h.remote = r
+	h.through = cards{cfg: remoteConfig{api: api, remote: r}}
+}
+
+// remoteConfig is the configuration of a guest of another node: read
+// through the Proxmox API, which reaches every node of the cluster, and
+// changed by the agent of the guest's node. pvesh is not run for it: to
+// reach another node pvesh goes through ssh as root, whose keys the
+// daemon's unit keeps out of its reach.
 type remoteConfig struct {
-	host   hostConfig
+	api    GuestReader
 	remote Remote
 }
 
 func (c remoteConfig) read(ctx context.Context, g model.Guest) (map[string]string, string, error) {
-	return c.host.read(ctx, g)
+	cfg, err := c.api.NextConfig(ctx, g.Node, g.Ref)
+	if err != nil {
+		return nil, "", err
+	}
+	return cfg.Values, cfg.Digest, nil
 }
 
 func (c remoteConfig) set(ctx context.Context, g model.Guest, key, value, digest string) error {
@@ -68,30 +82,11 @@ func (c remoteConfig) remove(ctx context.Context, g model.Guest, key, digest str
 	return c.remote.Write(ctx, g.Node, agentproto.PVEWrite{Guest: g.Ref, NIC: index, Remove: true, Digest: digest})
 }
 
-// pending reads the pending changes of a VM of another node through the API
-// of the cluster: each key with a value waiting for a restart, or a deletion
-// that waits.
+// pending reads the pending changes of a VM of another node through the
+// API: each key with a value waiting for a restart, or a deletion that
+// waits.
 func (c remoteConfig) pending(ctx context.Context, g model.Guest) ([]string, error) {
-	path := fmt.Sprintf("/nodes/%s/qemu/%d/pending", g.Node, g.Ref.VMID)
-	out, err := c.host.run.Run(ctx, "pvesh", "get", path, "--output-format", "json")
-	if err != nil {
-		return nil, err
-	}
-	var entries []struct {
-		Key     string          `json:"key"`
-		Pending json.RawMessage `json:"pending"`
-		Delete  json.RawMessage `json:"delete"`
-	}
-	if err := json.Unmarshal([]byte(out), &entries); err != nil {
-		return nil, fmt.Errorf("reading the pending changes: %w", err)
-	}
-	var keys []string
-	for _, e := range entries {
-		if len(e.Pending) > 0 || len(e.Delete) > 0 {
-			keys = append(keys, e.Key)
-		}
-	}
-	return keys, nil
+	return c.api.PendingChanges(ctx, g.Node, g.Ref.VMID)
 }
 
 // cardWrite is the typed request that sets key of g to value, a card as pco

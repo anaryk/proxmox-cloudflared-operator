@@ -527,7 +527,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the engine: %w", err)
 	}
-	host.SetRemote(eng.PVEWriter())
+	host.SetRemote(eng.PVEWriter(), client)
 	return eng, client, filter, conns, nil
 }
 

@@ -448,7 +448,7 @@ The state of each attachment, in `pco managed status` and in the check `managed 
 | `needs-grant` | In the appliance: the token may not change the guest; the `pveum` line is shown. |
 | `detaching` | The consent is gone and the grace runs; the time and the reason are shown. |
 | `detach-pending` | The grace ended and the card is removed once the guest's configuration no longer lists it, after a restart of a virtual machine without hotplug. |
-| `migrated` | The guest is on another node now, with its card and its address; the managed network does not reach it there. |
+| `migrated` | The guest is on another node now, with its card and its address, and no pco agent of that node writes its card; the managed network does not reach it there. On a cluster a guest of a node with an agent is never `migrated`: its card is read through the Proxmox API and written by that node's agent, and a read or write that fails leaves it `attached (unverified)` with the error, tried again each cycle. |
 
 ### Detaching
 

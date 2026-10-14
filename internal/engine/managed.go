@@ -259,8 +259,10 @@ type managedStep struct {
 	// unverified says, by owner, why the card of an attachment could not
 	// be added or checked this cycle.
 	unverified map[string]string
-	// migrated are the owners whose attachment is on another node.
+	// migrated are the owners whose attachment is on another node that has
+	// no agent to write its card; agents are the nodes that have one.
 	migrated map[string]bool
+	agents   map[string]bool
 	// adds counts the cards this cycle tried to add, done those it added or
 	// sent, and deferred the guests it left to the next cycle for
 	// attachesPerCycle.
@@ -582,6 +584,7 @@ func (s *managedStep) input() managednet.DecideInput {
 	}
 	if !appliance && c.clustered() {
 		in.Agents = c.e.writes.agentNodes()
+		s.agents = in.Agents
 	}
 	var self model.GuestRef
 	if appliance && c.install.Appliance != nil {
@@ -795,7 +798,14 @@ func (s *managedStep) migratedNow(owner string) bool {
 		return false
 	}
 	g, ok := s.c.snap.Guest(ref)
-	return ok && g.Node != s.c.e.d.Node
+	return ok && s.away(g)
+}
+
+// away says that g runs on another node than this one, whose card no agent
+// of its node writes: on a cluster the agent of the guest's node writes it,
+// and the guest has not left the managed network.
+func (s *managedStep) away(g model.Guest) bool {
+	return g.Node != s.c.e.d.Node && !s.agents[g.Node]
 }
 
 // wait lists a guest that would be attached, with why it is not.
@@ -1296,7 +1306,7 @@ func (s *managedStep) attachmentView(att store.Attachment) AttachmentView {
 		v.State, v.Detail = AttachmentDetachPending, att.DetachWhy+"; the card is removed once the configuration no longer lists it"
 	case att.DetachAt != nil:
 		v.State, v.Detail = AttachmentDetaching, fmt.Sprintf("goes at %s: %s", att.DetachAt.Format(time.RFC3339), att.DetachWhy)
-	case listed && g.Node != c.e.d.Node:
+	case listed && s.away(g):
 		v.State, v.Detail = AttachmentMigrated, "on node "+g.Node
 		s.migrated[att.Owner] = true
 	case s.unverified[att.Owner] != "":
