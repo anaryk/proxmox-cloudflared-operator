@@ -158,7 +158,7 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 
 	require.Equal(t, []string{
 		"node pve3 was forgotten as compromised: every secret of the install is rotated, step by step",
-		"node pve3 was forgotten as compromised: the Cloudflare credentials were replaced",
+		"node pve3 was forgotten as compromised: the Cloudflare credentials were replaced; revoke the old API tokens at Cloudflare, which pco cannot do",
 		"node pve3 was forgotten as compromised: the Proxmox token has a new secret",
 		"the secret of tunnel pco-abc123 in account acc1 is rotated: every run token of it stops working",
 		"node pve3 was forgotten as compromised: every tunnel of the install has a new secret",

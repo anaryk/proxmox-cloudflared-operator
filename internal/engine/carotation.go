@@ -560,7 +560,7 @@ func (c *cycleRun) dropPreviousCA() (bool, string) {
 // rotationEvent tells of a step of the rotation done.
 func (c *cycleRun) rotationEvent(rec store.CARotation, step string) {
 	msgs := map[string]string{
-		stepCredentials: "the Cloudflare credentials were replaced",
+		stepCredentials: "the Cloudflare credentials were replaced; revoke the old API tokens at Cloudflare, which pco cannot do",
 		stepProxmox:     "the Proxmox token has a new secret",
 		stepTunnels:     "every tunnel of the install has a new secret",
 		stepRollout:     "every connector runs with the new secrets",
