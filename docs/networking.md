@@ -752,7 +752,7 @@ the consents.
   for it; the prefix must not overlap a route of the node unless `--overlap-ok`. An answer is
   read only within its bounds, and only from the node it was asked of, and what an agent says
   can only take a leg away: it never makes a bridge, a scope or an address the controller would
-  refuse. A node whose agent does not answer within 20 seconds, cannot probe, or has no such
+  refuse. A node whose agent does not answer within 10 seconds, cannot probe, or has no such
   bridge gets no leg; `pco network attach` shows it and attaches the others, and an attach that
   later names the node with `--leg` adds its leg to the network. The managed network is set up
   the same way: `pco network managed enable` gives every node whose agent finds `pconet` there

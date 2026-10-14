@@ -1247,12 +1247,18 @@ interfaces of its node and who answered for the address
 ([On a cluster](networking.md#on-a-cluster)). The controller reads an answer only from the node
 it asked, in a status of the epoch it asked under, and only within its bounds: 512 interfaces of 32 addresses each, 64 MACs that
 answered, 128 KiB in all. An answer over them, one it cannot read, an error, or no answer within
-20 seconds makes no leg on that node. What an answer says can only take a leg away: a bridge is
+10 seconds makes no leg on that node, and the answers are judged within 10 seconds of the probe
+or the attach is refused, to be tried again. What an answer says can only take a leg away: a bridge is
 one to attach to only when Proxmox has it configured on that node, or it is a vnet, whatever the
 agent lists; the scope `cluster` stands on the configuration of each node and the type of the
 SDN zone alone; the node's own addresses and routes the agent lists add refusals. A lying agent
 can keep its own node from a leg, or have it given a leg on a bridge of its own node that is
-there; it cannot give another node a leg or widen what the network reaches. Every attach and
+there; it cannot give another node a leg or widen what the network reaches. What only the agent
+knows it can hide: the physical ports of a vnet or of a bridge Proxmox does not list, an address
+of its node on the bridge, its node's own addresses and routes, and who answered for the leg's
+address. A compromised agent can so have its own node's leg put where a check would have refused
+it, with an address in use or over a route of that node, on that node alone; root of a node is
+root of the cluster anyway ([What a compromised part can do](#what-a-compromised-part-can-do)). Every attach and
 every enable asks afresh, so an answer from before a bridge changed is never used again, and a
 node that gets no leg stays without one, with a problem line for the managed network, until an
 attach or an enable that asks it again. A reader of the web interface gets the legs without
