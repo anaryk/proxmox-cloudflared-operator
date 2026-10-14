@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -50,15 +51,16 @@ func TestAnAgentsReportMovesThePoolOnlyAsFarAsItIsTaken(t *testing.T) {
 
 	t.Run("an address far past the pool", func(t *testing.T) {
 		w := threeNodes(t)
+		w.mappings(t, 4)
 		w.acts["pve2"].edit = func(st *agentproto.Status) {
-			st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.255.254"), netip.MustParseAddr("198.18.1.3")}
+			st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.255.254"), netip.MustParseAddr("198.18.1.5")}
 		}
 
 		st := w.tick(time.Second)
 
-		require.Equal(t, netip.MustParseAddr("198.18.1.4"), poolNext(t, w), "the near one is taken, the far one not")
+		require.Equal(t, netip.MustParseAddr("198.18.1.6"), poolNext(t, w), "the near one is taken, the far one not")
 		require.Contains(t, st.Problems, "node pve2 reports that its gateway maps 198.18.255.254, not taken from it: "+
-			"more than 1024 past 198.18.1.0, the next address of the pool")
+			"an agent's word moves the pool at most 4 past 198.18.1.4, as many addresses as the store has mappings")
 		require.False(t, hasProblem(st, held), st.Problems)
 	})
 
@@ -123,6 +125,47 @@ func TestARefusedReportHoldsNoAllocation(t *testing.T) {
 	require.False(t, hasProblem(st, held), st.Problems)
 }
 
+// The pool moves at any time for an address the controller can vouch for, one
+// a configuration verified at Cloudflare sends a connector to; on an agent's
+// word alone it moves once in an epoch, when every node has reported, and no
+// further than the store has mappings. However far it moves, it moves at most
+// maxCatchUp in an epoch; what is past that waits, and nothing is allocated.
+func TestThePoolMovesOnAnAgentsWordOncePerEpoch(t *testing.T) {
+	t.Run("once", func(t *testing.T) {
+		w := threeNodes(t)
+		w.mappings(t, 2)
+		w.tick(time.Second)
+		w.acts["pve2"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.3")} }
+
+		st := w.tick(time.Second)
+
+		require.Equal(t, netip.MustParseAddr("198.18.1.2"), poolNext(t, w))
+		require.Contains(t, st.Problems, "node pve2 reports that its gateway maps 198.18.1.3, not taken from it: "+
+			"the pool moved on an agent's word once in this epoch already, and neither the store nor a configuration verified at Cloudflare has it")
+		require.False(t, hasProblem(st, held), st.Problems)
+	})
+
+	t.Run("a configuration verified at Cloudflare at any time", func(t *testing.T) {
+		w := threeNodes(t)
+		w.tick(time.Second)
+		w.eng.verified[tunnelRef{testAccount, tunnelName}] = []egress.Target{{Addr: netip.MustParseAddr("198.18.1.9"), Port: 8080}}
+
+		w.tick(time.Second)
+
+		require.Equal(t, netip.MustParseAddr("198.18.1.10"), poolNext(t, w))
+	})
+
+	t.Run("at most maxCatchUp in an epoch", func(t *testing.T) {
+		w := threeNodes(t)
+		w.eng.verified[tunnelRef{testAccount, tunnelName}] = []egress.Target{{Addr: netip.MustParseAddr("198.18.9.0"), Port: 8080}}
+
+		st := w.tick(time.Second)
+
+		require.Equal(t, netip.MustParseAddr("198.18.5.0"), poolNext(t, w), "1024 past 198.18.1.0")
+		require.Contains(t, st.Problems, held+"the pool of service addresses would move on more than 1024 in this epoch, to 198.18.9.1")
+	})
+}
+
 // A controller that takes over allocates nothing until every node the
 // registry serves has reported: a silent node may map an address the store
 // lost. Nor while the pool cannot be moved past what the nodes hold.
@@ -159,7 +202,7 @@ func TestNothingIsAllocatedUntilTheStoreIsCheckedAgainstEveryNode(t *testing.T) 
 
 	t.Run("a pool that cannot be moved", func(t *testing.T) {
 		w := threeNodes(t)
-		w.acts["pve2"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.5")} }
+		w.eng.verified[tunnelRef{testAccount, tunnelName}] = []egress.Target{{Addr: netip.MustParseAddr("198.18.1.5"), Port: 8080}}
 		meta := filepath.Join(w.paths.Cluster, "meta")
 		require.NoError(t, os.MkdirAll(meta, 0o700))
 		require.NoError(t, os.Chmod(meta, 0o500))

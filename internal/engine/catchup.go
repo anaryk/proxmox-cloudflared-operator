@@ -19,11 +19,6 @@ import (
 // card: the store is not known to hold all that the nodes hold.
 const problemCatchUp = "no service address and no managed card is made until the store is checked against every node: %s"
 
-// problemReportRefused names what a node's report says its gateway maps that
-// is not taken from it. It holds nothing: a report that is not taken is
-// proof that the report is wrong, not that the address is in use.
-const problemReportRefused = "node %s reports that its gateway maps %s, not taken from it: %s"
-
 // catchUp makes sure that a store that lags behind what the nodes hold gives
 // nothing twice, before the cycle allocates anything: the pool of service
 // addresses moves on past every service address an agent's gateway maps or
@@ -40,15 +35,17 @@ func (c *cycleRun) catchUp() {
 	if c.e.saidIn == nil {
 		c.e.saidIn = map[string]agentproto.Epoch{}
 	}
-	why := c.raisePool()
-	if why == "" && c.e.caughtUp != c.epoch() {
-		switch silent := c.silentNode(); {
+	m := c.e.caught.of(c.epoch())
+	silent := c.silentNode()
+	why := c.raisePool(m, silent == "")
+	if why == "" && !m.caughtUp {
+		switch {
 		case !c.keepCardLeases():
 			why = "the leases are not yet checked against the cards of the guests"
 		case silent != "":
 			why = fmt.Sprintf("node %s has not reported to this controller yet", silent)
 		default:
-			c.e.caughtUp = c.epoch()
+			m.caughtUp = true
 		}
 	}
 	if why != "" {
@@ -74,130 +71,6 @@ func (c *cycleRun) silentNode() string {
 		}
 	}
 	return ""
-}
-
-// maxCatchUp is how far past the next address of the pool an address an
-// agent reports may move it: an agent's word can hold back an address the
-// store lost, and never give the pool away.
-const maxCatchUp = 1024
-
-// maxReported is the most service addresses a node's report may name to be
-// taken at all, and maxLeasesAgain the most leases catchUp saves again in a
-// cycle: what a report or the inventory holds never grows the work of a
-// cycle, or the store, without bound. The rest waits for the next cycle.
-const (
-	maxReported    = agentproto.MaxServiceAddrs
-	maxLeasesAgain = 64
-)
-
-// raisePool moves the pool of service addresses on past the highest service
-// address the gateway of an admitted node maps or a verified configuration
-// names. It says why nothing may be allocated now: the pool could not be
-// read or moved. What a report names at or past the pool's next that is not
-// taken from it is a problem line, and said once as an event.
-func (c *cycleRun) raisePool() string {
-	next, _, _, err := c.e.d.Store.ServicePool()
-	if err != nil {
-		c.storeHold = true
-		return fmt.Sprintf("reading the pool of service addresses: %v", err)
-	}
-	held, refused := c.reportedServices(next)
-	for t := range c.e.sentTargets() {
-		held[t.Addr] = true
-	}
-	want, highest := next, netip.Addr{}
-	for addr := range held {
-		if addr = addr.Unmap(); gateway.ServicePrefix.Contains(addr) && !addr.Less(want) {
-			want, highest = addr.Next(), addr
-		}
-	}
-	if want != next {
-		if err := c.e.d.Store.SaveServicePool(want); err != nil {
-			c.storeHold = true
-			return fmt.Sprintf("moving the pool of service addresses on to %s: %v", want, err)
-		}
-		c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindNetwork,
-			Message: fmt.Sprintf("the pool of service addresses moved on from %s to %s: an agent's gateway or a configuration verified at Cloudflare holds %s",
-				next, want, highest)})
-	}
-	for _, r := range refused {
-		if r.addr.IsValid() && r.addr.Less(want) {
-			continue
-		}
-		// The line is an event when it appears; it holds nothing.
-		c.problem(problemReportRefused, r.node, r.what(), r.why)
-	}
-	return ""
-}
-
-// refusedReport is what a report names that is not taken from it: an
-// address, or every address of a report that names too many.
-type refusedReport struct {
-	node string
-	addr netip.Addr // zero for the whole report
-	n    int
-	why  string
-}
-
-func (r refusedReport) what() string {
-	if r.addr.IsValid() {
-		return r.addr.String()
-	}
-	return fmt.Sprintf("%d service addresses", r.n)
-}
-
-// reportedServices are the service addresses the agents of the admitted
-// nodes report their gateways map, each from the report of the node its
-// certificate names, and what is not taken: the addresses of a node that is
-// not Active or Draining or of a report that names another node, those past
-// maxCatchUp beyond next, and every one of a report that names more than
-// maxReported. What is not taken moves the pool nowhere and holds nothing.
-// A report that is not fresh is not gone by at all.
-func (c *cycleRun) reportedServices(next netip.Addr) (map[netip.Addr]bool, []refusedReport) {
-	out := map[netip.Addr]bool{}
-	var refused []refusedReport
-	limit := next
-	for range maxCatchUp {
-		limit = limit.Next()
-	}
-	reports := c.reportsNow()
-	for _, name := range slices.Sorted(maps.Keys(reports)) {
-		rep := reports[name]
-		if !c.fresh(rep) {
-			continue
-		}
-		n, known := c.nodes[name]
-		admitted := known && (n.Node.State == store.NodeActive || n.Node.State == store.NodeDraining)
-		if count := len(rep.Status.ServiceAddrs); count > maxReported {
-			refused = append(refused, refusedReport{node: name, n: count, why: fmt.Sprintf("more than %d", maxReported)})
-			continue
-		}
-		for _, addr := range rep.Status.ServiceAddrs {
-			addr = addr.Unmap()
-			if !gateway.ServicePrefix.Contains(addr) {
-				continue
-			}
-			var why string
-			switch {
-			case !admitted:
-				why = "the node is not admitted"
-			case rep.Status.Node != name:
-				why = fmt.Sprintf("its report names node %s", rep.Status.Node)
-			case limit.Less(addr):
-				why = fmt.Sprintf("more than %d past %s, the next address of the pool", maxCatchUp, next)
-			default:
-				out[addr] = true
-				continue
-			}
-			refused = append(refused, refusedReport{node: name, addr: addr, why: why})
-		}
-	}
-	return out, refused
-}
-
-// fresh says that rep is recent enough to go by.
-func (c *cycleRun) fresh(rep NodeReport) bool {
-	return rep.Fresh && c.now.Sub(rep.ReceivedAt) < silentAfter
 }
 
 // keepCardLeases gives every managed card of a guest whose lease is missing

@@ -263,11 +263,11 @@ type Engine struct {
 	// earlier release, whose engine kept it.
 	egress   []egress.Target
 	verified map[tunnelRef][]egress.Target
-	// caughtUp is the epoch whose store catchUp found to give nothing twice,
-	// and saidIn, by what it said it of, the epoch catchUp last said
-	// something in, so that it says it once per epoch.
-	caughtUp agentproto.Epoch
-	saidIn   map[string]agentproto.Epoch
+	// caught is what catchUp keeps of the epoch it last ran in, and saidIn,
+	// by what it said it of, the epoch catchUp last said something in, so
+	// that it says it once per epoch.
+	caught catchUpMemory
+	saidIn map[string]agentproto.Epoch
 	// writes are the writes of guests' cards handed the agents of other
 	// nodes.
 	writes pveWrites

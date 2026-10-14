@@ -21,6 +21,7 @@ import (
 func TestAStoreBehindAnAgentsGatewayNeverGivesItsAddressAgain(t *testing.T) {
 	mapped := netip.MustParseAddr("198.18.1.5")
 	w := threeNodes(t)
+	w.mappings(t, 5)
 	w.acts["pve2"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{mapped} }
 
 	w.tick(time.Second)
@@ -28,7 +29,7 @@ func TestAStoreBehindAnAgentsGatewayNeverGivesItsAddressAgain(t *testing.T) {
 	next, _, _, err := w.store.ServicePool()
 	require.NoError(t, err)
 	require.Equal(t, mapped.Next(), next)
-	require.Contains(t, w.eventMessages(), "the pool of service addresses moved on from 198.18.1.0 to 198.18.1.6: "+
+	require.Contains(t, w.eventMessages(), "the pool of service addresses moved on from 198.18.1.5 to 198.18.1.6: "+
 		"an agent's gateway or a configuration verified at Cloudflare holds 198.18.1.5")
 
 	t.Run("an address of a configuration verified at Cloudflare counts too", func(t *testing.T) {
@@ -81,6 +82,17 @@ func TestATakeoverGivesAManagedCardItsMissingLease(t *testing.T) {
 	require.Contains(t, w.eventMessages(), "the lease of 10.203.118.30 for net2 of qemu/105 was missing from the store and is saved again")
 	require.Contains(t, w.eventMessages(), "the lease of 10.203.118.31 of qemu/106 has no card in any guest; "+
 		"its address is kept and not given again until the lease is released")
+}
+
+// mappings gives the store n mappings of service addresses, from the start
+// of the pool, which moves past them.
+func (w *world) mappings(t *testing.T, n int) {
+	t.Helper()
+	for i := range n {
+		addr := netip.AddrFrom4([4]byte{10, 9, 0, byte(10 + i)})
+		_, err := w.store.AllocateServiceAddr("vmbr9", addr, store.ServiceOwner{Owner: "manual/m" + addr.String()}, t0)
+		require.NoError(t, err)
+	}
 }
 
 // eventMessages are the messages of the engine's events.
