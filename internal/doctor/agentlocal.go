@@ -100,16 +100,24 @@ func checkAgentCert(view agentproto.AgentView, now time.Time) Finding {
 	case end.IsZero():
 		return ok(check, "the agent of this node runs in the controller's process")
 	case !end.After(now):
-		return fail(check, "the certificate of the agent ended on "+end.UTC().Format(time.DateOnly), renewFix(view))
+		return fail(check, "the certificate of the agent ended on "+end.UTC().Format(time.DateOnly), renewFix(view, true))
 	case end.Sub(now) < leafWarn:
-		return warn(check, "the certificate of the agent ends on "+end.UTC().Format(time.DateOnly)+", in "+days(end.Sub(now)), renewFix(view))
+		return warn(check, "the certificate of the agent ends on "+end.UTC().Format(time.DateOnly)+", in "+days(end.Sub(now)), renewFix(view, false))
 	}
 	return ok(check, "the certificate of the agent ends on "+end.UTC().Format(time.DateOnly))
 }
 
-func renewFix(view agentproto.AgentView) string {
-	if view.Kind == pki.KindAppliance {
-		return "pco node admit " + view.Node + " --renew on the controller"
+// renewFix says how the certificate of the agent is had again. The
+// controller takes no ended certificate of an appliance agent, not even to
+// renew it: enrolling it again is the only way back.
+func renewFix(view agentproto.AgentView, ended bool) string {
+	switch {
+	case view.Kind == pki.KindAppliance && ended:
+		return "enrol it again, the only way back: pco node forget " + view.Node + " on the controller, then on its node " +
+			"pco appliance uninstall --vmid <its vmid> and pco appliance install --kind agent with a new join token"
+	case view.Kind == pki.KindAppliance:
+		return "the agent renews its own over the channel while it is valid: journalctl -u pco in its container says why it did not; " +
+			"once it ended, the agent is enrolled again with a new join token"
 	}
 	return "systemctl restart pco: a host node issues its own at the start of the daemon"
 }

@@ -361,7 +361,8 @@ func checkCertificates(nodes []engine.NodeView, src ClusterSource, now time.Time
 		return warn(check, "the CA of the install could not be read: "+err.Error(), "pco status; journalctl -u pco")
 	case len(ending) > 0:
 		return warn(check, "certificates of nodes end within 30 days: "+strings.Join(ending, ", "),
-			"a node renews its own after 60 days; journalctl -u pco on it says why it did not; an appliance agent: pco node admit <node> --renew")
+			"a node renews its own after 60 days: journalctl -u pco on it says why it did not; an appliance agent whose certificate "+
+				"ended is enrolled again with a new join token (pco node forget <node>, then pco appliance uninstall and install on its node)")
 	case !ca.IsZero() && ca.Sub(now) < caWarn:
 		return warn(check, "the CA of the install ends on "+ca.UTC().Format(time.DateOnly)+", in less than a year",
 			"a new CA comes only with the rotation of pco node forget --compromised (docs/security.md, between the nodes of a cluster); plan one before then")

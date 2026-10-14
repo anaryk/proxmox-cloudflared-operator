@@ -182,7 +182,9 @@ func TestTheChecksOfAClusterFindFaults(t *testing.T) {
 		{"another build", func(st *engine.State, _ *fakeCluster) { st.Nodes[2].Build = "0.2.0" },
 			"node versions", LevelWarn, "the nodes run different builds: 0.2.0 on pve3; 0.3.0 on pve1, pve2", "upgrade the nodes that run an older build"},
 		{"a certificate about to end", func(st *engine.State, _ *fakeCluster) { st.Nodes[1].CertExpires = now.Add(10 * 24 * time.Hour) },
-			"certificates", LevelWarn, "certificates of nodes end within 30 days: pve2's on 2026-10-11", ""},
+			"certificates", LevelWarn, "certificates of nodes end within 30 days: pve2's on 2026-10-11",
+			"a node renews its own after 60 days: journalctl -u pco on it says why it did not; an appliance agent whose certificate " +
+				"ended is enrolled again with a new join token (pco node forget <node>, then pco appliance uninstall and install on its node)"},
 		{"the CA within a year", func(_ *engine.State, c *fakeCluster) { c.ca = now.AddDate(0, 6, 0) },
 			"certificates", LevelWarn, "the CA of the install ends on 2027-04-01, in less than a year", ""},
 		{"a rotation under way", func(st *engine.State, _ *fakeCluster) {
@@ -380,7 +382,13 @@ func TestTheAgentOfANodeFindsFaults(t *testing.T) {
 			"systemctl restart pco: a host node issues its own at the start of the daemon"},
 		{"an ended certificate of an appliance", func(_ *engine.State, env *clusterEnv) {
 			env.agent.Kind, env.agent.CertExpires = pki.KindAppliance, now.Add(-time.Hour)
-		}, "agent certificate", LevelFail, "the certificate of the agent ended on 2026-10-01", "pco node admit pve2 --renew on the controller"},
+		}, "agent certificate", LevelFail, "the certificate of the agent ended on 2026-10-01",
+			"enrol it again, the only way back: pco node forget pve2 on the controller, then on its node pco appliance uninstall --vmid <its vmid> and pco appliance install --kind agent with a new join token"},
+		{"a certificate of an appliance about to end", func(_ *engine.State, env *clusterEnv) {
+			env.agent.Kind, env.agent.CertExpires = pki.KindAppliance, now.Add(5*24*time.Hour)
+		}, "agent certificate", LevelWarn, "the certificate of the agent ends on 2026-10-06, in 5 days",
+			"the agent renews its own over the channel while it is valid: journalctl -u pco in its container says why it did not; " +
+				"once it ended, the agent is enrolled again with a new join token"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			st, env := healthyCluster()
