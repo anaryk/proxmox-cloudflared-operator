@@ -54,6 +54,9 @@ type Binding struct {
 	// a binding on a leg: what the egress set holds for it, and the address
 	// the connector dials. Zero for a binding never published through a leg.
 	Service netip.Addr `json:"service,omitzero"`
+	// AttestedBy is the node whose attestation the proof made at VerifiedAt
+	// stood on, for a guest of another node proven at port; empty otherwise.
+	AttestedBy string `json:"attestedBy,omitempty"`
 }
 
 // proof is what proved the identity of a candidate: its level, where the

@@ -105,8 +105,7 @@ func TestEachVerificationIsBoundedAsAResolutionIs(t *testing.T) {
 
 // What this node cannot tell of the attesting node's status is not made up:
 // without a heartbeat that names it, or with the attestation missing, the
-// resolver gets no times to go by, and times that are not of the last
-// heartbeat are said to be recalled; the address stands at observed.
+// resolver gets no times to go by, and the address stands at observed.
 func TestWhatTheAttestationLacksIsNotMadeUp(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -122,12 +121,11 @@ func TestWhatTheAttestationLacksIsNotMadeUp(t *testing.T) {
 		}, func(t *testing.T, req resolve.VerifyRequest) {
 			require.True(t, req.Attestation.HeardAt.IsZero())
 		}},
-		{"a heartbeat of a lower epoch, which is only recalled", func(e *env, s *agentproto.Snapshot) {
+		{"a heartbeat of a lower epoch", func(e *env, s *agentproto.Snapshot) {
 			s.Epoch.Generation = 2
 			e.heard(time.Second)
 		}, func(t *testing.T, req resolve.VerifyRequest) {
-			require.True(t, req.Attestation.Recalled)
-			require.Equal(t, t0, req.Attestation.HeardAt)
+			require.True(t, req.Attestation.HeardAt.IsZero())
 		}},
 		{"no coverage", func(e *env, s *agentproto.Snapshot) {
 			e.heard(time.Second)

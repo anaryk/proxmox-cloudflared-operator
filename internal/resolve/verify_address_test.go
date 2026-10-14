@@ -83,6 +83,7 @@ func TestVerifyAddressOfAGuestOfAnotherNode(t *testing.T) {
 
 		requireServedAt(t, res.Result, "10.20.0.10", t0, LevelPort)
 		require.True(t, res.Attested)
+		require.Equal(t, "pve2", res.Binding.AttestedBy, "the node whose attestation it stands on")
 		require.Equal(t, "vmbr0", res.Binding.Bridge)
 		require.Equal(t, "eno1", res.Binding.Port)
 		require.Equal(t, []probeCall{{op: "kinds", iface: "vmbr0"}}, p.ops("kinds"))
@@ -304,6 +305,16 @@ func TestVerifyAddressHoldsAnAttestationOverASilence(t *testing.T) {
 			change: func(s *scenario, _ *VerifyRequest) { s.prober.fdb[fdbKey("vmbr0", 0, mac0)] = []string{"eno2"} }},
 		{name: "no coverage", after: time.Minute,
 			change: func(_ *scenario, r *VerifyRequest) { r.Covered = false }},
+		{name: "at the ceiling of a hold-over", after: MaxHoldOver - time.Second, attested: true, stale: true},
+		{name: "past the ceiling of a hold-over", after: MaxHoldOver},
+		{name: "a binding proven longer ago than the ceiling", after: time.Minute,
+			change: func(s *scenario, r *VerifyRequest) { r.Prev.VerifiedAt = s.clock.t.Add(-MaxHoldOver - time.Second) }},
+		{name: "a binding that stood on another node's attestation", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Prev.AttestedBy = "pve3" }},
+		{name: "a binding that stood on no attestation", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Prev.AttestedBy = "" }},
+		{name: "a binding of another guest", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Prev.Guest = "qemu/999" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -325,6 +336,9 @@ func TestVerifyAddressHoldsAnAttestationOverASilence(t *testing.T) {
 			require.Equal(t, map[bool]Level{true: LevelPort, false: LevelObserved}[tt.attested], res.Level)
 			if tt.attested {
 				require.Equal(t, s.clock.t, res.Binding.VerifiedAt, "proven anew on the wire")
+				require.Equal(t, "pve2", res.Binding.AttestedBy)
+			} else {
+				require.Empty(t, res.Binding.AttestedBy, "a binding below port stood on no attestation")
 			}
 		})
 	}

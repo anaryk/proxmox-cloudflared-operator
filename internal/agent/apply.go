@@ -153,6 +153,7 @@ func (p *pass) problem(format string, args ...any) {
 // while it resolves changes nothing after that, as a cycle of the engine.
 func (p *pass) run() {
 	defer p.a.publish(p)
+	p.a.listNodes(p.s.Nodes)
 	p.expect()
 	p.takeOutBlocked()
 	if !p.load() {

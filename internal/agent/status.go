@@ -250,12 +250,10 @@ func (a *Agent) Heartbeat(h agentproto.Heartbeat) {
 	a.heardMu.Lock()
 	defer a.heardMu.Unlock()
 	a.hb, a.hbAt, a.heardAt = &h, now, now
-	if a.named == nil {
-		a.named = map[string]namedIn{}
+	if _, same := h.Epoch.Order(following); same {
+		a.noteNamed(h, now)
 	}
-	for node, fresh := range h.Nodes {
-		a.named[node] = namedIn{statusAge: fresh.StatusAge, at: now}
-	}
+	a.pruneNamed(now)
 }
 
 // HeardLive says whether, at now, a heartbeat less than within old came from

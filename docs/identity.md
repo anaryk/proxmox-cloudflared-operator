@@ -213,9 +213,12 @@ What this leaves open, by design:
   Anything else its checks see, a second MAC, the MAC on a port of its own guests or on another
   port, no answer, withdraws the address at once, and a silence never raises an address to
   `port (attested)` or lets one in. After five minutes without a word the replica shows the
-  level as `observed` with `attestation stale` and still serves the address; a controller that
-  answers again judges it afresh. A restarted agent has heard nothing yet and holds nothing
-  over. A MAC cloned onto a third node meanwhile is blocked by the guest's node and by the node
+  level as `observed` with `attestation stale` and still serves the address; after 15 minutes
+  without a word about the guest's node it withdraws it. A controller that answers again judges
+  it afresh, and one that answers and leaves the guest's node out of its heartbeat is no
+  silence: the address is withdrawn at once. An agent restarted during the silence has heard
+  nothing yet and holds nothing over: it withdraws such addresses until a controller answers.
+  A MAC cloned onto a third node meanwhile is blocked by the guest's node and by the node
   it was cloned onto, through their own watches, and not by the other replicas, until a
   controller is back. On a host that takes a cluster without quorum for longer than a takeover.
 

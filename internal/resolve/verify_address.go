@@ -15,12 +15,19 @@ import (
 
 // An attestation stands while the attesting node's status was at most
 // maxStatusAge old at the controller when it sent the heartbeat that carries
-// it, and that heartbeat is at most maxHeartbeatAge old here. While no
+// it, and that heartbeat is at most MaxHeartbeatAge old here. While no
 // controller has a newer word, it goes on standing for an address that
 // already stood on it (see crossCheck.holdsOver).
 const (
 	maxStatusAge    = 30 * time.Second
-	maxHeartbeatAge = 15 * time.Second
+	MaxHeartbeatAge = 15 * time.Second
+	// MaxHoldOver is the longest an attestation is held over without a
+	// word of a controller about the attesting node, counted from the last
+	// heartbeat that named it: past it the address is withdrawn. It covers
+	// a takeover with room to spare, a node lost (150 s) and the new
+	// controller's wait for the agents (60 s), and stops a cluster without
+	// a controller for good from serving on a word that old.
+	MaxHoldOver = 15 * time.Minute
 )
 
 // Attestation is what the node that hosts a guest says its own forwarding
@@ -123,7 +130,7 @@ func (r *Resolver) verifyAddress(ctx context.Context, route model.Route, req Ver
 	}
 	a := newAttempt(r, route, guest, req.Snap, req.Deny, prev, now, []Candidate{c})
 	a.required = req.Required
-	a.cross = &crossCheck{attestation: req.Attestation, covered: req.Covered, expect: normalizeMACs(req.MACs), stood: stoodAtPort(prev)}
+	a.cross = &crossCheck{attestation: req.Attestation, covered: req.Covered, expect: normalizeMACs(req.MACs), stood: stoodAtPort(prev, req.Attestation, now)}
 	switch {
 	case !guest.Running:
 		return a.guestUnknown(), false, false
@@ -133,14 +140,29 @@ func (r *Resolver) verifyAddress(ctx context.Context, route model.Route, req Ver
 	res = a.resolve(ctx)
 	attested := res.Level == LevelPort && !a.checksFDB()
 	stale := attested && a.cross.heldOver && now.Sub(req.Attestation.HeardAt) > r.settings.MaxProofAge
+	if res.Binding != nil {
+		b := res.Binding.clone()
+		b.AttestedBy = ""
+		if attested {
+			b.AttestedBy = req.Attestation.Node
+		}
+		res.Binding = b
+	}
 	return res, attested, stale
 }
 
-// stoodAtPort returns b when it was served at port and placed its MACs on
-// a bridge: the address it binds stood on a proof an attestation may go on
-// holding up.
-func stoodAtPort(b *Binding) *Binding {
-	if b == nil || b.Withdrawn || b.Level != LevelPort || b.Bridge == "" || len(b.Ports) == 0 {
+// stoodAtPort returns b when the address it binds was served at port on the
+// attestation of the node at names, made at most MaxHoldOver before now,
+// with its MACs placed on a bridge: such a proof an attestation that no
+// controller refreshed may go on holding up. b was made for the route and
+// its guest, as the caller checked.
+func stoodAtPort(b *Binding, at *Attestation, now time.Time) *Binding {
+	switch {
+	case b == nil || at == nil || b.Withdrawn || b.Level != LevelPort || b.Bridge == "" || len(b.Ports) == 0:
+		return nil
+	case b.AttestedBy == "" || b.AttestedBy != at.Node:
+		return nil
+	case now.Before(b.VerifiedAt) || now.Sub(b.VerifiedAt) > MaxHoldOver:
 		return nil
 	}
 	return b
@@ -241,7 +263,7 @@ func (c *crossCheck) attests(s Settings, now time.Time, guest model.Guest, nic m
 // nothing about its age, and a recalled one is not the last.
 func (at *Attestation) fresh(now time.Time) bool {
 	heard := now.Sub(at.HeardAt)
-	return !at.Recalled && at.heard(now) && heard <= maxHeartbeatAge
+	return !at.Recalled && at.heard(now) && heard <= MaxHeartbeatAge
 }
 
 // heard reports whether a heartbeat received by now said that the attesting
@@ -259,8 +281,9 @@ func (at *Attestation) heard(now time.Time) bool {
 // it before: a silence keeps a level, it never raises one or admits an
 // address. What the attestation says is checked as when it is fresh, and the
 // wire must show what it showed (onUplink).
+// It holds over for at most MaxHoldOver after that heartbeat.
 func (c *crossCheck) holdsOver(now time.Time) bool {
-	return c.stood != nil && c.attestation.heard(now)
+	return c.stood != nil && c.attestation.heard(now) && now.Sub(c.attestation.HeardAt) <= MaxHoldOver
 }
 
 // placedAsStood reports whether the forwarding table placed every MAC where

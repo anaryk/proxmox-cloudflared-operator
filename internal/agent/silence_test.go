@@ -91,6 +91,16 @@ func (e *env) served() bool {
 	return slices.Equal(set, egressTargets("10.0.0.30:8080"))
 }
 
+// serve applies s with a heartbeat that says the other node reported 4 s
+// ago, heard again once the agent follows the epoch of s, as the next status
+// would be answered.
+func (e *env) serve(s agentproto.Snapshot) {
+	e.t.Helper()
+	e.heard(4 * time.Second)
+	e.apply(s)
+	e.heard(4 * time.Second)
+}
+
 func (e *env) reverify() agentproto.Status {
 	e.t.Helper()
 	st, err := e.agent.Reverify(e.t.Context())
@@ -128,8 +138,7 @@ func TestSilenceOfTheControllerWithdrawsNothingAttested(t *testing.T) {
 // heartbeat does not name that node, which is no word against it.
 func TestAHeartbeatThatDoesNotNameTheAttestingNodeYetWithdrawsNothing(t *testing.T) {
 	e, _, s := silenceEnv(t)
-	e.heard(4 * time.Second)
-	e.apply(s)
+	e.serve(s)
 	e.clock.advance(2 * time.Minute)
 	e.agent.Heartbeat(agentproto.Heartbeat{
 		Epoch: agentproto.Epoch{InstallID: testInstall, Generation: 2, Nonce: "n2"},
@@ -157,8 +166,7 @@ func TestWhatTheWireShowsDuringSilenceStillWithdraws(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, p, s := silenceEnv(t)
-			e.heard(4 * time.Second)
-			e.apply(s)
+			e.serve(s)
 			e.clock.advance(time.Minute)
 			e.reverify()
 			require.True(t, e.served(), "held through the silence so far")
@@ -212,8 +220,7 @@ func TestSilenceRaisesNoLevel(t *testing.T) {
 
 	t.Run("an attesting node whose status was stale when last heard", func(t *testing.T) {
 		e, _, s := silenceEnv(t)
-		e.heard(4 * time.Second)
-		e.apply(s)
+		e.serve(s)
 		e.clock.advance(5 * time.Second)
 		e.heard(31 * time.Second)
 		e.clock.advance(20 * time.Second)
@@ -226,8 +233,7 @@ func TestSilenceRaisesNoLevel(t *testing.T) {
 
 	t.Run("an agent that started again during the silence", func(t *testing.T) {
 		e, _, s := silenceEnv(t)
-		e.heard(4 * time.Second)
-		e.apply(s)
+		e.serve(s)
 		e.clock.advance(30 * time.Second)
 		e.agent = e.newAgent()
 
@@ -239,8 +245,7 @@ func TestSilenceRaisesNoLevel(t *testing.T) {
 
 	t.Run("an attestation of a node no heartbeat named", func(t *testing.T) {
 		e, _, s := silenceEnv(t)
-		e.heard(4 * time.Second)
-		e.apply(s)
+		e.serve(s)
 		e.clock.advance(30 * time.Second)
 		s.Targets[0].Guest.Node, s.Targets[0].HostingNode, s.Targets[0].Attestation.Node = "pve3", "pve3", "pve3"
 		s.Nodes = append(s.Nodes, agentproto.Node{Name: "pve3", Addr: netip.MustParseAddr("10.0.0.4"), Online: true})
@@ -258,8 +263,7 @@ func TestSilenceRaisesNoLevel(t *testing.T) {
 // check withdraws while no controller can refresh it.
 func TestALongSilenceShowsTheAttestationStaleAndWithdrawsNothing(t *testing.T) {
 	e, _, s := silenceEnv(t)
-	e.heard(4 * time.Second)
-	e.apply(s)
+	e.serve(s)
 
 	for range 60 {
 		e.clock.advance(10 * time.Second)
@@ -281,4 +285,91 @@ func TestALongSilenceShowsTheAttestationStaleAndWithdrawsNothing(t *testing.T) {
 		require.True(t, r.Attested)
 		require.Empty(t, r.Reason)
 	})
+}
+
+// A controller that answers and leaves the attesting node out of its
+// heartbeat says something: that node is gone from what it hears. That is
+// no silence, and nothing is held over.
+func TestALiveControllerThatLeavesTheNodeOutIsNoSilence(t *testing.T) {
+	e, _, s := silenceEnv(t)
+	e.serve(s)
+	e.clock.advance(5 * time.Second)
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch1, Nodes: map[string]agentproto.NodeFreshness{testNode: {WatchRunning: true}}})
+
+	st := e.reverify()
+
+	require.Equal(t, "observed", report(st, "www.example.com").Level)
+	require.False(t, e.served())
+
+	t.Run("and the node it left out is not recalled once it falls silent", func(t *testing.T) {
+		e.clock.advance(time.Minute)
+		e.reverify()
+		require.False(t, e.served())
+	})
+}
+
+// A takeover moves the agent to a newer epoch before the new controller
+// heard the attesting node: what the old one said of it is held over.
+func TestASnapshotOfTheControllerThatTookOverKeepsWhatWasHeldOver(t *testing.T) {
+	e, _, s := silenceEnv(t)
+	e.serve(s)
+	e.clock.advance(2 * time.Minute)
+	s.Epoch = agentproto.Epoch{InstallID: testInstall, Generation: 2, Nonce: "n2"}
+	s.Seq = 1
+
+	st := e.apply(s)
+
+	require.Equal(t, "port", report(st, "www.example.com").Level)
+	require.True(t, e.served())
+}
+
+// A hold-over has a ceiling: past it, without a word of a controller about
+// the attesting node, the address is withdrawn.
+func TestAHoldOverEndsAtItsCeiling(t *testing.T) {
+	e, _, s := silenceEnv(t)
+	e.serve(s)
+
+	for e.clock.now().Sub(t0) < resolve.MaxHoldOver-time.Minute {
+		e.clock.advance(time.Minute)
+		e.reverify()
+		require.True(t, e.served(), "at %s of silence", e.clock.now().Sub(t0))
+	}
+	e.clock.advance(2 * time.Minute)
+	st := e.reverify()
+
+	require.Equal(t, "observed", report(st, "www.example.com").Level)
+	require.False(t, e.served())
+}
+
+// What the agent keeps of heartbeats is of the epoch it follows and of the
+// nodes its desired state lists, and no older than a hold-over may be.
+func TestTheHeartbeatsKeptAreOfTheEpochFollowedAndTheNodesListed(t *testing.T) {
+	epoch2 := agentproto.Epoch{InstallID: testInstall, Generation: 2, Nonce: "n2"}
+	e, _, s := silenceEnv(t)
+	e.serve(s)
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch1, Nodes: map[string]agentproto.NodeFreshness{
+		testNode: {}, otherNode: {StatusAge: 4 * time.Second}, "pve9": {},
+	}})
+	e.clock.advance(10 * time.Second)
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch2, Nodes: map[string]agentproto.NodeFreshness{otherNode: {StatusAge: time.Second}}})
+	e.agent.Heartbeat(agentproto.Heartbeat{
+		Epoch: agentproto.Epoch{InstallID: "another", Generation: 3, Nonce: "n3"},
+		Nodes: map[string]agentproto.NodeFreshness{otherNode: {StatusAge: time.Second}},
+	})
+	e.clock.advance(10 * time.Second)
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch2})
+
+	age, at, recalled := e.agent.heardOf(otherNode)
+	require.True(t, recalled)
+	require.Equal(t, t0, at, "the heartbeat of the epoch followed, not the newer one")
+	require.Equal(t, 4*time.Second, age)
+	e.agent.heardMu.Lock()
+	_, kept := e.agent.named["pve9"]
+	e.agent.heardMu.Unlock()
+	require.False(t, kept, "a node the desired state does not list")
+
+	e.clock.advance(resolve.MaxHoldOver)
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch2})
+	_, at, _ = e.agent.heardOf(otherNode)
+	require.True(t, at.IsZero(), "older than a hold-over may be")
 }
