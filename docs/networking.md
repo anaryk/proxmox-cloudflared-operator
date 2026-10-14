@@ -566,10 +566,11 @@ On a cluster, the controller sends the change of a guest's card to the agent of 
 node, which runs `qm set` or `pct set` there under the controller's epoch, so a consenting guest
 of any node with an admitted agent gets its card. The SDN zone `pco` is a Simple zone, so
 `pconet` is a bridge of each node of its own: a guest is reached through the managed network
-only on a node that has a leg in it, and this release makes the leg on the node the network was
-made on alone, as it does for an attached network
-([On a cluster](#on-a-cluster)). The routes of a guest on `pconet` of another node are not
-served until it runs where the leg is.
+on the node it runs on, through that node's leg. The setup of the managed network gives every
+node with an agent its leg ([On a cluster](#on-a-cluster)), so a guest that migrates keeps its
+card, its address and its lease, renews from the DHCP server of its new node, and its routes
+move to the new node's tunnel. A node that got no leg serves the guests on it once a later
+`pco network managed enable` gave it one.
 
 ### The vnet and what pco checks of it
 
@@ -730,15 +731,42 @@ the consents.
 - **A leg is of one node.** Each network records a leg address for each node that has one, and
   the leg of each node gets a MAC of its own, `02:50:43:4f:<index>:<mark>`, from the node's index
   in the registry, so that two nodes' legs on one LAN do not clash. The managed network keeps
-  `02:50:43:4f:ff:01` and its first address on every node. `pco network attach` and the setup of
-  the managed network make the leg on the node they run on, the controller's, and no other: a
-  node without a leg cannot verify the targets behind it, and says
+  `02:50:43:4f:ff:01` and its first address on every node. A node without a leg cannot verify the
+  targets behind it, and says
   `network <id> has no leg on node <node>; its routes are served from the nodes that have one`.
-- **Placement.** A route to a guest behind the leg of a network that is one segment on every
-  node, a bridge with an uplink or a VXLAN vnet, would be shared once every replica reached it,
-  which takes a leg on every node; until then it is pinned to the node that has the leg. One
-  behind a bridge of a node of its own, an isolated bridge or `pconet`, is pinned to that node's
-  tunnel always ([Architecture](architecture.md#tunnels-and-placement)).
+- **The scope of a network.** `pco network attach` asks it, and `--scope` gives it to a
+  script. A network of scope `cluster` is one segment on every node: a bridge with a physical
+  port, or a vnet of a VLAN, QinQ, VXLAN or EVPN zone, as Proxmox has the network of each node
+  configured. Every node with the bridge gets a leg, each at an address of its own:
+  `--address` is this node's, `--leg pve2=10.20.0.249` another's, and the others are given the
+  highest free addresses of the prefix. A network of scope `node` is a bridge of one node, an
+  isolated bridge or a vnet of a Simple zone, with one leg, on this node or the one `--node`
+  names. A bridge without a physical port, or a vnet of a Simple zone, is refused the scope
+  `cluster` with `<bridge> has no physical uplink on node <node>, so it is a bridge of that node
+  alone; attach it with the scope node`.
+- **Each node checks its own leg.** Before a leg is made on another node, the controller has
+  the agent of that node probe it: the agent answers with the interfaces of its node and who
+  answered the probe for the address, and the controller judges them as it judges its own:
+  the bridge has to be one Proxmox has configured on that node, or a vnet, and there; the node
+  must not be on it already; the address must be no address of the node and nobody may answer
+  for it; the prefix must not overlap a route of the node unless `--overlap-ok`. An answer is
+  read only within its bounds, and only from the node it was asked of, and what an agent says
+  can only take a leg away: it never makes a bridge, a scope or an address the controller would
+  refuse. A node whose agent does not answer within 20 seconds, cannot probe, or has no such
+  bridge gets no leg; `pco network attach` shows it and attaches the others, and an attach that
+  later names the node with `--leg` adds its leg to the network. The managed network is set up
+  the same way: `pco network managed enable` gives every node whose agent finds `pconet` there
+  and the first address free its leg, records an event for each node that got none, and run
+  again adds the legs that are missing. A node's agent enables `pco-netns.service` with its
+  first leg, so that the leg comes back at boot.
+- **Placement.** A route to a guest behind the leg of a network of scope `cluster` is shared
+  once every replica reached it, and pinned to the nodes that have a leg until then. One behind
+  a bridge of a node of its own, an isolated bridge or `pconet`, is pinned to that node's tunnel
+  always ([Architecture](architecture.md#tunnels-and-placement)).
+- **What `pco network show` says.** The leg of every node, with its MAC and how the gateway of
+  that node last found it, as the node's agent reports it; the service addresses of a network of
+  scope `node` are listed for each node, since two isolated bridges of one name can hold the
+  same address. `pco network list` names the first leg and how many more there are.
 - **Service addresses** are the same on every node: each node with a leg into the network
   translates them towards its own leg, so a rule names one address whichever replica serves it.
   A new controller moves the pool of service addresses past every address an agent maps and
@@ -755,9 +783,11 @@ the consents.
 - **About 68 new connections a second** to one target behind a leg, as computed above.
 - **IPv4 only.** A leg has one IPv4 address; IPv6 is turned off on every leg and on `pconet`,
   and a guest's IPv6 addresses are no candidates anywhere.
-- **One leg for each network.** On a cluster a network has its leg on the node it was attached
-  or made on alone, and its routes are served from there; a managed guest that migrates keeps
-  its card and is not reached on its new node.
+- **Legs on host nodes.** On a cluster the legs of the other nodes are made by their host
+  agents; an appliance agent makes none, so a network of the appliance has its leg on the
+  controller's node, and a guest of the managed network is reached only there. A node that joins
+  later gets no leg by itself: an attach that names it, or `pco network managed enable` again,
+  gives it one.
 - **Nine legs in the appliance**, `net1` to `net9`, admin-added cards counted; and the
   appliance attaches a VLAN on a VLAN-aware bridge only, never a `vmbr<X>v<Y>` bridge.
 - **The service prefix is fixed** at `198.18.0.0/16`, and `managed.subnet` is a `/16` to a

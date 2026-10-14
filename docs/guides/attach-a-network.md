@@ -174,6 +174,42 @@ the namespace back from the cache the daemon writes after every change, ordered 
 `pve-guests.service`. `systemctl restart pco-netns` is safe at any time; it brings back what is
 missing and stops nothing.
 
+## On a cluster
+
+On a cluster the network has a scope, and the attach asks for it, proposing the one the
+configuration of the bridge suggests; `--scope` gives it to a script. VLAN 20 of `vmbr2`, a
+bridge with a physical port on every node, is one segment of the cluster:
+
+```sh
+pco network attach vmbr2:20 --address 10.20.0.250/24 --leg pve2=10.20.0.249 --confirm-uplink
+```
+
+```text
+Scope of network vmbr2.20: cluster, one segment on every node, or node, a bridge of one node? [cluster/node, empty for cluster]
+Network vmbr2.20 of scope cluster, in 10.20.0.0/24:
+  pve1: 10.20.0.250 is free
+  pve2: 10.20.0.249 is free
+  pve3: 10.20.0.254 is free
+Uplink: vmbr2 VLAN 20 has a physical uplink: the leg's MAC becomes visible on the LAN of vmbr2.
+Attach network vmbr2.20 of scope cluster with the legs 10.20.0.250/24 on pve1, 10.20.0.249/24 on pve2, 10.20.0.254/24 on pve3? [y/N] y
+Attached network vmbr2.20 of scope cluster: the legs leg2 with 10.20.0.250/24 on pve1, 10.20.0.249/24 on pve2, 10.20.0.254/24 on pve3, mark 2. The next cycle raises them; pco network show vmbr2.20 shows how they are.
+```
+
+`--address` is the leg of this node, `--leg` that of another node, and a node named by
+neither gets the highest free address of the prefix. The agent of each node probes its own
+address and says whether the bridge is there, as this node probes its own; a node without the
+bridge, or whose agent did not answer, is shown with `no leg:` and why, and gets none. An
+attach that names it later with `--leg pve3=10.20.0.247` adds its leg. An isolated bridge of
+one node is of scope `node`:
+
+```sh
+pco network attach vmbr7 --address 10.70.0.250/24 --scope node --node pve3
+```
+
+`pco network show vmbr2.20` lists the leg of every node with its MAC and how that node's gateway
+last found it, and, for a network of scope `node`, the service addresses of each node
+([On a cluster](../networking.md#on-a-cluster)).
+
 ## Undo
 
 ```sh

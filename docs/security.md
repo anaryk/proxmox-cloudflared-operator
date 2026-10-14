@@ -1240,6 +1240,20 @@ it takes is limited, so that neither a node nor a guest can steer it:
   take an address whose lease the store lost from the guest that holds it. Such a card is
   reported, and it gets nothing.
 
+### What an agent says of its node's legs
+
+Before a leg goes on another node, the agent of that node probes it and answers with the
+interfaces of its node and who answered for the address
+([On a cluster](networking.md#on-a-cluster)). The controller reads an answer only from the node
+it asked, and only within its bounds: 512 interfaces of 32 addresses each, 64 MACs that
+answered, 128 KiB in all. An answer over them, one it cannot read, an error, or no answer within
+20 seconds makes no leg on that node. What an answer says can only take a leg away: a bridge is
+one to attach to only when Proxmox has it configured on that node, or it is a vnet, whatever the
+agent lists; the scope `cluster` stands on the configuration of each node and the type of the
+SDN zone alone; the node's own addresses and routes the agent lists add refusals. A lying agent
+can keep its own node from a leg, or have it given a leg on a bridge of its own node that is
+there; it cannot give another node a leg or widen what the network reaches.
+
 ### What a compromised part can do
 
 | Compromised | Can | Cannot | What to do |

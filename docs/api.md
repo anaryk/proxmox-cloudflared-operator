@@ -628,10 +628,13 @@ leg on this node and what it serves:
 
 `kind` is `attach` or `managed`, whose `id` and `bridge` are `pconet`; a VLAN has `vlan`, a
 bridge with a physical port `uplink`, and a network attached over a route of the node
-`overlapOK`. A leg that is not up carries `problem`. `GET /v1/networks/:id` answers one network
-with `services`, each `{"network", "addr", "service", "allocatedAt", "owner", "guest",
-"identity"}`, the service address the connectors dial for the guest address behind the leg and
-whom it was made for, and `served`, the hostnames served through it.
+`overlapOK`; on a cluster `scope` is `cluster` or `node`, and `legStates` has the leg of every
+node, this node first, each with its `mac`, as the gateway of that node last found it. A leg
+that is not up carries `problem`. `GET /v1/networks/:id` answers one network with `services`,
+each `{"network", "addr", "service", "allocatedAt", "owner", "guest", "identity"}`, the service
+address the connectors dial for the guest address behind the leg and whom it was made for,
+`nodeServices`, the same with `node` for a network of scope `node`, whose addresses are of
+each node, and `served`, the hostnames served through it.
 
 `GET /v1/networks/candidates` answers the bridges and VLANs a network may be attached to, each
 `{"bridge", "vlan", "vnet", "vlanAware", "uplink", "direct", "attached", "guests", "prefixes",
@@ -642,13 +645,21 @@ suggest, most common first, and `refused` why this profile cannot attach it. `PO
 `prefix` and `address` optional, and answers `{"bridge", "vlan", "prefix", "address", "free",
 "answeredBy", "uplink", "warning", "note", "overlap", "notProbed"}`. `notProbed` says why the
 address was not probed, in the appliance before the network is attached; `free` is `false`
-then, and an attach is not refused for it. `POST /v1/networks` attaches:
+then, and an attach is not refused for it. On a cluster the answer says `clustered` and the
+scope the bridge suggests, `suggested`; a probe with `"scope": "cluster"` or `"node"`, and
+`node` or `legs` (`{"pve2": "10.20.0.249"}`), probes the legs of a network of that scope, each
+by the agent of its node, and answers them in `legs`, each `{"node", "address", "free",
+"answeredBy", "uplink", "overlap", "problem", "missing"}`; `missing` says that the node has no
+such bridge or its agent did not answer. `POST /v1/networks` attaches:
 
 ```json
 { "bridge": "vmbr1", "vlan": 0, "prefix": "10.77.0.0/24", "address": "10.77.0.250", "confirmUplink": false, "overlapOK": false }
 ```
 
-and answers the network with `201`; a bridge the node reaches directly, an uplink without
+and on a cluster names `scope` and the legs of the other nodes in `legs`, by node, `address`
+being the leg of this node or of the node `node` names; a request whose legs are all of nodes
+that have none of a network attached adds them to it. It answers the network with `201`; a
+bridge the node reaches directly, an uplink without
 `confirmUplink`, a prefix that overlaps a route of the node without `overlapOK`, an address in
 use, and the 16th network are refused with `refused` and the reason. `DELETE
 /v1/networks/:id?rev=<rev>&confirm=true` detaches, with the revision the network was read at;
