@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -77,7 +79,7 @@ func newWebKeeper(cfg Config, deps Deps, client *pve.Client, pveDir string, note
 		node:  cfg.Node,
 		fqdn:  webcert.NodeFQDN,
 		addrs: func(ctx context.Context) ([]netip.Addr, error) {
-			return ownAddrs(ctx, cfg.Node, readMembers, client.ClusterStatus)
+			return ownAddrs(ctx, cfg.Node, readMembers, client.ClusterStatus, interfaceAddrs)
 		},
 		dir:     cmp.Or(deps.WebDir, webcert.Dir),
 		env:     cmp.Or(deps.WebEnv, webcert.EnvFile),
@@ -99,38 +101,76 @@ func newWebKeeper(cfg Config, deps Deps, client *pve.Client, pveDir string, note
 // answers it, and the client falls back on other nodes, whose answer marks
 // themselves as the local node. A node that stands alone has no address in
 // that file, and no other node to fall back on: its address is the one the
-// cluster status gives the node that answered, when that is this node. No
-// address of its own is an error, so that no leaf is made without one.
+// cluster status gives the node that answered, when that is this node. The
+// address must be one an interface of the node has (bound). No address of
+// its own is an error, so that no leaf is made without one.
 func ownAddrs(
 	ctx context.Context, node string,
 	readMembers func() (members.Members, error),
 	status func(context.Context) (pve.ClusterStatus, error),
+	bound func() ([]netip.Addr, error),
 ) ([]netip.Addr, error) {
+	addr, err := listedAddr(ctx, node, readMembers, status)
+	if err != nil {
+		return nil, err
+	}
+	have, err := bound()
+	if err != nil {
+		return nil, fmt.Errorf("reading the addresses of this node's interfaces: %w", err)
+	}
+	if !slices.Contains(have, addr) {
+		return nil, fmt.Errorf("no interface of this node has %s, which the cluster lists for %s", addr, node)
+	}
+	return []netip.Addr{addr}, nil
+}
+
+// listedAddr is the address the cluster lists for this node, as ownAddrs
+// says.
+func listedAddr(
+	ctx context.Context, node string,
+	readMembers func() (members.Members, error),
+	status func(context.Context) (pve.ClusterStatus, error),
+) (netip.Addr, error) {
 	m, err := readMembers()
 	if err != nil {
-		return nil, fmt.Errorf("reading the members file: %w", err)
+		return netip.Addr{}, fmt.Errorf("reading the members file: %w", err)
 	}
 	if m.Self != node {
-		return nil, fmt.Errorf("the members file names this node %s, the daemon runs as %s", m.Self, node)
+		return netip.Addr{}, fmt.Errorf("the members file names this node %s, the daemon runs as %s", m.Self, node)
 	}
 	if !m.Standalone {
 		for _, n := range m.Nodes {
 			if n.Name == node && n.IP.IsValid() {
-				return []netip.Addr{n.IP}, nil
+				return n.IP.Unmap(), nil
 			}
 		}
-		return nil, fmt.Errorf("the members file gives no address for %s", node)
+		return netip.Addr{}, fmt.Errorf("the members file gives no address for %s", node)
 	}
 	st, err := status(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("reading the cluster status: %w", err)
+		return netip.Addr{}, fmt.Errorf("reading the cluster status: %w", err)
 	}
 	for _, n := range st.Nodes {
 		if n.Local && n.Name == node && n.Addr.IsValid() {
-			return []netip.Addr{n.Addr}, nil
+			return n.Addr.Unmap(), nil
 		}
 	}
-	return nil, fmt.Errorf("the cluster status was not answered by %s, or gives it no address", node)
+	return netip.Addr{}, fmt.Errorf("the cluster status was not answered by %s, or gives it no address", node)
+}
+
+// interfaceAddrs are the addresses the interfaces of this node have.
+func interfaceAddrs() ([]netip.Addr, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, a := range addrs {
+		if p, err := netip.ParsePrefix(a.String()); err == nil {
+			out = append(out, p.Addr().Unmap())
+		}
+	}
+	return out, nil
 }
 
 // tryRestartWeb restarts pco-web.service if it runs, without waiting for it.

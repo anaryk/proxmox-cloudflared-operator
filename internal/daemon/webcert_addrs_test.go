@@ -35,6 +35,8 @@ func TestTheAddressesOfTheWebCertificateAreTheNodesOwn(t *testing.T) {
 		readErr   error
 		status    pve.ClusterStatus
 		statusErr error
+		bound     []netip.Addr
+		boundErr  error
 		want      []netip.Addr
 		wantErr   string
 	}{
@@ -45,12 +47,20 @@ func TestTheAddressesOfTheWebCertificateAreTheNodesOwn(t *testing.T) {
 		{name: "a node that stands alone", members: standalone, status: own, want: []netip.Addr{ip("192.0.2.10")}},
 		{name: "a node that stands alone, answered by another", members: standalone, status: viaOther, wantErr: "not answered by pve1"},
 		{name: "a node that stands alone, its API down", members: standalone, statusErr: errors.New("connection refused"), wantErr: "connection refused"},
+		{name: "an address no interface of the node has", members: clusterOf("pve1"), bound: []netip.Addr{ip("10.0.0.12"), ip("192.0.2.10")},
+			wantErr: "no interface of this node has 10.0.0.11"},
+		{name: "the interfaces cannot be read", members: clusterOf("pve1"), boundErr: errors.New("netlink: permission denied"), wantErr: "permission denied"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			read := func() (members.Members, error) { return tt.members, tt.readErr }
 			status := func(context.Context) (pve.ClusterStatus, error) { return tt.status, tt.statusErr }
-			got, err := ownAddrs(context.Background(), "pve1", read, status)
+			bound := tt.bound
+			if bound == nil {
+				bound = []netip.Addr{ip("127.0.0.1"), ip("10.0.0.11"), ip("192.0.2.10")}
+			}
+			local := func() ([]netip.Addr, error) { return bound, tt.boundErr }
+			got, err := ownAddrs(context.Background(), "pve1", read, status, local)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				require.Nil(t, got)
