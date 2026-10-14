@@ -17,14 +17,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-const (
-	// pveTimeout is the time a request to the Proxmox API has on one node;
-	// with fallbacks on the other nodes of the cluster each gets a share of
-	// a request's time, so the request gets this much for every endpoint.
-	pveTimeout = 10 * time.Second
-	// pveShare is the least time an endpoint gets of a request.
-	pveShare = 5 * time.Second
-)
+// pveTimeout is the time a request to the Proxmox API has in all: with
+// fallbacks on the other nodes each endpoint tried gets a share of it, about
+// five seconds with three nodes.
+const pveTimeout = 15 * time.Second
 
 // newClusterPart makes the cluster mode of the daemon, before the engine,
 // which it is wired into: the remote fleet, the events of the agent of this
@@ -51,7 +47,9 @@ func newClusterPart(cfg Config, deps Deps, st *store.Store, hl *hostLease, log z
 // wire gives the engine the agents of the other nodes, the members file and
 // the maintenance mode of the nodes, and has the agent of this node tell its
 // events and changes to its client too.
-func (c *clusterPart) wire(ed *engine.Deps, client *pve.Client) {
+func (c *clusterPart) wire(ed *engine.Deps, client *pve.Client, multi *pve.Multi) {
+	c.multiPVE = multi
+	ed.Fallbacks = func() []string { return fallbackNames(multi) }
 	ed.Remote = c.remote
 	ed.Members = c.quorum
 	ed.Maintenance = func(ctx context.Context) (map[string]pve.Maintenance, error) {
@@ -88,45 +86,59 @@ func (h *hostLease) members() members.Members {
 	return m
 }
 
-// proxmoxClient is the client of the Proxmox API: on a node of a cluster
-// with the other nodes, as the members file lists them, as fallbacks under
+// proxmoxClient is the client of the Proxmox API, which falls back on the
+// other nodes of a cluster, as the members file lists them, verified under
 // the cluster's CA, so that an outage of the API on this node does not hold
-// the controller.
-func proxmoxClient(cfg Config, deps Deps, token store.PVEToken, hl *hostLease) (*pve.Client, error) {
+// the controller. The fallbacks follow the members file: the cluster part
+// sets them again as it changes.
+func proxmoxClient(cfg Config, deps Deps, token store.PVEToken, hl *hostLease) (*pve.Client, *pve.Multi, error) {
 	pc := pve.Config{
 		BaseURL:     cfg.PVEURL,
 		TokenID:     token.TokenID,
 		Secret:      token.Secret.Reveal(),
 		CAFile:      cfg.PVECAFile,
 		NodeCertDir: deps.PVECertDir,
-	}
-	others := otherEndpoints(cfg.Node, hl)
-	if len(others) == 0 {
-		return pve.New(pc)
+		Timeout:     pveTimeout,
 	}
 	if pc.CAFile == "" {
 		pc.CAFile = filepath.Join(hl.d.PVEDir, filepath.Base(members.RootCAFile))
 	}
-	pc.Timeout = max(pveTimeout, pveShare*time.Duration(len(others)+1))
-	m, err := pve.NewMulti(pc, others)
+	m, err := pve.NewMulti(pc, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return m.Client, nil
+	followMembers(m, cfg.Node, readMembers(hl), nil)
+	return m.Client, m, nil
 }
 
-// otherEndpoints are the API endpoints of the other nodes the members file
-// lists with an address, each known by its node's name.
-func otherEndpoints(node string, hl *hostLease) []pve.Endpoint {
+// readMembers reads the members file now.
+func readMembers(hl *hostLease) members.Members {
 	m, err := members.Read(filepath.Join(hl.d.PVEDir, filepath.Base(members.MembersFile)), time.Now())
 	if err != nil {
-		return nil
+		return members.Members{}
 	}
-	var out []pve.Endpoint
-	for _, n := range m.Nodes {
+	return m
+}
+
+// followMembers falls back on every other node the members file lists with
+// an address, known by its node's name.
+func followMembers(m *pve.Multi, node string, mem members.Members, log *zerolog.Logger) {
+	var eps []pve.Endpoint
+	for _, n := range mem.Nodes {
 		if n.Name != node && n.IP.IsValid() {
-			out = append(out, pve.Endpoint{Address: n.IP.String(), ServerName: n.Name})
+			eps = append(eps, pve.Endpoint{Address: n.IP.String(), ServerName: n.Name})
 		}
+	}
+	if err := m.SetEndpoints(eps); err != nil && log != nil {
+		log.Warn().Err(err).Msg("the other nodes' Proxmox API cannot be fallen back on")
+	}
+}
+
+// fallbackNames are the nodes whose Proxmox API is fallen back on.
+func fallbackNames(m *pve.Multi) []string {
+	var out []string
+	for _, ep := range m.Endpoints() {
+		out = append(out, ep.ServerName)
 	}
 	return out
 }

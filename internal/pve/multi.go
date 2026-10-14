@@ -58,6 +58,11 @@ type EndpointStatus struct {
 type Multi struct {
 	*Client
 	fb *fallback
+
+	// What a target is made with, for SetEndpoints.
+	cfg  Config
+	base *url.URL
+	pool *x509.CertPool
 }
 
 // NewMulti is New for the endpoint of cfg, falling back to endpoints in
@@ -72,24 +77,71 @@ func NewMulti(cfg Config, endpoints []Endpoint) (*Multi, error) {
 	if err != nil {
 		return nil, err
 	}
-	fb := &fallback{targets: []target{{
-		ep:   Endpoint{Address: base.Host, ServerName: cfg.ServerName},
-		host: base.Host,
-		rt:   newTransport(base, cfg.ServerName, pool, cfg.NodeCertDir),
-	}}}
+	m := &Multi{cfg: cfg, base: base, pool: pool}
+	targets, err := m.targets(endpoints)
+	if err != nil {
+		return nil, err
+	}
+	m.fb = &fallback{targets: targets, errs: make([]error, len(targets))}
+	hc := &http.Client{Transport: m.fb, CheckRedirect: noRedirect}
+	m.Client = newClient(cfg, base, hc)
+	return m, nil
+}
+
+// targets are the endpoint of the configuration and then endpoints.
+func (m *Multi) targets(endpoints []Endpoint) ([]target, error) {
+	out := []target{{
+		ep:   Endpoint{Address: m.base.Host, ServerName: m.cfg.ServerName},
+		host: m.base.Host,
+		rt:   newTransport(m.base, m.cfg.ServerName, m.pool, m.cfg.NodeCertDir),
+	}}
 	for _, ep := range endpoints {
-		u, err := endpointURL(base, ep)
+		u, err := endpointURL(m.base, ep)
 		if err != nil {
 			return nil, fmt.Errorf("endpoint %q: %w", ep.Address, err)
 		}
-		if cfg.CAFile == "" && !isLoopback(u.Hostname()) {
+		if m.cfg.CAFile == "" && !isLoopback(u.Hostname()) {
 			return nil, fmt.Errorf("endpoint %q: CA file is required for a host that is not a loopback address", ep.Address)
 		}
-		fb.targets = append(fb.targets, target{ep: ep, host: u.Host, rt: newTransport(u, ep.ServerName, pool, cfg.NodeCertDir)})
+		out = append(out, target{ep: ep, host: u.Host, rt: newTransport(u, ep.ServerName, m.pool, m.cfg.NodeCertDir)})
 	}
-	fb.errs = make([]error, len(fb.targets))
-	hc := &http.Client{Transport: fb, CheckRedirect: noRedirect}
-	return &Multi{Client: newClient(cfg, base, hc), fb: fb}, nil
+	return out, nil
+}
+
+// SetEndpoints replaces the endpoints fallen back on, as the nodes of the
+// cluster change; the endpoint of the configuration stays first. A list
+// equal to the one in use changes nothing; requests under way finish with
+// the list they began with.
+func (m *Multi) SetEndpoints(endpoints []Endpoint) error {
+	m.fb.mu.Lock()
+	same := len(m.fb.targets) == len(endpoints)+1
+	for i := 0; same && i < len(endpoints); i++ {
+		same = m.fb.targets[i+1].ep == endpoints[i]
+	}
+	m.fb.mu.Unlock()
+	if same {
+		return nil
+	}
+	targets, err := m.targets(endpoints)
+	if err != nil {
+		return err
+	}
+	m.fb.mu.Lock()
+	defer m.fb.mu.Unlock()
+	m.fb.targets, m.fb.errs, m.fb.current = targets, make([]error, len(targets)), 0
+	m.fb.gen++
+	return nil
+}
+
+// Endpoints are the endpoints fallen back on, without the configuration's.
+func (m *Multi) Endpoints() []Endpoint {
+	m.fb.mu.Lock()
+	defer m.fb.mu.Unlock()
+	out := make([]Endpoint, 0, len(m.fb.targets)-1)
+	for _, t := range m.fb.targets[1:] {
+		out = append(out, t.ep)
+	}
+	return out
 }
 
 // endpointURL is where ep is reached: its address, with DefaultPort unless
@@ -138,20 +190,22 @@ type target struct {
 // fallback sends each request to the current target and, when that one
 // does not answer, to the others in order.
 type fallback struct {
-	targets []target
-
 	mu      sync.Mutex
+	targets []target
 	current int
 	errs    []error
+	// gen counts the replacements of targets: an attempt noted against
+	// another list than its own is not noted.
+	gen int
 }
 
 func (f *fallback) RoundTrip(req *http.Request) (*http.Response, error) {
 	f.mu.Lock()
-	start := f.current
+	start, targets, gen := f.current, f.targets, f.gen
 	f.mu.Unlock()
 
 	// A body that cannot be read again is sent once, to the current target.
-	tries := len(f.targets)
+	tries := len(targets)
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
 		tries = 1
 	}
@@ -160,13 +214,13 @@ func (f *fallback) RoundTrip(req *http.Request) (*http.Response, error) {
 		if k > 0 && req.Context().Err() != nil {
 			break
 		}
-		i := (start + k) % len(f.targets)
-		o := f.try(i, req, tries-k)
+		i := (start + k) % len(targets)
+		o := try(targets[i], i, req, tries-k)
 		if o.cancelled {
 			first.discard()
 			return nil, o.err
 		}
-		f.note(o, start)
+		f.note(o, start, gen)
 		if o.final(req) {
 			first.discard()
 			return o.resp, o.err
@@ -180,11 +234,10 @@ func (f *fallback) RoundTrip(req *http.Request) (*http.Response, error) {
 	return first.resp, first.err
 }
 
-// try sends req to target i, within its share of what is left of the
+// try sends req to target t, the i-th, within its share of what is left of the
 // request's deadline, with left targets still to try. The request is cloned
 // so that each target gets its own copy, with the body read anew.
-func (f *fallback) try(i int, req *http.Request, left int) outcome {
-	t := f.targets[i]
+func try(t target, i int, req *http.Request, left int) outcome {
 	ctx, cancel := context.WithTimeout(req.Context(), share(req.Context(), left))
 	// Whether the attempt got a connection, new or kept, decides whether a
 	// write may have reached the endpoint.
@@ -239,9 +292,12 @@ func share(ctx context.Context, left int) time.Duration {
 // when it answered. The target the request started at, when it gave no
 // answer in time, hands the first place to the next one, so that the next
 // request does not wait for it again.
-func (f *fallback) note(o outcome, start int) {
+func (f *fallback) note(o outcome, start, gen int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if gen != f.gen {
+		return
+	}
 	switch {
 	case o.err != nil:
 		f.errs[o.i] = o.err

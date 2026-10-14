@@ -460,7 +460,7 @@ func routedGuests(st *store.Store, log zerolog.Logger) func() []model.GuestRef {
 // gw.
 func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings, restart func(), gw *gatewayPart,
 	hl *hostLease, cp *clusterPart) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
-	client, err := proxmoxClient(cfg, deps, token, hl)
+	client, multi, err := proxmoxClient(cfg, deps, token, hl)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
 	}
@@ -507,7 +507,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		HoldCycle: holdHook(cfg, deps.Sleep, log),
 	}
 	managedReaders(&ed, client, cfg.Node)
-	cp.wire(&ed, client)
+	cp.wire(&ed, client, multi)
 	eng, err := engine.New(ed)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the engine: %w", err)

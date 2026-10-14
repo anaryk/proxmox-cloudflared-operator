@@ -374,7 +374,7 @@ func TestTheTakeoverHoldWaitsAMinuteForALateAgent(t *testing.T) {
 	require.NotContains(t, st.Hold, "waiting for the agents")
 	require.NotEmpty(t, e.writes())
 	require.Equal(t, store.NodeUnknown, entryOf(t, e, "pve2").State)
-	require.True(t, hasProblem(st, ".members lists 1 nodes online that have sent no status"), st.Problems)
+	require.True(t, hasProblem(st, ".members lists 1 nodes online that have sent no status (pve2)"), st.Problems)
 }
 
 // The hold ends as soon as every agent reported.
@@ -634,4 +634,26 @@ func TestAReportThatIsNoEpochOfThisInstallLeavesTheControllerWriting(t *testing.
 			require.NotEmpty(t, e.writes())
 		})
 	}
+}
+
+// A registered node whose Proxmox API the client does not fall back on is
+// named, as the members file lists no address for it.
+func TestANodeWithoutAFallbackIsNamed(t *testing.T) {
+	one := 1
+	e, r, _ := clusterOf(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeActive, StateSince: t0, Index: &one},
+		store.NodeEntry{Name: "pve3", Since: t0, State: store.NodeRemoved, StateSince: t0})
+	have := []string{}
+	e.fallbacks = func() []string { return have }
+	e.eng = e.newEngine()
+	r.report("pve2", e.clock.now(), t0.Add(-time.Hour))
+
+	st := e.cycle()
+	require.True(t, hasProblem(st, "the Proxmox API of pve2 is not fallen back on"), st.Problems)
+	require.False(t, hasProblem(st, "pve3 is not fallen back on"), "a removed node is none of the cluster's")
+
+	have = []string{"pve2"}
+	e.clock.advance(time.Second)
+	r.report("pve2", e.clock.now(), t0.Add(-time.Hour))
+	st = e.cycle()
+	require.False(t, hasProblem(st, "is not fallen back on"), st.Problems)
 }

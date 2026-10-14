@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -20,7 +21,11 @@ const (
 	problemTakeoverHold = "waiting for the agents of %s to report to this controller; nothing is written at Cloudflare for up to %s"
 	// problemNoStatus counts the nodes the cluster lists online whose agent
 	// this controller never heard: the agent channel does not reach it.
-	problemNoStatus = ".members lists %d nodes online that have sent no status: check cluster.agentNetwork and the 8644 rule"
+	problemNoStatus = ".members lists %d nodes online that have sent no status (%s): check cluster.agentNetwork and the 8644 rule"
+	// problemNoFallback names registered nodes whose Proxmox API the
+	// controller cannot fall back on, as the members file lists no address
+	// for them.
+	problemNoFallback = "the Proxmox API of %s is not fallen back on: the members file lists no address for it"
 
 	// takeoverHold is how long a new controller waits for the agents of
 	// the nodes that are neither down nor removed before it writes; a node
@@ -126,6 +131,7 @@ func (c *cycleRun) registryStep() {
 		c.nodeEvents(before, *n)
 	}
 	c.noStatus(reports, listed)
+	c.noFallback()
 }
 
 // observeNode applies what this cycle saw of node n to its entry: Proxmox's
@@ -312,17 +318,39 @@ func (c *cycleRun) noStatus(reports map[string]NodeReport, listed map[string]mem
 	if c.now.Sub(c.since()) < takeoverHold {
 		return
 	}
-	silent := 0
+	var silent []string
 	for name, n := range c.nodes {
 		if _, heard := reports[name]; heard || name == c.e.d.Node || n.Node.State == store.NodeRemoved {
 			continue
 		}
 		if m, ok := listed[name]; ok && m.Online {
-			silent++
+			silent = append(silent, name)
 		}
 	}
-	if silent > 0 {
-		c.problem(problemNoStatus, silent)
+	if len(silent) > 0 {
+		slices.Sort(silent)
+		c.problem(problemNoStatus, len(silent), strings.Join(silent, ", "))
+	}
+}
+
+// noFallback names the registered nodes whose Proxmox API the client does
+// not fall back on.
+func (c *cycleRun) noFallback() {
+	read := c.e.d.Fallbacks
+	if read == nil || !c.clustered() {
+		return
+	}
+	have := read()
+	var missing []string
+	for name, n := range c.nodes {
+		if name == c.e.d.Node || n.Node.State == store.NodeRemoved || slices.Contains(have, name) {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		c.problem(problemNoFallback, strings.Join(missing, ", "))
 	}
 }
 

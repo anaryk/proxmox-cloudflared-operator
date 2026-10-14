@@ -180,6 +180,31 @@ func TestMultiFallsBackWhenTheEndpointRefusesAndKeepsTheOneThatAnswered(t *testi
 	require.NoError(t, st[1].Err)
 }
 
+// The endpoints fallen back on follow the nodes of the cluster: a node that
+// joined is fallen back on, the configuration's endpoint stays first, and
+// the same list again changes nothing, the current endpoint included.
+func TestMultiFollowsTheEndpointsItIsGiven(t *testing.T) {
+	b, recB := answering(t)
+	l := newLab(t, testConfig(""), at(down(t)))
+	_, err := l.m.Version(t.Context())
+	require.Error(t, err, "nothing to fall back on yet")
+
+	next := []Endpoint{{Address: "pve2.lab.invalid", ServerName: "example.com"}}
+	require.NoError(t, l.m.SetEndpoints(next))
+	require.Equal(t, next, l.m.Endpoints())
+	l = wire(t, l.m, at(down(t)), at(b))
+
+	_, err = l.m.Version(t.Context())
+	require.NoError(t, err)
+	require.Len(t, recB.requests(), 1)
+	require.Equal(t, "pve2.lab.invalid", l.m.Current().Address)
+
+	require.NoError(t, l.m.SetEndpoints(next))
+	require.Equal(t, "pve2.lab.invalid", l.m.Current().Address, "the same list keeps the current endpoint")
+	require.Error(t, l.m.SetEndpoints([]Endpoint{{Address: "pve3.lab.invalid:0"}}))
+	require.Equal(t, next, l.m.Endpoints(), "a list that cannot be used keeps the one in use")
+}
+
 // pveproxy answers 595 to 599 when it cannot reach the daemon of its node,
 // and a gateway in front of it 502 to 504; any other server error is an
 // answer of the API, the same on every node.

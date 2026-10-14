@@ -13,8 +13,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -177,6 +179,34 @@ func TestASingleNodeOpensNoAgentEndpoint(t *testing.T) {
 	require.Error(t, err, "nothing listens")
 	require.NoDirExists(t, filepath.Join(w.paths.Local, "agent", "tls"), "no certificate is issued")
 	require.NoError(t, r.stop())
+}
+
+// The Proxmox client falls back on the other nodes the members file lists
+// with an address, and follows the file as nodes come and go.
+func TestTheProxmoxFallbacksFollowTheMembersFile(t *testing.T) {
+	w := newWorld(t)
+	m, err := pve.NewMulti(pve.Config{
+		BaseURL: w.cfg.PVEURL, TokenID: pveTokenID, Secret: pveSecret, CAFile: w.cfg.PVECAFile,
+	}, nil)
+	require.NoError(t, err)
+	member := func(name, ip string) members.Member {
+		var addr netip.Addr
+		if ip != "" {
+			addr = netip.MustParseAddr(ip)
+		}
+		return members.Member{Name: name, Online: true, IP: addr}
+	}
+
+	followMembers(m, testNode, members.Members{Nodes: []members.Member{member(testNode, "10.0.0.1"), member(otherNode, "10.0.0.2")}}, nil)
+	require.Equal(t, []pve.Endpoint{{Address: "10.0.0.2", ServerName: otherNode}}, m.Endpoints())
+
+	followMembers(m, testNode, members.Members{Nodes: []members.Member{
+		member(testNode, "10.0.0.1"), member(otherNode, "10.0.0.2"), member("pve3", "10.0.0.3"), member("pve4", ""),
+	}}, nil)
+	require.Equal(t, []string{otherNode, "pve3"}, fallbackNames(m), "a node without an address is none")
+
+	followMembers(m, testNode, members.Members{Nodes: []members.Member{member(testNode, "10.0.0.1")}}, nil)
+	require.Empty(t, m.Endpoints())
 }
 
 // listens says whether something takes a connection at addr.

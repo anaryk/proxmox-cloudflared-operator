@@ -16,6 +16,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/clusterapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -66,6 +67,9 @@ type clusterPart struct {
 	server    *clusterapi.Server
 	allow     *clusterapi.Allowlist
 	observe   observeWindow
+	// multiPVE is the client of the Proxmox API, whose fallbacks follow the
+	// members file.
+	multiPVE *pve.Multi
 }
 
 // clusterRun is a part that runs until stopped.
@@ -130,6 +134,9 @@ func (c *clusterPart) tick(ctx context.Context) {
 	// endpoint's checks read the registry and the enrolments again at every
 	// request.
 	multi, err := c.clustered()
+	if c.multiPVE != nil && c.quorum != nil {
+		followMembers(c.multiPVE, c.node, c.quorum(), &c.log)
+	}
 	st := c.keeper.State()
 	holder := st.Holder && st.Valid && err == nil
 	c.observe.note(c.eng.State().Mode == engine.ModeObserve, c.now())

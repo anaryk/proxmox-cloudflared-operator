@@ -815,6 +815,7 @@ type env struct {
 	remote      Remote
 	members     func() members.Members
 	maintenance func(context.Context) (map[string]pve.Maintenance, error)
+	fallbacks   func() []string
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -904,6 +905,7 @@ func (e *env) newEngineWith(conns agent.Connectors) *Engine {
 		Remote:      e.remote,
 		Members:     e.members,
 		Maintenance: e.maintenance,
+		Fallbacks:   e.fallbacks,
 	}
 	if e.acc != nil {
 		d.Access = e.acc

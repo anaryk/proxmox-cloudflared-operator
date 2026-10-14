@@ -159,8 +159,11 @@ type Deps struct {
 	// file, by which a node is down; nil where there is none to read.
 	// Maintenance reads which nodes Proxmox has in maintenance mode; nil
 	// where it is not read.
-	Remote      Remote
-	Members     func() members.Members
+	Remote  Remote
+	Members func() members.Members
+	// Fallbacks names the nodes whose Proxmox API the client falls back
+	// on; nil where it falls back on none.
+	Fallbacks   func() []string
 	Maintenance func(ctx context.Context) (map[string]pve.Maintenance, error)
 }
 
