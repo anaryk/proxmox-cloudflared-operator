@@ -394,7 +394,7 @@ root may rotate the secret of a tunnel`.
 `POST /v1/promote {"confirm": true, "force": false, "cluster": "<name>", "shown": [...]}` makes the node of the
 daemon the writer of a store it only observes, on the host: one restored from an earlier copy,
 behind what the agents remember, or made in another cluster. It answers `{"differences":
-[{"subject", "store", "reported"}], "drawn", "generation", "nonce"}`: without `confirm` only
+[{"subject", "store", "reported"}], "drawn", "generation", "nonce", "rotatesSecrets"}`: without `confirm` only
 what differs between the store and what the agents and Cloudflare say, and nothing is drawn
 (the sentinels are read only by a node that holds the lease, else the line says they are read
 once confirmed); with it, the epoch drawn above every sentinel of the install and every epoch
@@ -403,9 +403,12 @@ again once the node holds the lease and is refused with `refused` when it is not
 differences the admin was shown; it is also refused when
 nothing differs and nothing holds the controller, unless `force`; when the store was made in
 another cluster and `cluster` is not the name of that cluster, or its fingerprint when it has
-none; when a sentinel cannot be read; and in the appliance, which draws an epoch with `pco
+none; when a sentinel cannot be read; for an install restored from a bundle into another
+cluster, while a connector of it is connected at Cloudflare or that cannot be read; and in the appliance, which draws an epoch with `pco
 appliance recover`. The reads at Cloudflare have 45 seconds, the whole request 55. The daemon takes it from root
-alone: `pco-web` is refused with `only root may promote a node to be the writer`.
+alone: `pco-web` is refused with `only root may promote a node to be the writer`. `rotatesSecrets`
+is true for an install restored from a bundle: the first cycle that may write gives every tunnel
+of it a new secret and ends their connections.
 
 ### Credentials
 

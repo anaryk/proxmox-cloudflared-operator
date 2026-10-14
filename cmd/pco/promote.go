@@ -25,6 +25,10 @@ func (a *app) promoteCmd() *cobra.Command {
 			"what the daemon would change, and pco apply lets it. It refuses when a sentinel cannot be\n" +
 			"read, which could hold a higher generation, and when nothing differs and nothing holds the\n" +
 			"daemon: a new epoch rewrites the sentinel of every tunnel, which --force does all the same.\n" +
+			"An install restored from a bundle into another cluster is refused while a connector of it\n" +
+			"is connected at Cloudflare, which says that the cluster it was made in still runs it; once\n" +
+			"promoted, the first cycle that may write gives every tunnel of a restored install a new\n" +
+			"secret and ends their connections, so that the run tokens of the lost install stop working.\n" +
 			"A store made in another cluster is promoted only once you type the name of that cluster, or\n" +
 			"its fingerprint when it has none, as the differences show it; a script names it with\n" +
 			"--cluster. Host profile only; an appliance draws a new epoch with pco appliance recover. Only\n" +
@@ -62,6 +66,11 @@ func (a *app) promoteCmd() *cobra.Command {
 			}
 			s.printf("This node is the writer at generation %d. pco is in observe-only mode:\n"+
 				"pco plan shows what it would change, and pco apply lets it.\n", res.Generation)
+			if res.RotatesSecrets {
+				s.printf("The install was restored from a bundle: once pco apply lets it write, every tunnel of it gets\n" +
+					"a new secret and every connection of it is ended, so that the run tokens of the lost install\n" +
+					"stop working.\n")
+			}
 			return s.done()
 		},
 	}

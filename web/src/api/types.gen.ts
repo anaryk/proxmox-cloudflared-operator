@@ -622,6 +622,7 @@ export interface PromoteResult {
   drawn: boolean
   generation?: number
   nonce?: string
+  rotatesSecrets?: boolean
 }
 
 // engine.ReplicaView

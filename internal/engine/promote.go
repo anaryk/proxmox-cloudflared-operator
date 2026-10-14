@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -96,11 +97,26 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	if err := e.somethingToDo(res.Differences, other, req); err != nil {
 		return res, err
 	}
+	if inst.Restored != nil && other != nil {
+		if err := e.oldClusterStopped(ctx, inst.ID); err != nil {
+			return res, err
+		}
+	}
 	seed := e.promotionSeed(ctx, inst.ID, sent.highest)
 	// A store that went back takes no write until a tenure begins anew: the
 	// admin adopts it as it is. The engine holds on its own until the new
 	// epoch is drawn.
 	e.d.Store.StartTenure()
+	if inst.Restored != nil {
+		// Copies of the run tokens may be left on the disks of the install
+		// that was lost: every tunnel gets a new secret once pco may write.
+		// Asked for before the restore ends, so that a promotion cut short
+		// and done again asks once more rather than never.
+		if err := e.d.Store.SaveRestoreRotation(store.RestoreRotation{Since: e.d.Now()}); err != nil {
+			return res, fmt.Errorf("asking for new secrets of the tunnels: %w", err)
+		}
+		res.RotatesSecrets = true
+	}
 	if other != nil || inst.Restored != nil {
 		// A store restored from a bundle is this cluster's from now on: the
 		// other nodes join it as they join any install.
@@ -178,6 +194,44 @@ func (e *Engine) otherCluster(inst store.Install) (*store.ClusterIdentity, error
 		return nil, nil
 	}
 	return &here, nil
+}
+
+// oldClusterStopped refuses the promotion of a store restored into another
+// cluster while a connector of the install is connected at Cloudflare:
+// nothing of this cluster runs one before the promotion, so the cluster the
+// bundle was made in, or a copy of it, still runs the install. Every stored
+// credential looks; one that cannot refuses too.
+func (e *Engine) oldClusterStopped(ctx context.Context, installID string) error {
+	ctx, cancel := e.timeout(ctx, promoteReads)
+	defer cancel()
+	creds, err := e.d.Store.Credentials()
+	if err != nil {
+		return fmt.Errorf("reading the credentials: %w", err)
+	}
+	if len(creds) == 0 {
+		return fmt.Errorf("%w: cannot tell whether the cluster the bundle was made in still runs install %s: no Cloudflare credential is stored",
+			ErrRefused, installID)
+	}
+	var live []string
+	for _, cred := range creds {
+		api, err := e.d.NewClient(cred)
+		if err == nil {
+			var found []string
+			found, err = cfapi.Connected(ctx, api, installID)
+			live = append(live, found...)
+		}
+		if err != nil {
+			return fmt.Errorf("%w: cannot tell whether the cluster the bundle was made in still runs install %s: credential %s: %w",
+				ErrRefused, installID, cred.ID, err)
+		}
+	}
+	if len(live) > 0 {
+		slices.Sort(live)
+		return fmt.Errorf("%w: the cluster the bundle was made in still runs install %s, or a copy of it does: at Cloudflare %s; "+
+			"stop pco and its connectors there (systemctl stop pco 'pco-cloudflared@*'), and promote once Cloudflare shows no connection",
+			ErrRefused, installID, strings.Join(slices.Compact(live), "; "))
+	}
+	return nil
 }
 
 // sentinelRead is what a read of the sentinels at Cloudflare found: the

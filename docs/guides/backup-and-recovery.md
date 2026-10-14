@@ -218,7 +218,9 @@ and every epoch an agent remembers.
 
    The agents remember a later epoch than the bundle's, and the promotion draws above it.
 4. `pco credential add` for each token the bundle did not carry, then read `pco plan`, and
-   `pco apply`.
+   `pco apply`. As after every promotion of a restored install, the first cycle that writes gives
+   every tunnel a new secret; the connectors of the nodes take it up, and the old run tokens stop
+   working.
 
 **A cluster lost whole, built again.** The bundle records the cluster it was made in, by the
 fingerprint of the cluster CA of Proxmox VE, and a new cluster has another. The first node that
@@ -263,6 +265,10 @@ hold is trusted after that, and every other node enrols again.
    `pco status` says `this store was made in cluster lab (<fingerprint>); pco promote here makes
    this cluster its writer`.
 
+   A setup cut short is finished by running `pco setup` again on the same node, which looks at
+   Cloudflare again first. Until the take-over is done in full, no node takes the lease, so no
+   agent endpoint serves anyone under the old CA.
+
 4. Promote the node. pco asks you to type the name of the cluster the bundle was made in, or its
    fingerprint when it has none, as the differences show it:
 
@@ -270,8 +276,15 @@ hold is trusted after that, and every other node enrols again.
    pco promote
    ```
 
-   The promotion makes the new cluster the store's and draws an epoch above every sentinel at
-   Cloudflare, in observe-only mode.
+   It looks at Cloudflare once more and refuses while a connector of the install is connected
+   there, as setup does. The promotion makes the new cluster the store's and draws an epoch above
+   every sentinel at Cloudflare, in observe-only mode, and says:
+
+   ```text
+   The install was restored from a bundle: once pco apply lets it write, every tunnel of it gets
+   a new secret and every connection of it is ended, so that the run tokens of the lost install
+   stop working.
+   ```
 
 5. Set the other nodes up, each with `pco setup`. They join as `joining`, with certificates of the
    new CA, and the controller admits them. A node set up before the promotion is refused, and
@@ -279,8 +292,14 @@ hold is trusted after that, and every other node enrols again.
    first, then pco setup here`.
 
 6. `pco credential add` for each token the bundle did not carry, then read `pco plan`, and
-   `pco apply`. If the disks of the lost cluster may come back, end the run tokens they hold once
-   pco applies: `pco tunnel rotate`.
+   `pco apply`. The first cycle after it gives every tunnel of the install, shared and pinned, a
+   new secret, and once the nodes run with it ends every connection of the tunnel: run tokens left
+   on the disks of the lost cluster stop working without anything more to do. The events say
+   `the install was restored from a bundle: every tunnel has a new secret, and the run tokens of
+   the lost install no longer work` when it is done.
+
+   `pco tunnel rotate` gives the shared tunnel a new secret by hand at any time; it is not needed
+   here.
 
 **A node alone, reinstalled**: a reinstalled node has a new cluster CA of Proxmox VE, so the
 store counts as one of another cluster, and the steps are those of a cluster lost whole, with one

@@ -241,6 +241,10 @@ type PromoteResult struct {
 	Drawn       bool             `json:"drawn"`
 	Generation  int              `json:"generation,omitempty"`
 	Nonce       string           `json:"nonce,omitempty"`
+	// RotatesSecrets says that the promoted install was restored from a
+	// bundle: the first cycle that may write gives every tunnel of it a new
+	// secret, so that the run tokens of the lost install stop working.
+	RotatesSecrets bool `json:"rotatesSecrets,omitempty"`
 }
 
 // DifferenceView is one thing the store and the agents say differently.

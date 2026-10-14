@@ -10,6 +10,10 @@ at Cloudflare and every epoch an agent reported, and sets observe-only mode: pco
 what the daemon would change, and pco apply lets it. It refuses when a sentinel cannot be
 read, which could hold a higher generation, and when nothing differs and nothing holds the
 daemon: a new epoch rewrites the sentinel of every tunnel, which `--force` does all the same.
+An install restored from a bundle into another cluster is refused while a connector of it
+is connected at Cloudflare, which says that the cluster it was made in still runs it; once
+promoted, the first cycle that may write gives every tunnel of a restored install a new
+secret and ends their connections, so that the run tokens of the lost install stop working.
 A store made in another cluster is promoted only once you type the name of that cluster, or
 its fingerprint when it has none, as the differences show it; a script names it with
 `--cluster`. Host profile only; an appliance draws a new epoch with pco appliance recover. Only

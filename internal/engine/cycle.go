@@ -243,6 +243,7 @@ func (c *cycleRun) run() State {
 		c.hearConnectors()
 		c.rotationStep()
 		c.forgetRotations()
+		c.restoreRotation()
 		c.expireJoinTokens()
 		c.publishRemote()
 	}

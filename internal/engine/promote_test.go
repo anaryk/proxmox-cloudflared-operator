@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -302,4 +303,91 @@ func TestPromoteRefusesWhenWhatDiffersChangedSinceItWasShown(t *testing.T) {
 		require.ErrorContains(t, err, "changed since it was shown")
 		require.Empty(t, l.promoted)
 	})
+}
+
+// restoredElsewhere is a host whose store was restored from a bundle of the
+// cluster old-lab and taken into this one, after it wrote its tunnel.
+func restoredElsewhere(t *testing.T) (*env, *fakeLease) {
+	t.Helper()
+	e, l := onHost(t)
+	e.enforce()
+	e.cycle()
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	inst.Cluster = &store.ClusterIdentity{CASHA256: caOld, Name: "old-lab"}
+	inst.Restored = &store.Restored{BundleMadeAt: time.Unix(1700000000, 0).UTC(), TakenOverBy: testNode}
+	require.NoError(t, e.store.SaveInstall(inst))
+	e.eng.d.Cluster = func() (store.ClusterIdentity, error) { return store.ClusterIdentity{CASHA256: caNew, Name: "lab"}, nil }
+	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
+	l.saved = e.store.SaveWriter
+	return e, l
+}
+
+// The promotion of a restored install asks the cycles for a new secret of
+// every tunnel, which the first cycle that may write gives: the run tokens
+// on the disks of the lost install stop working without anyone asking.
+func TestPromoteOfARestoredInstallAsksForNewSecrets(t *testing.T) {
+	e, _ := restoredElsewhere(t)
+
+	res, err := confirmed(t, e, PromoteRequest{Confirm: true, Cluster: "old-lab"})
+
+	require.NoError(t, err)
+	require.True(t, res.Drawn)
+	require.True(t, res.RotatesSecrets)
+	rot, found, err := e.store.RestoreRotation()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, e.clock.now(), rot.Since)
+
+	t.Run("not for a store that was not restored", func(t *testing.T) {
+		e, _ := behindHost(t)
+		res, err := confirmed(t, e, PromoteRequest{Confirm: true})
+		require.NoError(t, err)
+		require.False(t, res.RotatesSecrets)
+		_, found, err := e.store.RestoreRotation()
+		require.NoError(t, err)
+		require.False(t, found)
+	})
+}
+
+// A restored install is not promoted in a new cluster while a connector of
+// it is connected at Cloudflare: the cluster it was made in still runs it.
+// What cannot be read refuses as well.
+func TestPromoteOfARestoredInstallRefusesWhileTheOldClusterRunsIt(t *testing.T) {
+	e, l := restoredElsewhere(t)
+	id := e.tunnels()[0].ID
+	e.cf.SetConnectors(testAccount, id, []cfapi.Connector{{ID: "old-1", Connections: 4, OriginIP: "203.0.113.7"}})
+
+	_, err := confirmed(t, e, PromoteRequest{Confirm: true, Cluster: "old-lab"})
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "the cluster the bundle was made in still runs install "+testInstall)
+	require.ErrorContains(t, err, "203.0.113.7")
+	require.Empty(t, l.promoted)
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	require.Equal(t, caOld, inst.Cluster.CASHA256, "nothing saved")
+	require.NotNil(t, inst.Restored)
+
+	e.cf.SetConnectors(testAccount, id, nil)
+	made := e.eng.d.NewClient
+	e.eng.d.NewClient = func(c store.Credential) (cfapi.API, error) {
+		api, err := made(c)
+		return connectorsUnread{api}, err
+	}
+	_, err = confirmed(t, e, PromoteRequest{Confirm: true, Cluster: "old-lab"})
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "cannot tell")
+	require.Empty(t, l.promoted)
+
+	e.eng.d.NewClient = made
+	_, err = confirmed(t, e, PromoteRequest{Confirm: true, Cluster: "old-lab"})
+	require.NoError(t, err)
+	require.NotEmpty(t, l.promoted)
+}
+
+type connectorsUnread struct{ cfapi.API }
+
+func (connectorsUnread) Connectors(context.Context, string, string) ([]cfapi.Connector, error) {
+	return nil, errors.New("cloudflare api: HTTP 500: internal")
 }

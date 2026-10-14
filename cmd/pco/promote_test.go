@@ -23,6 +23,8 @@ type promoteDaemon struct {
 	mu    sync.Mutex
 	asked []string
 	diffs string // the differences it answers; one of an agent's epoch when empty
+	// rotates answers a promotion of a restored install.
+	rotates bool
 }
 
 func (d *promoteDaemon) bodies() []string {
@@ -52,7 +54,11 @@ func servePromote(t *testing.T, d *promoteDaemon) string {
 			diffs = `[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}]`
 		}
 		if strings.Contains(string(body), `"confirm":true`) {
-			_, _ = io.WriteString(w, `{"differences":`+diffs+`,"drawn":true,"generation":5,"nonce":"drawn"}`)
+			rotates := ""
+			if d.rotates {
+				rotates = `,"rotatesSecrets":true`
+			}
+			_, _ = io.WriteString(w, `{"differences":`+diffs+`,"drawn":true,"generation":5,"nonce":"drawn"`+rotates+`}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"differences":`+diffs+`,"drawn":false}`)
@@ -131,6 +137,22 @@ func TestPromoteWithoutATerminalWantsYes(t *testing.T) {
 
 // pco promote passes --force through, for a store that agrees with the
 // agents.
+// The promotion of a restored install says that every tunnel gets a new
+// secret once pco may write; any other says nothing of it.
+func TestPromoteOfARestoredInstallSaysTheTunnelsGetNewSecrets(t *testing.T) {
+	const said = "The install was restored from a bundle: once pco apply lets it write, every tunnel of it gets\n" +
+		"a new secret and every connection of it is ended, so that the run tokens of the lost install\n" +
+		"stop working.\n"
+	d := &promoteDaemon{rotates: true}
+	res := newRunner(t, servePromote(t, d)).run("", "promote", "--yes")
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, said)
+
+	res = newRunner(t, servePromote(t, &promoteDaemon{})).run("", "promote", "--yes")
+	require.NoError(t, res.err)
+	require.NotContains(t, res.out, "restored from a bundle")
+}
+
 func TestPromoteForce(t *testing.T) {
 	d := &promoteDaemon{diffs: `[]`}
 	r := newRunner(t, servePromote(t, d))
