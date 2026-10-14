@@ -126,8 +126,9 @@ func (c *cycleRun) silentNodes() silence {
 // keepCardLeases gives every managed card of a guest whose lease is missing
 // its lease again, from its MAC, which carries its address, and says which
 // leases have no card in any guest: they are kept, so that their addresses
-// are not given to another card. It reports whether the leases could be
-// read; a lease that cannot be saved again is a problem line.
+// are not given to another card. It reports whether every card that needs
+// its lease has it: false when the leases could not be read, or a lease
+// could not be saved again, which is a problem line too.
 func (c *cycleRun) keepCardLeases() bool {
 	nets, err := c.e.d.Store.Networks()
 	if err != nil {
@@ -157,7 +158,7 @@ func (c *cycleRun) keepCardLeases() bool {
 		attached[strings.ToLower(a.MAC)] = a.Owner
 	}
 	owners := cardOwners(c.snap.Guests)
-	saved := 0
+	saved, done := 0, true
 	for _, g := range c.snap.Guests {
 		for _, nic := range g.NICs {
 			mac, err := net.ParseMAC(nic.MAC)
@@ -196,7 +197,9 @@ func (c *cycleRun) keepCardLeases() bool {
 			saved++
 			l := store.Lease{MAC: text, Addr: addr, Owner: g.Ref.String(), Identity: g.Identity, NIC: nic.Index, Since: c.now}
 			if err := c.e.d.Store.SaveLease(l, 0); err != nil {
+				// Its address could be given to another card meanwhile.
 				c.problem("saving again the lease of %s for net%d of %s: %v", addr, nic.Index, g.Ref, err)
+				done = false
 				continue
 			}
 			leases[text] = l
@@ -210,7 +213,7 @@ func (c *cycleRun) keepCardLeases() bool {
 				Message: fmt.Sprintf("the lease of %s of %s has no card in any guest; its address is kept and not given again until the lease is released", l.Addr, l.Owner)})
 		}
 	}
-	return true
+	return done
 }
 
 // cardOwners are, by MAC, the guests that have a card of it on the managed

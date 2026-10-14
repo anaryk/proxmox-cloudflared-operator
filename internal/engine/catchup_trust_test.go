@@ -13,6 +13,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -247,6 +248,33 @@ func TestNothingIsAllocatedUntilTheStoreIsCheckedAgainstEveryNode(t *testing.T) 
 
 		require.True(t, hasProblem(st, held+"moving the pool of service addresses on to 198.18.1.6: "), st.Problems)
 	})
+}
+
+// A lease that cannot be saved again keeps allocation held: its address
+// could be given to another card meanwhile.
+func TestALeaseThatCannotBeSavedAgainHoldsAllocation(t *testing.T) {
+	w, _ := legWorld(t)
+	lost := netip.MustParseAddr("10.203.118.30")
+	snap := w.inv.snapshot()
+	g := carded(guest(105, "lost"), "pve3", "bc:24:11:00:05:01")
+	g.Tags = []string{managednet.Tag}
+	g.NICs = append(g.NICs, model.NIC{Index: 2, MAC: store.ManagedMAC(lost), Bridge: gateway.ManagedBridge})
+	snap.Guests = append(snap.Guests, g)
+	w.inv.set(snap)
+	ipam := filepath.Join(w.paths.Cluster, "ipam")
+	require.NoError(t, os.MkdirAll(ipam, 0o700))
+	require.NoError(t, os.Chmod(ipam, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(ipam, 0o700) })
+
+	st := w.tick(time.Second)
+
+	require.True(t, hasProblem(st, "saving again the lease of 10.203.118.30 for net2 of qemu/105"), st.Problems)
+	require.Contains(t, st.Problems, held+"the leases are not yet checked against the cards of the guests")
+
+	require.NoError(t, os.Chmod(ipam, 0o700))
+	st = w.tick(time.Second)
+
+	require.False(t, hasProblem(st, held), st.Problems)
 }
 
 // Two guests with a managed card of one MAC both claim its address: neither
