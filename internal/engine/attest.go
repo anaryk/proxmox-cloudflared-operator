@@ -125,6 +125,8 @@ func (c *cycleRun) readBlocks() bool {
 		return false
 	}
 	mem := &c.e.place
+	// The outage is over: the next one is said again.
+	delete(mem.refused, "blocks")
 	mem.blocks = make(map[netip.Addr]*conflictBlock, len(blocks))
 	for addr, b := range blocks {
 		mem.blocks[addr] = &conflictBlock{addr: addr, guest: b.Guest, mac: b.MAC, node: b.Node, port: b.Port, why: b.Why,

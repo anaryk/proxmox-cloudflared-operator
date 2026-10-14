@@ -564,6 +564,22 @@ func TestUnreadableBlocksServeNothing(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, said, "said once")
+
+	// Read once more, then unreadable again: an outage after one ended is
+	// said again.
+	require.NoError(t, os.Remove(filepath.Join(w.paths.Cluster, "blocks", "10.0.0.8.json")))
+	w.tick(time.Second)
+	require.NotNil(t, w.eng.place.blocks)
+	require.NoError(t, os.WriteFile(bad, []byte("{"), 0o600))
+	w.eng.place.blocks = nil
+	w.tick(time.Second)
+	said = 0
+	for _, ev := range w.eng.Events(time.Time{}) {
+		if ev.Kind == kindBlock && ev.Security && strings.Contains(ev.Message, "cannot be read") {
+			said++
+		}
+	}
+	require.Equal(t, 2, said, "said again for the next outage")
 }
 
 // A conflict reported by an appliance agent, or of a MAC no route
