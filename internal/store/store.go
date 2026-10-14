@@ -53,6 +53,7 @@ const (
 	// list, as it stops on a file of a kind it reads that it cannot take.
 	kindPlacements     = "placements"
 	kindMoves          = "moves"
+	kindBlocks         = "blocks"
 	kindNodeSegments   = "nodesegments"
 	kindNodeSvcAddrs   = "nodesvcaddrs"
 	kindSecurityEvents = "security-events"
@@ -114,7 +115,7 @@ func open(p Paths, now func() time.Time) (*Store, error) {
 	if guard == nil || guard() == nil {
 		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals, kindSegments,
 			kindNetworks, kindSvcAddrs, kindIPAM, kindConsents, kindAttachments,
-			kindPlacements, kindMoves, kindNodeSegments, kindNodeSvcAddrs, kindSecurityEvents)...)
+			kindPlacements, kindMoves, kindBlocks, kindNodeSegments, kindNodeSvcAddrs, kindSecurityEvents)...)
 		_ = removeStaleTemps(cutoff, tempDirs(p.Private, kindCredentials, kindMeta, kindCA, kindEnrol, kindJoinTokens)...)
 	}
 	return build(p, guard), nil

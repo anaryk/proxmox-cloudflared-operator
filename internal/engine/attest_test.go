@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -302,6 +305,68 @@ func TestAConflictBlocksTheAddressOnEveryNode(t *testing.T) {
 	require.NotContains(t, w.eng.place.blocks, dbAddr)
 	s, _ := w.r.lastOf("pve2")
 	require.Empty(t, s.Blocks)
+}
+
+// A block outlives the controller that made it: one that takes over, or
+// starts again, finds it stored and keeps it in every snapshot for as long
+// as the one before would have, also when no agent reports the conflict
+// any more; it ends when that one would have ended it.
+func TestAConflictBlockSurvivesATakeover(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].edit = func(st *agentproto.Status) {
+		st.Observations = []agentproto.Observation{{Kind: agentproto.ObservationConflict, MAC: dbCard, Bridge: "vmbr0", Port: "tap140i0", At: t0}}
+	}
+	w.tick(time.Second)
+	lastReport := w.clock.now()
+	w.acts["pve3"].edit = nil
+	w.tick(time.Second)
+	blocks, err := w.store.Blocks()
+	require.NoError(t, err)
+	require.Contains(t, blocks, dbAddr)
+	require.Equal(t, lastReport, blocks[dbAddr].LastReport)
+
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	st := w.tick(time.Second)
+
+	require.True(t, hasProblem(st, "10.0.0.22 is blocked on every node: its MAC "+dbCard+" was seen on tap140i0 of pve3"), st.Problems)
+	require.Len(t, st.Cluster.Blocks, 1)
+	require.Equal(t, lastReport, st.Cluster.Blocks[0].LastReport)
+	for _, node := range []string{"pve2", "pve3"} {
+		s, _ := w.r.lastOf(node)
+		require.Contains(t, s.Blocks, agentproto.Block{Addr: dbAddr, Reason: agentproto.BlockConflict}, node)
+	}
+	require.Equal(t, planner.StateWithdrawn, route(st, "db.example.com").State)
+
+	for w.clock.now().Sub(lastReport) < blockQuiet-15*time.Second {
+		w.tick(10 * time.Second)
+	}
+	require.Contains(t, w.eng.place.blocks, dbAddr, "under ten minutes since the last report")
+	w.tick(20 * time.Second)
+	require.NotContains(t, w.eng.place.blocks, dbAddr)
+	blocks, err = w.store.Blocks()
+	require.NoError(t, err)
+	require.Empty(t, blocks)
+	s, _ := w.r.lastOf("pve2")
+	require.Empty(t, s.Blocks)
+}
+
+// Blocks that cannot be read hold the cycle: no snapshot goes out on what
+// is not known.
+func TestUnreadableBlocksServeNothing(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	served := len(w.r.served)
+	require.NoError(t, os.MkdirAll(filepath.Join(w.paths.Cluster, "blocks"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(w.paths.Cluster, "blocks", "10.0.0.9.json"), []byte("{"), 0o600))
+	w.eng = w.newEngine()
+	w.watchHere(t)
+
+	st := w.tick(time.Second)
+
+	require.Contains(t, st.Hold, "reading the blocked addresses")
+	require.Len(t, w.r.served, served)
 }
 
 // A conflict reported by an appliance agent, or of a MAC no route

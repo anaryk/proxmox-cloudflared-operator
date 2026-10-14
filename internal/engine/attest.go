@@ -80,7 +80,9 @@ func (f *fleetView) node(name string) *agentFacts {
 
 // conflictBlock is an address blocked on every node because an agent saw a
 // MAC bound to its guest where it must not be: on the port of another guest,
-// or gone from the guest's port while the guest did not migrate.
+// or gone from the guest's port while the guest did not migrate. It is
+// stored, so that a controller that takes over keeps it; saved is when the
+// store last had it as it is.
 type conflictBlock struct {
 	addr       netip.Addr
 	guest      model.GuestRef
@@ -89,6 +91,43 @@ type conflictBlock struct {
 	why        string // conflict or moved
 	since      time.Time
 	lastReport time.Time
+	saved      time.Time
+}
+
+// blockSaveEvery is how much the last report of a block moves on before it
+// is written again: a block reported every cycle is not a write per cycle,
+// and ends at most that much early at a takeover.
+const blockSaveEvery = time.Minute
+
+func (b *conflictBlock) stored() store.Block {
+	return store.Block{Addr: b.addr, Guest: b.guest, MAC: b.mac, Node: b.node, Port: b.port, Why: b.why, Since: b.since, LastReport: b.lastReport}
+}
+
+// readBlocks reads the blocks stored, once per process; false when they
+// cannot be read, which holds the cycle: no snapshot goes out on what is
+// not known.
+func (c *cycleRun) readBlocks() bool {
+	blocks, err := c.e.d.Store.Blocks()
+	if err != nil {
+		c.hold(c.storeProblem("reading the blocked addresses", err))
+		return false
+	}
+	mem := &c.e.place
+	mem.blocks = make(map[netip.Addr]*conflictBlock, len(blocks))
+	for addr, b := range blocks {
+		mem.blocks[addr] = &conflictBlock{addr: addr, guest: b.Guest, mac: b.MAC, node: b.Node, port: b.Port, why: b.Why,
+			since: b.Since, lastReport: b.LastReport, saved: c.now}
+	}
+	return true
+}
+
+// saveBlock writes a block, which holds in memory either way.
+func (c *cycleRun) saveBlock(b *conflictBlock) {
+	if err := c.e.d.Store.SaveBlock(b.stored()); err != nil {
+		c.problem("saving the block of %s: %v; it holds in the memory of this controller alone", b.addr, err)
+		return
+	}
+	b.saved = c.now
 }
 
 // observeFleet takes the reports of the agents for this cycle, when the
@@ -103,6 +142,9 @@ func (c *cycleRun) observeFleet() bool {
 		return true
 	}
 	if c.placements == nil && !c.readPlacements() {
+		return false
+	}
+	if c.e.place.blocks == nil && !c.readBlocks() {
 		return false
 	}
 	c.fleet = &fleetView{nodes: map[string]*agentFacts{}, attested: map[cardRef][]agentproto.Attestation{}, elsewhere: map[cardRef][]string{}, cards: c.publishedCards()}
@@ -299,9 +341,6 @@ func (c *cycleRun) refuseFacts(node, msg string) {
 // reported it for blockQuiet and the hosting node attests the card again.
 func (c *cycleRun) followBlocks() {
 	mem := &c.e.place
-	if mem.blocks == nil {
-		mem.blocks = map[netip.Addr]*conflictBlock{}
-	}
 	if mem.moved == nil {
 		mem.moved = map[string]time.Time{}
 	}
@@ -342,6 +381,10 @@ func (c *cycleRun) followBlocks() {
 		if c.now.Sub(b.lastReport) < blockQuiet || c.attestation(c.hostOf(b.guest), b.mac) == nil {
 			continue
 		}
+		if err := c.e.d.Store.DeleteBlock(addr); err != nil {
+			c.problem("ending the block of %s: %v", addr, err)
+			continue
+		}
 		delete(mem.blocks, addr)
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindBlock, Subject: addr.String(), Guest: b.guest.String(),
 			Message: fmt.Sprintf("%s is no longer blocked: no agent reported its MAC %s elsewhere for %s, and node %s attests it again",
@@ -372,9 +415,14 @@ func (c *cycleRun) block(cd card, mac, node, port, why string) {
 	for _, addr := range c.addrsOf(cd.ref.guest) {
 		if b, ok := mem.blocks[addr]; ok {
 			b.lastReport = c.now
+			if c.now.Sub(b.saved) >= blockSaveEvery {
+				c.saveBlock(b)
+			}
 			continue
 		}
-		mem.blocks[addr] = &conflictBlock{addr: addr, guest: cd.ref.guest, mac: mac, node: node, port: port, why: why, since: c.now, lastReport: c.now}
+		b := &conflictBlock{addr: addr, guest: cd.ref.guest, mac: mac, node: node, port: port, why: why, since: c.now, lastReport: c.now}
+		mem.blocks[addr] = b
+		c.saveBlock(b)
 		c.events = append(c.events, Event{At: c.now, Level: levelError, Kind: kindBlock, Subject: addr.String(), Guest: cd.ref.guest.String(), Node: node,
 			Security: true, Message: fmt.Sprintf(problemConflictBlocked, addr, mac, port, node)})
 	}

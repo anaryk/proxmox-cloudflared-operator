@@ -518,7 +518,10 @@ func (c *cycleRun) servedTarget(rt model.Route, record placed, replicas []string
 		// holds the target meanwhile. Longer than that, or once the guest
 		// is stopped, the address is withdrawn, as the resolver of its
 		// node would withdraw it.
-		if s, ok := c.placements[rt.Hostname]; ok && s.Addr.IsValid() && mem.blocks[s.Addr] == nil {
+		if s, ok := c.placements[rt.Hostname]; ok && s.Addr.IsValid() {
+			if mem.blocks[s.Addr] != nil {
+				return planner.ResolvedTarget{Addr: s.Addr, Withdrawn: true, Owner: rt.Owner(), Reason: reasonBlocked}
+			}
 			why, held := c.holdsStored(rt, unknown)
 			if held {
 				return planner.ResolvedTarget{Addr: s.Addr, Owner: rt.Owner(), Reason: why}
