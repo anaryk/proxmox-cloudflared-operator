@@ -375,6 +375,9 @@ type Engine struct {
 	taken    takenEvents
 	// above are the epochs agents reported above this controller's.
 	above aboveReports
+	// place is what the placement of routes keeps between cycles, guarded
+	// by the cycle lock.
+	place placementMemory
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.

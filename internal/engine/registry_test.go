@@ -298,7 +298,8 @@ func TestADrainedNodeIsDrainedAsItIsAdmitted(t *testing.T) {
 
 // Every node that is joining, active or draining is served a snapshot of
 // the controller's epoch, without a run token while placement gives it no
-// route; others none. A snapshot that does not change keeps its seq.
+// route, with the targets it verifies at the address this node chose; others
+// none. A snapshot that does not change keeps its seq.
 func TestTheOtherNodesAreServedSnapshotsOfTheirState(t *testing.T) {
 	one, two := 1, 2
 	e, r, _ := clusterOf(t,
@@ -317,7 +318,10 @@ func TestTheOtherNodesAreServedSnapshotsOfTheirState(t *testing.T) {
 	require.Equal(t, agentproto.Active, s.State)
 	require.Equal(t, "pve2", s.Node)
 	require.Equal(t, agentproto.Epoch{InstallID: testInstall, Generation: testWriter.Generation, Nonce: testWriter.Nonce}, s.Epoch)
-	require.Empty(t, s.Targets)
+	require.Len(t, s.Targets, 1)
+	require.False(t, s.Targets[0].Resolve, "the guest is pve1's, which resolves it")
+	require.Equal(t, guestAddr, s.Targets[0].Addr)
+	require.Empty(t, s.Targets[0].MACs, "the guest has no card: no MAC vouches for it")
 	for _, tun := range s.Tunnels {
 		require.False(t, tun.Run)
 		require.Empty(t, tun.Token.Reveal())

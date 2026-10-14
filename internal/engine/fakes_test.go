@@ -165,6 +165,7 @@ type fakeResolver struct {
 	denied      []netip.Addr     // the node addresses the last denylist refused
 	deadlines   []time.Time
 	onResolve   func()
+	verified    []resolve.VerifyRequest // every request VerifyAddress was asked
 	// leasedAddrs are, by owner, the addresses the snapshot of the last call
 	// said pco leased the cards of the guests.
 	leasedAddrs map[string]netip.Addr
@@ -266,9 +267,40 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, snap inve
 }
 
 // VerifyAddress is asked only of an address another node chose, which a
-// single node never has: it proves nothing.
-func (f *fakeResolver) VerifyAddress(context.Context, resolve.VerifyRequest) resolve.VerifyResult {
-	return resolve.VerifyResult{}
+// single node never has. It proves the address at port, attested, when the
+// request carries the attestation of the guest's node and coverage, and at
+// observed otherwise, unless a test made the hostname unreachable; it keeps
+// every request.
+func (f *fakeResolver) VerifyAddress(_ context.Context, req resolve.VerifyRequest) resolve.VerifyResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verified = append(f.verified, req)
+	if !req.Addr.IsValid() {
+		return resolve.VerifyResult{}
+	}
+	reason, bad := f.unreachable[req.Route.Hostname]
+	level, attested := resolve.LevelObserved, false
+	if at := req.Attestation; at != nil && req.Covered && at.Node == req.Guest.Node && at.Node != "" {
+		level, attested = resolve.LevelPort, true
+	}
+	res := resolve.Result{
+		Target: planner.ResolvedTarget{Addr: req.Addr, Reachable: !bad, Reason: reason, Owner: req.Route.Owner()},
+		Level:  level,
+	}
+	if req.Route.Guest != nil && len(req.MACs) > 0 {
+		res.Binding = &resolve.Binding{
+			Owner: req.Route.Owner(), Hostname: req.Route.Hostname, Guest: req.Route.Guest.String(),
+			Addr: req.Addr, MAC: req.MACs[0], VerifiedAt: f.now(), Level: level,
+		}
+	}
+	return resolve.VerifyResult{Result: res, Attested: attested}
+}
+
+// verifications are the requests VerifyAddress was asked.
+func (f *fakeResolver) verifications() []resolve.VerifyRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.verified)
 }
 
 // proveOn makes every binding say it was proven on seg.

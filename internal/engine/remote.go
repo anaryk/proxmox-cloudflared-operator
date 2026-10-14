@@ -45,13 +45,14 @@ func servedState(state string) bool {
 }
 
 // publishRemote serves the agents of the other nodes their snapshots, once
-// the lease let the cycle write and the inventory was read whole. Until the
-// placement of routes on other nodes, a remote node runs no connector and
-// resolves nothing: it keeps the targets of the configurations last
-// verified, which its egress set holds, and the settings it works by.
+// the lease let the cycle write, the inventory was read whole and the
+// reports of the agents were taken: each node resolves the targets of the
+// guests it hosts and verifies the others, keeps the targets of the
+// configurations last verified of the tunnels it may run, and blocks what
+// every node blocks.
 func (c *cycleRun) publishRemote() {
 	r := c.e.d.Remote
-	if r == nil || c.leaseHeld || !c.writerRead || !c.snap.Complete || c.nodes == nil {
+	if r == nil || c.leaseHeld || !c.writerRead || !c.snap.Complete || c.nodes == nil || c.fleet == nil {
 		return
 	}
 	reports := c.reportsNow()
@@ -63,7 +64,8 @@ func (c *cycleRun) publishRemote() {
 		}
 		s := c.desired()
 		s.Node, s.State = name, agentproto.NodeState(n.State)
-		s.Targets, s.Guests = []agentproto.Target{}, nil
+		s.Targets = c.targetsFor(name)
+		s.Guests = c.snapshotGuests(s.Targets)
 		s.Tunnels = c.withVerified(nil, name)
 		rep := reports[name]
 		c.e.seqs.stamp(&s, rep.Status.EpochSeen, rep.Status.SeqApplied)

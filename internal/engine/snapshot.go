@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -52,8 +53,8 @@ func (c *cycleRun) desired() agentproto.Snapshot {
 		},
 		Nodes:   c.snapshotNodes(),
 		Deny:    c.snapshotDeny(),
-		Targets: c.snapshotTargets(),
-		Blocks:  []agentproto.Block{},
+		Targets: c.targetsFor(c.e.d.Node),
+		Blocks:  c.snapshotBlocks(),
 		Actions: []agentproto.Action{},
 	}
 	if c.writerRead {
@@ -100,6 +101,106 @@ func (c *cycleRun) snapshotDeny() agentproto.DenyList {
 		Reasons: text(sdnGateways(c.access.subnets)),
 		Soft:    text(softMap(c.soft)),
 	}
+}
+
+// targetsFor are the winners as the snapshot of node has them. On a node
+// alone each is a target the node resolves. In a cluster the resolving node
+// of a guest's route is the node that hosts the guest while its agent
+// reports, and this node for any other route; every other node verifies the
+// address the resolving node chose, with the MACs of the guest's own cards,
+// the attestation of the guest's node and the coverage this controller
+// found.
+func (c *cycleRun) targetsFor(node string) []agentproto.Target {
+	out := c.snapshotTargets()
+	if c.fleet == nil {
+		return out
+	}
+	for i := range out {
+		t := &out[i]
+		rt := t.Route
+		resolver := c.resolverOf(rt)
+		t.Resolve = resolver == node
+		if t.Guest == nil {
+			continue
+		}
+		macs := guestMACs(*t.Guest)
+		if !t.Resolve {
+			t.Addr, t.MACs = c.chosen(rt, resolver, macs)
+		}
+		if t.HostingNode != node {
+			t.Covered = c.cover.covered
+			attested := t.MACs
+			if len(attested) == 0 {
+				attested = macs
+			}
+			for _, mac := range attested {
+				if at := c.attestation(t.HostingNode, mac); at != nil {
+					t.Attestation = at
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// resolverOf is the node that resolves the target of a route: the node the
+// guest runs on while its agent reports fresh and is served, else this one.
+func (c *cycleRun) resolverOf(rt model.Route) string {
+	if rt.Guest == nil {
+		return c.e.d.Node
+	}
+	g, ok := c.snap.Guest(*rt.Guest)
+	if !ok || g.Node == "" {
+		return c.e.d.Node
+	}
+	if f := c.fleet.node(g.Node); g.Node != c.e.d.Node && (!f.fresh || !servedState(f.entry.State)) {
+		return c.e.d.Node
+	}
+	return g.Node
+}
+
+// chosen is the address the resolving node chose for a route and the MACs
+// it chose it with, as far as they are the guest's own: what its report
+// says, and while it says nothing, what the stored placement holds of that
+// node's choice. None when neither says.
+func (c *cycleRun) chosen(rt model.Route, resolver string, own []string) (netip.Addr, []string) {
+	var addr netip.Addr
+	var mac string
+	if resolver == c.e.d.Node {
+		if res, ok := c.results[rt.Hostname]; ok && !res.Target.Withdrawn && !res.Target.Rejected {
+			addr = res.Target.Addr
+			if res.Binding != nil {
+				mac = res.Binding.MAC
+			}
+		}
+	} else if tr, ok := c.fleet.node(resolver).targets[rt.Hostname]; ok && tr.Addr.IsValid() {
+		addr = tr.Addr
+		if res, err := agent.DecodeResult(tr.Result); err == nil && res.Binding != nil {
+			mac = res.Binding.MAC
+		}
+	}
+	if p, ok := c.placements[rt.Hostname]; !addr.IsValid() && ok && p.ResolvingNode == resolver {
+		addr = p.Addr
+	}
+	if !addr.IsValid() {
+		return netip.Addr{}, nil
+	}
+	if mac, err := model.NormalizeMAC(mac); err == nil && slices.Contains(own, mac) {
+		return addr, []string{mac}
+	}
+	return addr, own
+}
+
+// guestMACs are the MACs of a guest's own cards.
+func guestMACs(g model.Guest) []string {
+	var out []string
+	for _, n := range g.NICs {
+		if mac, err := model.NormalizeMAC(n.MAC); err == nil {
+			out = append(out, mac)
+		}
+	}
+	return out
 }
 
 // snapshotTargets are the winners, each a target this node resolves.

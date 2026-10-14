@@ -39,6 +39,9 @@ func (c *cycleRun) learnNodeAddrs() bool {
 // gateway, and has the agent watch what is served and keep the bindings. A
 // cycle whose context ends in the middle plans and changes nothing.
 func (c *cycleRun) resolveTargets() bool {
+	if !c.observeFleet() {
+		return false
+	}
 	st, err := c.begin(c.snapshot())
 	if err != nil {
 		c.hold(c.problem(problemStoppedResolve, err))

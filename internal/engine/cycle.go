@@ -169,6 +169,12 @@ type cycleRun struct {
 	// no rule a tunnel serves is dropped or blocked, no record deleted, no
 	// connector pruned. Empty in a cycle that writes as it sees.
 	addOnly string
+	// fleet is what the agents reported, checked again, cover what the
+	// cycle judges of coverage, and placements the placements stored when
+	// the cycle began; all three are of a cluster only.
+	fleet      *fleetView
+	cover      coverageView
+	placements map[string]store.Placement
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -211,6 +217,9 @@ func (c *cycleRun) run() State {
 	c.st.Offer = offerOf(c.st.Waiting)
 	if views := c.nodeViews(); views != nil {
 		c.st.Nodes = views
+	}
+	if c.fleet != nil {
+		c.st.Cluster = c.clusterView()
 	}
 	c.st.FinishedAt = c.e.d.Now()
 	c.e.lastVerdict = cmp.Or(c.gateVerdict, verdictNoRun)
