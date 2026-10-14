@@ -230,6 +230,7 @@ func (c *cycleRun) run() State {
 		c.savePlacements()
 		c.retirePinned()
 		c.rotationStep()
+		c.forgetRotations()
 		c.publishRemote()
 	}
 	c.watchTunnels()

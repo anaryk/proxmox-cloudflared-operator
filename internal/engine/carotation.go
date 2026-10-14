@@ -51,6 +51,8 @@ const (
 	problemRotationTunnels = "node %s was forgotten as compromised: rotating the secret of %s failed: %v; it is tried again in the next cycle"
 	problemRotationRollout = "node %s was forgotten as compromised: waiting for the connectors of %s to run with the new secret before the CA is rotated"
 	problemRotationCA      = "node %s was forgotten as compromised: rotating the CA failed: %v; it is tried again in the next cycle"
+	problemRotationCleanUp = "node %s was forgotten as compromised: ending the connections made with the old secret of tunnel %s in account %s failed: %v; " +
+		"it is tried again in the next cycle"
 	problemRotationHeld    = "node %s was forgotten as compromised: the rotation of %s waits for a cycle that writes: %s"
 	problemRotationRefused = "the certificate of node %s is not under the install's new CA: its agent is refused until the node issues its certificate again, " +
 		"which it does when it reads leader.json at its next start"
@@ -62,7 +64,8 @@ const (
 // held, which the cycles then carry out step by step. The caller holds the
 // cycle lock.
 func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResult) (ForgetResult, error) {
-	rec := store.CARotation{Node: name, StartedAt: e.d.Now(), Actor: ActorOf(ctx)}
+	rec := store.CARotation{Node: name, StartedAt: e.d.Now(), Actor: ActorOf(ctx),
+		TunnelsRotated: store.TunnelsRotated{Connectors: e.connectorIDsOf(name)}}
 	if tok, found, err := e.d.Store.PVEToken(); err != nil {
 		return res, fmt.Errorf("reading the Proxmox token: %w", err)
 	} else if found {
@@ -156,11 +159,17 @@ func (c *cycleRun) undone(rec *store.CARotation, step string) bool {
 		return false
 	}
 	for _, t := range c.tunnels {
-		if t.Exists && t.ID != "" && t.CredentialID != "" && !slices.Contains(rec.Rotated, t.ID) {
+		if t.Exists && t.ID != "" && t.CredentialID != "" && !rotatedThrough(rec.TunnelsRotated, t.ID) {
 			return true
 		}
 	}
 	return false
+}
+
+// rotatedThrough says whether the secret of a tunnel was rotated and the
+// rotation followed through.
+func rotatedThrough(r store.TunnelsRotated, id string) bool {
+	return slices.Contains(r.Rotated, id) && slices.Contains(r.TakenUp, id)
 }
 
 // caFactsView is the CA as the store and leader.json have it now.
@@ -262,7 +271,10 @@ func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bo
 		if waiting := c.notRolledOut(rec.Rotated); len(waiting) > 0 {
 			return false, fmt.Sprintf(problemRotationRollout, rec.Node, andList(waiting))
 		}
-		return true, ""
+		if why := c.rotationHeld(); why != "" {
+			return false, fmt.Sprintf(problemRotationHeld, rec.Node, "the tunnels", why)
+		}
+		return c.cleanUpRotated(rec)
 	case stepCA:
 		if why := c.rotationHeld(); why != "" {
 			return false, fmt.Sprintf(problemRotationHeld, rec.Node, "the CA", why)
@@ -337,19 +349,44 @@ func (c *cycleRun) rotateTunnels(rec *store.CARotation) (bool, string) {
 	case len(c.unreported) > 0:
 		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels", fmt.Errorf("%d tunnels are in accounts the tunnel run could not read", len(c.unreported)))
 	}
+	save := func() error { return c.e.d.Store.SaveCARotation(*rec) }
 	for _, t := range c.tunnels {
-		if !t.Exists || t.ID == "" || t.CredentialID == "" || slices.Contains(rec.Rotated, t.ID) {
+		if !t.Exists || t.ID == "" || t.CredentialID == "" || rotatedThrough(rec.TunnelsRotated, t.ID) {
 			continue
 		}
-		if err := c.e.rotateSecret(c.ctx, t); err != nil {
+		fresh := !slices.Contains(rec.Rotated, t.ID)
+		err := c.e.rotateFor(c.ctx, t, &rec.TunnelsRotated, save)
+		if fresh && slices.Contains(rec.Rotated, t.ID) {
+			c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindRotation, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID, Security: true,
+				Message: fmt.Sprintf("the secret of tunnel %s in account %s is rotated: every run token of it stops working", t.Name, t.AccountID)})
+		}
+		if err != nil {
 			return false, fmt.Sprintf(problemRotationTunnels, rec.Node, fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID), err)
 		}
-		rec.Rotated = append(rec.Rotated, t.ID)
+	}
+	return true, ""
+}
+
+// cleanUpRotated ends the connections of every connector of each tunnel
+// whose secret was rotated, once every connector that remains runs with the
+// new one: a connector that still has a session made with the old secret,
+// wherever it runs, loses it then, and the replicas connect again at once.
+func (c *cycleRun) cleanUpRotated(rec *store.CARotation) (bool, string) {
+	for _, t := range c.tunnels {
+		if !slices.Contains(rec.Rotated, t.ID) || slices.Contains(rec.Cleaned, t.ID) {
+			continue
+		}
+		api := c.e.clients[t.CredentialID]
+		if api == nil {
+			return false, fmt.Sprintf(problemRotationCleanUp, rec.Node, t.Name, t.AccountID, fmt.Errorf("no client for credential %s", t.CredentialID))
+		}
+		if err := api.CleanUpConnections(c.ctx, t.AccountID, t.ID); err != nil {
+			return false, fmt.Sprintf(problemRotationCleanUp, rec.Node, t.Name, t.AccountID, err)
+		}
+		rec.Cleaned = append(rec.Cleaned, t.ID)
 		if err := c.e.d.Store.SaveCARotation(*rec); err != nil {
 			return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the record", err)
 		}
-		c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindRotation, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID, Security: true,
-			Message: fmt.Sprintf("the secret of tunnel %s in account %s is rotated: every run token of it stops working", t.Name, t.AccountID)})
 	}
 	return true, ""
 }

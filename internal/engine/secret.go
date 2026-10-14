@@ -12,6 +12,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // ObserveOnlyRefusal is why a rotation is refused in observe-only mode. The
@@ -187,23 +188,52 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 }
 
 // rotateSecret gives a tunnel a new secret at Cloudflare, ends the
-// connections of its connectors and restarts the one on this node with the
-// new token, when the node runs one; the other nodes take the new token up
-// through their next snapshot. The caller holds the cycle lock.
+// connections of all its connectors and restarts the one on this node with
+// the new token, when the node runs one; the other nodes take the new token
+// up through their next snapshot. The caller holds the cycle lock.
 func (e *Engine) rotateSecret(ctx context.Context, t reconcile.TunnelState) error {
+	if err := e.patchSecret(ctx, t); err != nil {
+		return err
+	}
+	cleanErr := e.clients[t.CredentialID].CleanUpConnections(ctx, t.AccountID, t.ID)
+	if err := e.takeUpSecret(ctx, t); err != nil {
+		return err
+	}
+	if cleanErr != nil {
+		return fmt.Errorf("the secret of tunnel %s in account %s was rotated and its connector on this node restarts with the new token, "+
+			"but the connections of the tunnel could not be ended: %w; a connector elsewhere keeps its session until it reconnects: "+
+			"run pco tunnel rotate again", t.Name, t.AccountID, cleanErr)
+	}
+	return nil
+}
+
+// patchSecret gives a tunnel a new secret at Cloudflare: a run token made
+// before no longer starts a connector, and the connectors that run keep
+// their connections until they end.
+func (e *Engine) patchSecret(ctx context.Context, t reconcile.TunnelState) error {
 	api := e.clients[t.CredentialID]
 	if api == nil {
 		return fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
 	}
-	what := fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID)
 	secret := make([]byte, cfapi.MinTunnelSecret)
 	if _, err := rand.Read(secret); err != nil {
 		return fmt.Errorf("making a secret: %w", err)
 	}
 	if err := api.RotateTunnelSecret(ctx, t.AccountID, t.ID, secret); err != nil {
-		return fmt.Errorf("rotating the secret of %s: %w", what, err)
+		return fmt.Errorf("rotating the secret of tunnel %s in account %s: %w", t.Name, t.AccountID, err)
 	}
-	cleanErr := api.CleanUpConnections(ctx, t.AccountID, t.ID)
+	return nil
+}
+
+// takeUpSecret has the connectors of a tunnel whose secret was rotated take
+// the new token up: the connector on this node is restarted with it at once,
+// and the other nodes get it read anew for their next snapshot.
+func (e *Engine) takeUpSecret(ctx context.Context, t reconcile.TunnelState) error {
+	api := e.clients[t.CredentialID]
+	if api == nil {
+		return fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+	}
+	what := fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID)
 	// The connectors are listed in the next cycle: the rollout to the one
 	// restarted, and whether any other came back. The other nodes get the
 	// token read anew.
@@ -230,12 +260,71 @@ func (e *Engine) rotateSecret(ctx context.Context, t reconcile.TunnelState) erro
 			return fmt.Errorf("the secret of %s was rotated, but its connector on this node could not be restarted: %s", what, redact(err.Error(), token))
 		}
 	}
-	if cleanErr != nil {
-		return fmt.Errorf("the secret of %s was rotated and its connector on this node restarts with the new token, "+
-			"but the connections of the tunnel could not be ended: %w; a connector elsewhere keeps its session until it reconnects: "+
-			"run pco tunnel rotate again", what, cleanErr)
+	return nil
+}
+
+// dropConnectors ends the connections of the connectors of a tunnel with the
+// ids given, and of no other.
+func (e *Engine) dropConnectors(ctx context.Context, t reconcile.TunnelState, ids []string) error {
+	api := e.clients[t.CredentialID]
+	if api == nil {
+		return fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+	}
+	for _, id := range ids {
+		if err := api.CleanUpConnector(ctx, t.AccountID, t.ID, id); err != nil {
+			return fmt.Errorf("the secret of tunnel %s in account %s was rotated, but its connector %s could not be dropped: %w", t.Name, t.AccountID, id, err)
+		}
 	}
 	return nil
+}
+
+// rotateFor rotates the secret of a tunnel for nodes that are gone, as far
+// as r shows it not done: the secret once, and then, until it succeeds,
+// what follows it: the connectors that remain take the new token up, and
+// those of the nodes are dropped at Cloudflare, while the others keep their
+// connections until they restart. save keeps r after each part.
+func (e *Engine) rotateFor(ctx context.Context, t reconcile.TunnelState, r *store.TunnelsRotated, save func() error) error {
+	if !slices.Contains(r.Rotated, t.ID) {
+		if err := e.patchSecret(ctx, t); err != nil {
+			return err
+		}
+		r.Rotated = append(r.Rotated, t.ID)
+		if err := save(); err != nil {
+			return fmt.Errorf("recording the rotation of the secret of tunnel %s in account %s: %w", t.Name, t.AccountID, err)
+		}
+	}
+	if slices.Contains(r.TakenUp, t.ID) {
+		return nil
+	}
+	if err := e.takeUpSecret(ctx, t); err != nil {
+		return err
+	}
+	if err := e.dropConnectors(ctx, t, r.Connectors[t.ID]); err != nil {
+		return err
+	}
+	r.TakenUp = append(r.TakenUp, t.ID)
+	if err := save(); err != nil {
+		return fmt.Errorf("recording the rotation of the secret of tunnel %s in account %s: %w", t.Name, t.AccountID, err)
+	}
+	return nil
+}
+
+// connectorIDsOf are, by tunnel id, the connector ids the agent of a node
+// reported as its own, sorted.
+func (e *Engine) connectorIDsOf(node string) map[string][]string {
+	out := map[string][]string{}
+	for tunnel, ids := range e.place.ids[node] {
+		for id := range ids {
+			if id != "" {
+				out[tunnel] = append(out[tunnel], id)
+			}
+		}
+		slices.Sort(out[tunnel])
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // runsHere says whether this node runs a connector of a tunnel: the shared

@@ -93,6 +93,17 @@ type NodeEntry struct {
 	// Drained is the intent to drain the node, which outlives its absence:
 	// a node drained comes back drained. Unset is not drained.
 	Drained *NodeDrain `json:"drained,omitempty"`
+	// Rotation is the rotation of the shared tunnel's secret the forget of
+	// a removed node began, until it is finished.
+	Rotation *ForgetRotation `json:"rotation,omitempty"`
+}
+
+// ForgetRotation is the rotation of the secret of the shared tunnel, in
+// every account, for a node that was forgotten: the run token the node
+// holds stops working once it is done.
+type ForgetRotation struct {
+	Since time.Time `json:"since"`
+	TunnelsRotated
 }
 
 // The reasons of NodeDrain.

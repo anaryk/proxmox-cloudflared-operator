@@ -722,7 +722,10 @@ enrolled, and a node that stays joining because more routes would move than
 the shared tunnel's replicas, the last one only with `force`; `POST /v1/nodes/:name/undrain {}`
 ends an admin's drain, not one Proxmox's maintenance mode made. `POST /v1/nodes/:name/forget
 {"compromised"}` removes a node that is gone, closes its connections and rotates the shared
-tunnel's secret (`cluster.rotateOnForget`); with `compromised`, refused while the node is still
+tunnel's secret (`cluster.rotateOnForget`), dropping the node's connector alone at Cloudflare:
+the remaining replicas keep their connections until each restarts with the new token. What the
+call cannot finish, the cycles do; the node's entry keeps the progress. With `compromised`,
+refused in observe-only mode and while the node is still
 in the Proxmox cluster, every secret of the install is rotated step by step afterwards, and the
 answer `{"node", "compromised", "done", "pending", "notRotated"}` says what was done, what is
 left and what the node's disk holds that pco cannot rotate. `PUT /v1/nodes/:name

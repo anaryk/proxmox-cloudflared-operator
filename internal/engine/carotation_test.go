@@ -412,6 +412,37 @@ func TestARotationWhoseRecordAndCADisagreeStops(t *testing.T) {
 	require.Len(t, drift(), 2)
 }
 
+// A compromised node's connector is dropped as its tunnel gets a new secret;
+// every other connection made with the old secret is ended only once every
+// connector that remains runs with the new one, so that the tunnel never
+// goes without one.
+func TestTheConnectionsOfTheOldSecretEndAfterTheRollout(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	id := w.tunnelID(t, tunnelName)
+	require.Equal(t, []string{"pve3-" + id}, w.rotationRecord(t).Connectors[id])
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+	w.acts["pve2"].edit = func(s *agentproto.Status) { s.Connectors = nil }
+	n := len(w.cf.Calls())
+
+	st := w.tick(time.Second)
+
+	require.Equal(t, stepRollout, st.Cluster.CARotation.Next, st.Problems)
+	calls := w.callsSince(n)
+	require.Contains(t, calls, "RotateTunnelSecret acc1 "+id)
+	require.Contains(t, calls, "CleanUpConnector acc1 "+id+" pve3-"+id)
+	require.NotContains(t, calls, "CleanUpConnections acc1 "+id)
+
+	w.acts["pve2"].edit = nil
+	st = w.tick(time.Second)
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+	require.Equal(t, 1, count(w.callsSince(n), "CleanUpConnections acc1 "+id))
+	require.Equal(t, []string{id}, w.rotationRecord(t).Cleaned)
+	w.tick(time.Second)
+	require.Equal(t, 1, count(w.callsSince(n), "CleanUpConnections acc1 "+id), "once")
+}
+
 // The steps that write at Cloudflare or replace the CA wait while the cycle
 // may not write as it sees: in observe-only mode, and while a hold of the
 // tunnel run, the egress filter, the gateway or an add-only cycle keeps it

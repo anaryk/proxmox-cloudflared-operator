@@ -334,8 +334,24 @@ type CARotation struct {
 	// PVESecretSHA256 is the hash of the Proxmox token's secret as the
 	// rotation began: the token has a new one once it differs.
 	PVESecretSHA256 string `json:"pveSecretSHA256,omitempty"`
-	// Rotated are the ids of the tunnels whose secret was rotated so far.
+	TunnelsRotated
+	// Cleaned are the tunnels rotated whose connections were all ended
+	// once every connector that remains ran with the new secret.
+	Cleaned []string `json:"cleaned,omitempty"`
+}
+
+// TunnelsRotated is how far the secrets of tunnels were rotated for nodes
+// that are gone: the secret is given once, and what follows it, the
+// connectors taking the new token up and those of the nodes dropped at
+// Cloudflare, is done until it succeeded.
+type TunnelsRotated struct {
+	// Rotated are the ids of the tunnels whose secret was rotated so far,
+	// and TakenUp those of them whose rotation was followed through.
 	Rotated []string `json:"rotated,omitempty"`
+	TakenUp []string `json:"takenUp,omitempty"`
+	// Connectors are, by tunnel id, the ids of the connectors the nodes
+	// ran, which are dropped at Cloudflare.
+	Connectors map[string][]string `json:"connectors,omitempty"`
 }
 
 // CARotation returns the rotation under way or last made.

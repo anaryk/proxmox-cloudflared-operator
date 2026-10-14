@@ -388,13 +388,13 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 		return ForgetResult{}, err
 	}
 	n := rev.Node
+	s, err := e.d.Store.Settings()
+	if err != nil {
+		return ForgetResult{}, fmt.Errorf("reading the settings: %w", err)
+	}
 	if compromised {
 		if err := e.stillInCluster(name); err != nil {
 			return ForgetResult{}, err
-		}
-		s, err := e.d.Store.Settings()
-		if err != nil {
-			return ForgetResult{}, fmt.Errorf("reading the settings: %w", err)
 		}
 		if s.ObserveOnly {
 			return ForgetResult{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare, where every secret of the install "+
@@ -404,6 +404,12 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 	res := ForgetResult{Node: name, Compromised: compromised, Done: []string{}}
 	before := n
 	n.State, n.StateSince, n.Drained = store.NodeRemoved, e.d.Now(), nil
+	rotates := !compromised && s.Cluster.RotatesOnForget()
+	if rotates {
+		// Kept with the entry, so that the cycles finish what this call
+		// cannot, a controller that takes over included.
+		n.Rotation = &store.ForgetRotation{Since: e.d.Now(), TunnelsRotated: store.TunnelsRotated{Connectors: e.connectorIDsOf(name)}}
+	}
 	if err := e.saveEntry(ctx, before, rev.Rev, n, fmt.Sprintf("node %s is forgotten%s", name, compromisedText(compromised))); err != nil {
 		return res, err
 	}
@@ -423,17 +429,13 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 	if compromised {
 		return e.beginRotation(ctx, name, res)
 	}
-	s, err := e.d.Store.Settings()
-	if err != nil {
-		return res, fmt.Errorf("reading the settings: %w", err)
-	}
 	switch {
-	case !s.Cluster.RotatesOnForget():
+	case !rotates:
 		res.Done = append(res.Done, "the secret of the shared tunnel is kept (cluster.rotateOnForget is off): the run token the node holds still works")
 	case s.ObserveOnly:
-		res.Done = append(res.Done, "the secret of the shared tunnel is kept: pco is in observe-only mode; pco tunnel rotate after pco apply")
+		res.Pending = append(res.Pending, "the secret of the shared tunnel is rotated once pco apply ends observe-only mode: until then the run token the node holds still works")
 	default:
-		done, pending := e.rotateShared(ctx)
+		done, pending := e.rotateShared(ctx, name)
 		res.Done = append(res.Done, done...)
 		res.Pending = pending
 	}
@@ -498,23 +500,41 @@ func (e *Engine) forgetReports(name string) {
 	delete(e.place.listedAt, name)
 }
 
-// rotateShared rotates the secret of the shared tunnel in every account,
-// and says what it did and what is left for the admin: a rotation that
-// failed leaves the node's run token working until pco tunnel rotate.
-func (e *Engine) rotateShared(ctx context.Context) (done, pending []string) {
+// rotateShared rotates the secret of the shared tunnel in every account the
+// last state shows for a node that was forgotten, as far as its entry shows
+// it not done, and says what it did and what is left: the cycles finish
+// what is left, and the node's run token works until they did.
+func (e *Engine) rotateShared(ctx context.Context, name string) (done, pending []string) {
+	rev, err := e.entryOf(name)
+	if err != nil || rev.Node.Rotation == nil {
+		return nil, []string{"the secret of the shared tunnel is rotated by the next cycles: until then the run token the node holds still works"}
+	}
+	rot := rev.Node.Rotation
+	save := func() error {
+		n := rev.Node
+		n.Rotation = rot
+		r, err := e.d.Store.SaveNodeIf(n, rev.Rev)
+		if err != nil {
+			return err
+		}
+		rev = store.NodeRev{Node: n, Rev: r}
+		return nil
+	}
 	for _, t := range e.State().Tunnels {
-		if t.Kind == TunnelPinned || !t.Exists || t.ID == "" || t.CredentialID == "" {
+		if t.Kind == TunnelPinned || !t.Exists || t.ID == "" {
 			continue
 		}
 		what := fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID)
-		if err := e.rotateSecret(ctx, t.TunnelState); err != nil {
-			pending = append(pending, fmt.Sprintf("the secret of %s could not be rotated: %v; the run token the node holds still works: pco tunnel rotate --account %s", what, err, t.AccountID))
+		if err := e.rotateFor(ctx, t.TunnelState, &rot.TunnelsRotated, save); err != nil {
+			pending = append(pending, fmt.Sprintf("the secret of %s could not be rotated through: %v; it is tried again in the next cycle, "+
+				"and until then the run token the node holds may still work", what, err))
 			continue
 		}
-		done = append(done, fmt.Sprintf("the secret of %s is rotated: the run token the node holds stops working, and the remaining replicas restart with the new one", what))
+		done = append(done, fmt.Sprintf("the secret of %s is rotated: the run token the node holds stops working, its connector is dropped, "+
+			"and the remaining replicas restart with the new one, keeping their connections until then", what))
 	}
 	if len(done) == 0 && len(pending) == 0 {
-		pending = append(pending, "no tunnel of the install is known to rotate the secret of; pco tunnel rotate once pco status lists one")
+		pending = append(pending, "no tunnel of the install is known yet: the secret of the shared tunnel is rotated by the next cycles")
 	}
 	return done, pending
 }

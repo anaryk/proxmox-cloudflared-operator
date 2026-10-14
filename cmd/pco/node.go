@@ -230,7 +230,9 @@ func (a *app) nodeForgetCmd() *cobra.Command {
 		Long: "Remove a node that is gone from the install: its entry becomes removed, so that its agent is\n" +
 			"refused from its next request, its connections are closed, its pinned tunnels are deleted and\n" +
 			"the shared tunnel's secret is rotated (cluster.rotateOnForget), so that the run token the node\n" +
-			"keeps stops working; the remaining replicas restart with the new one. Replacing a node with\n" +
+			"keeps stops working, and its connector is dropped at Cloudflare; the remaining replicas keep\n" +
+			"their connections until each restarts with the new token. What cannot be done at once, the\n" +
+			"next cycles finish; in observe-only mode they wait for pco apply. Replacing a node with\n" +
 			"the same name: forget it, pvecm delnode and pvecm add for the new machine, then pco setup on\n" +
 			"it, or a new join token.\n\n" +
 			"--compromised is for a node whose disk is out of your hands: it held every credential of the\n" +
