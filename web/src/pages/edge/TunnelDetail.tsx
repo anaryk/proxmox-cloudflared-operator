@@ -36,6 +36,26 @@ export function findTunnel(st: Pick<State, 'tunnels'>, accountId: string, name?:
   return st.tunnels.find((t) => t.accountId === accountId && t.kind !== 'pinned') ?? st.tunnels.find((t) => t.accountId === accountId)
 }
 
+// TunnelTitle is the title of a tunnel's page: the account's, or, for a
+// tunnel pinned to a node, its label with the node, also when the account
+// has no other tunnel and the page falls back to the pinned one.
+export function TunnelTitle({ accountId, tunnel }: { accountId: string; tunnel?: string }) {
+  const st = useApp((s) => s.state)
+  const t = st ? findTunnel(st, accountId, tunnel) : undefined
+  if (t?.kind === 'pinned') {
+    return (
+      <>
+        Tunnel <Untrusted text={tunnelLabel(st, t)} />
+      </>
+    )
+  }
+  return (
+    <>
+      Tunnel in account <Untrusted text={accountId} />
+    </>
+  )
+}
+
 // verifiedLine is the verified word of pco status, with why for a tunnel
 // that was held or not checked.
 export function verifiedLine(t: TunnelView, hold: string | undefined): string {

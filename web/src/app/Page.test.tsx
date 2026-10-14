@@ -2,7 +2,9 @@ import { render, screen, within } from '@testing-library/react'
 import { expect, test } from 'vitest'
 
 import { StoreProvider } from '../api/store'
+import type { State } from '../api/types.gen'
 import { ToastProvider } from '../components/Toast'
+import cluster from '../fixtures/cluster.json'
 import populated from '../fixtures/populated.json'
 import untagged from '../fixtures/untagged.json'
 import { fakeStore } from '../test/store'
@@ -47,4 +49,29 @@ test.each([
   )
   expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy()
   expect(screen.queryByText(/not part of this build yet/)).toBeNull()
+})
+
+test('the title of a tunnel pinned to a node says so, also when the account has no other', async () => {
+  const st = cluster as unknown as State
+  const page = async (state: State, path: string, search: string) => {
+    const { store } = await fakeStore({ state })
+    return render(
+      <StoreProvider store={store}>
+        <ToastProvider>
+          <Page view={match(path, search)} />
+        </ToastProvider>
+      </StoreProvider>,
+    )
+  }
+  const named = await page(st, '/edge/tunnels/acc1', '?tunnel=pco-abc123-pve2')
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Tunnel Main · pinned to pve2')
+  named.unmount()
+
+  const shared = await page(st, '/edge/tunnels/acc1', '')
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Tunnel in account acc1')
+  shared.unmount()
+
+  const onlyPinned: State = { ...st, tunnels: st.tunnels.filter((t) => t.accountId !== 'acc1' || t.kind === 'pinned') }
+  await page(onlyPinned, '/edge/tunnels/acc1', '')
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Tunnel Main · pinned to pve2')
 })

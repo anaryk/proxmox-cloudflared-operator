@@ -4,7 +4,7 @@ import { Skeleton } from '../components/Skeleton'
 import { Untrusted } from '../components/Untrusted'
 import { CredentialDetail } from '../pages/edge/CredentialDetail'
 import { Credentials } from '../pages/edge/Credentials'
-import { TunnelDetail } from '../pages/edge/TunnelDetail'
+import { TunnelDetail, TunnelTitle } from '../pages/edge/TunnelDetail'
 import { Tunnels } from '../pages/edge/Tunnels'
 import { ZoneDetail } from '../pages/edge/ZoneDetail'
 import { Zones } from '../pages/edge/Zones'
@@ -61,12 +61,7 @@ function titleOf(v: View): [ReactNode, ReactNode] {
     case 'zone':
       return [<Untrusted key="t" text={v.zone} hostname />, '']
     case 'tunnel':
-      return [
-        <>
-          Tunnel in account <Untrusted text={v.account} />
-        </>,
-        '',
-      ]
+      return [<TunnelTitle key="t" accountId={v.account} tunnel={v.tunnel} />, '']
   }
   return titles[v.name] ?? ['', '']
 }
