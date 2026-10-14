@@ -662,9 +662,9 @@ func (c *Client) View() agentproto.AgentView {
 	case ep.Self:
 		v.Controller = ep.Node + " (this node)"
 	case ep.Node != "":
-		v.Controller = ep.Node
+		v.Controller, v.Remote = ep.Node, true
 	case len(ep.Addrs) > 0:
-		v.Controller = ep.Addrs[0]
+		v.Controller, v.Remote = ep.Addrs[0], true
 	}
 	if c.creds.Cert != nil {
 		v.CertFingerprint, v.CertExpires = pki.Fingerprint(c.creds.Cert), c.creds.Cert.NotAfter

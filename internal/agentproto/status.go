@@ -91,9 +91,12 @@ type ActionResult struct {
 
 // AgentView is what pco agent status shows of the node's own agent.
 type AgentView struct {
-	Node            string        `json:"node"`
-	Kind            pki.Kind      `json:"kind"`
-	Controller      string        `json:"controller,omitempty"` // the node or address it follows
+	Node       string   `json:"node"`
+	Kind       pki.Kind `json:"kind"`
+	Controller string   `json:"controller,omitempty"` // the node or address it follows
+	// Remote says that the controller it follows runs on another node and
+	// is reached over the network, not in this process.
+	Remote          bool          `json:"remote,omitempty"`
 	SilentFor       time.Duration `json:"silentFor"`
 	Epoch           Epoch         `json:"epoch"`
 	Seq             uint64        `json:"seq"`
@@ -103,6 +106,9 @@ type AgentView struct {
 	StoodDown       string        `json:"stoodDown,omitempty"`
 	CertFingerprint string        `json:"certFingerprint,omitempty"`
 	CertExpires     time.Time     `json:"certExpires,omitzero"`
+	// Heard says that a heartbeat came; ReadyReplicas and HeartbeatAge are
+	// of the last one.
+	Heard bool `json:"heard"`
 	// ReadyReplicas are, by tunnel id, the ready replicas the last heartbeat
 	// counted.
 	ReadyReplicas map[string]int `json:"readyReplicas,omitempty"`

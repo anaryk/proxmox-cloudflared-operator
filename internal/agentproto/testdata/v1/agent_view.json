@@ -2,6 +2,7 @@
   "node": "node2",
   "kind": "host",
   "controller": "node1",
+  "remote": true,
   "silentFor": 3000000000,
   "epoch": {
     "installId": "0123456789ab",
@@ -15,6 +16,7 @@
   "stoodDown": "this node was removed from install 0123456789ab at 2026-10-05 11:00",
   "certFingerprint": "3b4c1d2e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00",
   "certExpires": "2027-01-03T12:00:00Z",
+  "heard": true,
   "readyReplicas": {
     "5f1c2c9e-8b1a-4d3e-9f6a-2b7c8d9e0f1a": 2
   },

@@ -27,6 +27,7 @@ export interface AgentView {
   node: string
   kind: string
   controller?: string
+  remote?: boolean
   silentFor: number
   epoch: Epoch
   seq: number
@@ -36,6 +37,7 @@ export interface AgentView {
   stoodDown?: string
   certFingerprint?: string
   certExpires?: string
+  heard: boolean
   readyReplicas?: Record<string, number>
   heartbeatAge: number
   problems: string[]

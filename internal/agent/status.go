@@ -218,7 +218,7 @@ func (a *Agent) View() agentproto.AgentView {
 	a.heardMu.Lock()
 	defer a.heardMu.Unlock()
 	if a.hb != nil {
-		v.ReadyReplicas, v.HeartbeatAge = maps.Clone(a.hb.ReadyReplicas), now.Sub(a.hbAt)
+		v.Heard, v.ReadyReplicas, v.HeartbeatAge = true, maps.Clone(a.hb.ReadyReplicas), now.Sub(a.hbAt)
 	}
 	return v
 }

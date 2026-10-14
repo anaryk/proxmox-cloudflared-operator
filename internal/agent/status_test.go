@@ -43,6 +43,7 @@ func TestTheStatusSaysWhatTheAgentIsAt(t *testing.T) {
 func TestTheViewSaysHowTheAgentFares(t *testing.T) {
 	e := newEnv(t)
 	e.apply(e.snapshot("www.example.com -> :8080"))
+	require.False(t, e.agent.View().Heard, "no heartbeat came yet")
 	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch1, ReadyReplicas: map[string]int{sharedID: 2}})
 	e.clock.advance(40 * time.Second)
 
@@ -50,11 +51,34 @@ func TestTheViewSaysHowTheAgentFares(t *testing.T) {
 
 	require.Equal(t, agentproto.AgentView{
 		Node: testNode, Kind: pki.KindHost, SilentFor: 40 * time.Second, Epoch: epoch1, Seq: 1, SeqAge: 40 * time.Second,
-		Connectors: 1, EgressTargets: 1, ReadyReplicas: map[string]int{sharedID: 2}, HeartbeatAge: 40 * time.Second, Problems: []string{},
+		Connectors: 1, EgressTargets: 1, Heard: true, ReadyReplicas: map[string]int{sharedID: 2}, HeartbeatAge: 40 * time.Second,
+		Problems: []string{},
 	}, v)
 
 	e.clock.advance(30 * time.Second)
 	require.Contains(t, e.agent.View().Problems, "no controller answered for 1m10s; this node serves what it was last told")
+}
+
+// The view says whether the controller the agent follows runs elsewhere: an
+// agent beside its controller has no replica counts in its heartbeat.
+func TestTheViewSaysWhetherTheControllerRunsOnAnotherNode(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		ep     Endpoint
+		remote bool
+	}{
+		{"none", Endpoint{}, false},
+		{"this node", Endpoint{Self: true, Node: testNode}, false},
+		{"another node", Endpoint{Node: "pve2", Addrs: []string{"10.0.0.2:8644"}}, true},
+		{"an address", Endpoint{Addrs: []string{"10.0.0.2:8644"}}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Client{a: newEnv(t).agent}
+			c.follow(tt.ep)
+
+			require.Equal(t, tt.remote, c.View().Remote)
+		})
+	}
 }
 
 // A heartbeat of an epoch older than the one the agent follows is a stale
