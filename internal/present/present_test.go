@@ -51,6 +51,11 @@ var wordFuncs = map[string]func(t *testing.T, in json.RawMessage) any{
 		return []reconcile.Action{}
 	},
 	"routeStateOrder": func(*testing.T, json.RawMessage) any { return RouteStateOrder },
+	"nodeStateText":   func(t *testing.T, in json.RawMessage) any { return NodeStateText(decode[string](t, in)) },
+	"nodeStateOrder":  func(*testing.T, json.RawMessage) any { return NodeStateOrder },
+	"nodeRoleText":    func(t *testing.T, in json.RawMessage) any { return NodeRoleText(decode[engine.NodeView](t, in)) },
+	"nodeAgentText":   func(t *testing.T, in json.RawMessage) any { return NodeAgentText(decode[engine.NodeView](t, in)) },
+	"rotationText":    func(t *testing.T, in json.RawMessage) any { return RotationText(decode[*engine.CARotationView](t, in)) },
 	"commandArg": func(t *testing.T, in json.RawMessage) any {
 		arg := decode[struct{ Kind, Value string }](t, in)
 		value, refused := CommandArg(arg.Kind, arg.Value)

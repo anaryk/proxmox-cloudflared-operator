@@ -93,6 +93,33 @@
 
   {"fn": "routeStateOrder", "name": "rejected between held and frozen", "input": null, "want": ["active", "unreachable", "withdrawn", "conflict", "no-zone", "held", "rejected", "frozen"]},
 
+  {"fn": "nodeStateText", "name": "joining", "input": "joining", "want": "joining (enrolled, not admitted yet)"},
+  {"fn": "nodeStateText", "name": "active", "input": "active", "want": "active"},
+  {"fn": "nodeStateText", "name": "draining", "input": "draining", "want": "draining (out of the shared tunnel's replicas)"},
+  {"fn": "nodeStateText", "name": "unknown", "input": "unknown", "want": "unknown (its agent sent no status for 30 seconds)"},
+  {"fn": "nodeStateText", "name": "down", "input": "down", "want": "down (the cluster lists it offline)"},
+  {"fn": "nodeStateText", "name": "contested", "input": "contested", "want": "contested (its join token was misused; pco node forget ends it)"},
+  {"fn": "nodeStateText", "name": "removed", "input": "removed", "want": "removed"},
+  {"fn": "nodeStateText", "name": "an entry of an earlier release", "input": "", "want": "not numbered yet (an entry of an earlier release)"},
+  {"fn": "nodeStateText", "name": "a state of another version", "input": "odd", "want": "odd"},
+
+  {"fn": "nodeStateOrder", "name": "active first, removed last", "input": null, "want": ["active", "draining", "joining", "unknown", "down", "contested", "removed"]},
+
+  {"fn": "nodeRoleText", "name": "the controller", "input": {"name": "pve1", "state": "active", "kind": "host", "controller": true, "statusAge": 1000000000, "watchRunning": true, "covered": true, "replicaReady": true, "verified": 4, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "controller"},
+  {"fn": "nodeRoleText", "name": "an agent", "input": {"name": "pve2", "state": "active", "kind": "host", "controller": false, "statusAge": 1000000000, "watchRunning": true, "covered": true, "replicaReady": true, "verified": 4, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "agent"},
+
+  {"fn": "nodeAgentText", "name": "no status yet", "input": {"name": "pve3", "state": "joining", "kind": "appliance", "vmid": 9301, "controller": false, "statusAge": 0, "watchRunning": false, "covered": false, "replicaReady": false, "verified": 0, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "no status yet"},
+  {"fn": "nodeAgentText", "name": "heard, watching", "input": {"name": "pve2", "state": "active", "kind": "host", "controller": false, "build": "1.4.0", "protocol": "1", "statusAge": 1000000000, "watchRunning": true, "covered": true, "replicaReady": true, "verified": 4, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "heard 1s ago, watching"},
+  {"fn": "nodeAgentText", "name": "heard, not watching", "input": {"name": "pve2", "state": "active", "kind": "host", "controller": false, "build": "1.4.0", "statusAge": 12400000000, "watchRunning": false, "covered": false, "replicaReady": true, "verified": 4, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "heard 12s ago"},
+  {"fn": "nodeAgentText", "name": "half a second rounds up", "input": {"name": "pve2", "state": "unknown", "kind": "host", "controller": false, "build": "1.4.0", "statusAge": 90500000000, "watchRunning": false, "covered": false, "replicaReady": false, "verified": 0, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "heard 1m31s ago"},
+  {"fn": "nodeAgentText", "name": "hours", "input": {"name": "pve2", "state": "down", "kind": "host", "controller": false, "build": "1.4.0", "statusAge": 7200000000000, "watchRunning": false, "covered": false, "replicaReady": false, "verified": 0, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "heard 2h0m0s ago"},
+  {"fn": "nodeAgentText", "name": "a build without a status age", "input": {"name": "pve2", "state": "active", "kind": "host", "controller": false, "build": "1.4.0", "statusAge": 0, "watchRunning": false, "covered": false, "replicaReady": false, "verified": 0, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}, "want": "heard 0s ago"},
+
+  {"fn": "rotationText", "name": "none", "input": null, "want": ""},
+  {"fn": "rotationText", "name": "running", "input": {"node": "pve3", "startedAt": "2026-10-01T11:50:00Z", "done": ["credentials", "proxmox"], "next": "tunnels"}, "want": "running for node pve3: 2 of 6 steps done, waiting on tunnels"},
+  {"fn": "rotationText", "name": "finished", "input": {"node": "pve3", "startedAt": "2026-10-01T11:50:00Z", "done": ["credentials", "proxmox", "tunnels", "rollout", "ca", "previous"], "finishedAt": "2026-10-01T12:05:00Z"}, "want": "finished for node pve3"},
+  {"fn": "rotationText", "name": "finished, with nodes refused", "input": {"node": "pve3", "startedAt": "2026-10-01T11:50:00Z", "done": ["credentials", "proxmox", "tunnels", "rollout", "ca", "previous"], "finishedAt": "2026-10-01T12:05:00Z", "refused": ["pve2"]}, "want": "finished for node pve3; the new CA refuses 1 nodes still"},
+
   {"fn": "commandArg", "name": "an account id", "input": {"kind": "account id", "value": "0123456789abcdef0123456789abcdef"}, "want": {"value": "0123456789abcdef0123456789abcdef", "refused": ""}},
   {"fn": "commandArg", "name": "an account id with a command after it", "input": {"kind": "account id", "value": "abc; rm -rf /"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
   {"fn": "commandArg", "name": "an account id in capitals", "input": {"kind": "account id", "value": "0123456789ABCDEF0123456789ABCDEF"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},

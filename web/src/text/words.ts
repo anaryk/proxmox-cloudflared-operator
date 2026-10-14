@@ -6,12 +6,15 @@
 import {
   argForms,
   egressWords,
+  nodeStateOrder,
+  nodeStateWords,
   rateLimitWait,
   routeStateOrder,
   verifiedWords,
   waitingReads,
   writerWords,
 } from '../gen/words.gen'
+import { goDuration } from './duration'
 
 // The fields of the daemon's answers that the words read, named after their
 // Go types.
@@ -177,6 +180,61 @@ export function compareRouteStates(a: string, b: string): number {
     return at < 0 ? routeStateOrder.length : at
   }
   return rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0)
+}
+
+// The fields of a node of the registry the words read, named after
+// engine.NodeView.
+export interface NodeView {
+  controller?: boolean
+  build?: string
+  statusAge?: number // nanoseconds
+  watchRunning?: boolean
+}
+
+export interface CARotationView {
+  node: string
+  done?: readonly string[] | null
+  next?: string
+  finishedAt?: string
+  refused?: readonly string[] | null
+}
+
+export function nodeStateText(state: string): string {
+  return nodeStateWords.get(state) ?? state
+}
+
+// compareNodeStates orders states as present.NodeStateOrder, and the states
+// it does not list after them, by name.
+export function compareNodeStates(a: string, b: string): number {
+  const rank = (s: string) => {
+    const at = nodeStateOrder.indexOf(s)
+    return at < 0 ? nodeStateOrder.length : at
+  }
+  return rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0)
+}
+
+export function nodeRoleText(n: NodeView): string {
+  return n.controller ? 'controller' : 'agent'
+}
+
+// nodeAgentText is present.NodeAgentText: what the controller last heard of
+// a node's agent.
+export function nodeAgentText(n: NodeView): string {
+  if (!n.build && !n.statusAge && !n.watchRunning) return 'no status yet'
+  let text = `heard ${goDuration(n.statusAge ?? 0)} ago`
+  if (n.watchRunning) text += ', watching'
+  return text
+}
+
+// rotationText is present.RotationText: where the rotation of a compromised
+// node's secrets is.
+export function rotationText(r: CARotationView | null | undefined): string {
+  if (!r) return ''
+  const refused = r.refused?.length ?? 0
+  if (r.finishedAt && !unset(r.finishedAt)) {
+    return refused > 0 ? `finished for node ${r.node}; the new CA refuses ${refused} nodes still` : `finished for node ${r.node}`
+  }
+  return `running for node ${r.node}: ${r.done?.length ?? 0} of 6 steps done, waiting on ${r.next ?? ''}`
 }
 
 const making = Symbol('command')

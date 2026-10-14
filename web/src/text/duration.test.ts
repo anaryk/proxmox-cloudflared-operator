@@ -1,6 +1,24 @@
 import { expect, test } from 'vitest'
 
-import { durationText, longestDuration, parseDuration } from './duration'
+import { durationText, goDuration, longestDuration, nanosToMs, parseDuration } from './duration'
+
+test.each([
+  [0, '0s'],
+  [1e9, '1s'],
+  [12.4e9, '12s'],
+  [12.5e9, '13s'],
+  [90.5e9, '1m31s'],
+  [60e9, '1m0s'],
+  [7200e9, '2h0m0s'],
+  [3725e9, '1h2m5s'],
+  [-12.5e9, '-13s'],
+])('goDuration(%d)', (ns, text) => {
+  expect(goDuration(ns)).toBe(text)
+})
+
+test('nanosToMs', () => {
+  expect(nanosToMs(1.5e9)).toBe(1500)
+})
 
 test.each([
   ['10s', 10_000],

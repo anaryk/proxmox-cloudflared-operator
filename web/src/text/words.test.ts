@@ -1,12 +1,13 @@
 import { describe, expect, test } from 'vitest'
 
 import cases from '../../../internal/present/testdata/words.json'
-import { routeStateOrder } from '../gen/words.gen'
+import { nodeStateOrder, routeStateOrder } from '../gen/words.gen'
 import { isBidi, printable } from './chars'
 import {
   budgetWait,
   type CommandWords,
   commandArg,
+  compareNodeStates,
   compareRouteStates,
   connectorText,
   credentialState,
@@ -17,8 +18,12 @@ import {
   isCommand,
   modeText,
   nextStep,
+  nodeAgentText,
+  nodeRoleText,
+  nodeStateText,
   rogueText,
   rotateCommand,
+  rotationText,
   routeNote,
   setupCommand,
   type TunnelView,
@@ -75,6 +80,11 @@ const twins: Record<string, (input: never) => unknown> = {
   nextStep,
   unaffected,
   routeStateOrder: () => routeStateOrder,
+  nodeStateText,
+  nodeStateOrder: () => nodeStateOrder,
+  nodeRoleText,
+  nodeAgentText,
+  rotationText,
   commandArg: (input: { kind: string; value: string }) => commandArg(input.kind, input.value),
   commandArgEveryPosition,
   rotateCommand: (input: { account: string; tunnels: TunnelView[] }) => composed(rotateCommand(input.tunnels, input.account)),
@@ -109,6 +119,13 @@ describe('the words of a lookup keep a state they do not know', () => {
   test.each(['toString', 'constructor', '__proto__'])('%s', (word) => {
     expect(egressText({ state: word })).toBe(word)
     expect(writerText(word)).toBe(word)
+    expect(nodeStateText(word)).toBe(word)
+  })
+})
+
+describe('compareNodeStates', () => {
+  test('the order of pco node list, a state it does not know last', () => {
+    expect(['removed', 'odd', 'joining', 'active', 'down'].sort(compareNodeStates)).toEqual(['active', 'joining', 'down', 'removed', 'odd'])
   })
 })
 

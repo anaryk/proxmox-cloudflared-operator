@@ -31,6 +31,25 @@ export function parseDuration(text: string): number | undefined {
   return m[1] === '-' ? -total : total
 }
 
+// goDuration writes a duration of whole seconds as Go does, "12s", "1m30s",
+// "2h0m0s", from nanoseconds, which the daemon's answers carry a duration
+// as; it is rounded to the second first, halves away from zero, as the
+// daemon rounds what it prints.
+export function goDuration(ns: number): string {
+  const s = Math.sign(ns) * Math.floor(Math.abs(ns) / 1e9 + 0.5)
+  const total = Math.abs(s)
+  const sign = s < 0 ? '-' : ''
+  if (total < 60) return `${sign}${total}s`
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const rest = total % 60
+  return h > 0 ? `${sign}${h}h${m}m${rest}s` : `${sign}${m}m${rest}s`
+}
+
+// nanosToMs is a duration of the daemon's answers, in nanoseconds, in the
+// milliseconds the page counts in.
+export const nanosToMs = (ns: number): number => ns / 1e6
+
 // durationText says a length of time in the words the page uses: "40 s",
 // "4 min", "2 h 5 min".
 export function durationText(ms: number): string {
