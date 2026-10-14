@@ -290,8 +290,13 @@ func (e *Engine) dropLost(ctx context.Context, t reconcile.TunnelState, ids []st
 func (e *Engine) dropConnectors(ctx context.Context, api cfapi.API, t reconcile.TunnelState, ids []string) error {
 	if len(ids) == 0 {
 		listed, err := api.Connectors(ctx, t.AccountID, t.ID)
-		if err != nil {
+		switch {
+		case err != nil:
 			return err
+		case len(listed) == 0:
+			// A listing may lag a connection: nothing in it tells that the
+			// nodes keep none.
+			return errors.New("no connector is listed to tell the nodes' from")
 		}
 		owned, err := e.ownedConnectors(t.ID)
 		if err != nil {
@@ -309,6 +314,31 @@ func (e *Engine) dropConnectors(ctx context.Context, api cfapi.API, t reconcile.
 		}
 	}
 	return nil
+}
+
+// lostConnectors are the connectors Cloudflare lists of a tunnel that nodes
+// that are gone may run: those of ids, or, without ids, every one no node
+// still in the install owns.
+func (e *Engine) lostConnectors(ctx context.Context, t reconcile.TunnelState, ids []string) ([]string, error) {
+	api := e.clients[t.CredentialID]
+	if api == nil {
+		return nil, fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+	}
+	listed, err := api.Connectors(ctx, t.AccountID, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	owned, err := e.ownedConnectors(t.ID)
+	if err != nil {
+		return nil, err
+	}
+	var lost []string
+	for _, c := range listed {
+		if len(ids) > 0 && slices.Contains(ids, c.ID) || len(ids) == 0 && !owned[c.ID] {
+			lost = append(lost, c.ID)
+		}
+	}
+	return lost, nil
 }
 
 // ownedConnectors are the ids of the connectors of a tunnel that this node
