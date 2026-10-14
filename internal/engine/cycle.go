@@ -195,6 +195,9 @@ type cycleRun struct {
 	// shared route: the route moves to its guest.s node before the node
 	// is admitted.
 	joining map[string]string
+	// caHeld says why the rotation of a compromised node's secrets holds
+	// its CA step in this cycle; empty when nothing does.
+	caHeld string
 	// replicaCache is the replica set of the cycle.
 	replicaCache []string
 	// netsOfNodes are the networks the snapshots of the other nodes give,

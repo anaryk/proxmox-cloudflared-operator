@@ -84,5 +84,9 @@ func RotationText(r *engine.CARotationView) string {
 	case !r.FinishedAt.IsZero():
 		return "finished for " + nodes
 	}
-	return fmt.Sprintf("running for %s: %d of 6 steps done, waiting on %s", nodes, len(r.Done), r.Next)
+	text := fmt.Sprintf("running for %s: %d of 6 steps done, waiting on %s", nodes, len(r.Done), r.Next)
+	if r.Held != "" {
+		text += "; " + r.Held
+	}
+	return text
 }

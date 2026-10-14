@@ -211,6 +211,16 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 // The tunnels step is done only by a cycle that read every account through
 // to the end: one that held, or did not get to Cloudflare as the writer, or
 // left an account unread, may have missed a tunnel.
+func TestATunnelNoCredentialReachesHoldsTheCAVisibly(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	c := &cycleRun{e: w.eng, checked: true, tunnels: []reconcile.TunnelState{{Name: "pco-abc123", AccountID: "acc9", ID: "t9", Exists: true}}}
+	rec := w.rotationRecord(t)
+	done, _ := c.rotateTunnels(&rec)
+	require.False(t, done)
+	v := c.rotationView()
+	require.Equal(t, "the CA waits: no credential reaches tunnel pco-abc123 in account acc9", v.Held)
+}
+
 func TestTheTunnelsStepNeedsACycleThatGotThroughWhole(t *testing.T) {
 	w := threeNodes(t)
 	w.settle()
@@ -223,7 +233,7 @@ func TestTheTunnelsStepNeedsACycleThatGotThroughWhole(t *testing.T) {
 		{"not checked", &cycleRun{e: w.eng, checked: false}, "not every tunnel is known"},
 		{"an account unread", &cycleRun{e: w.eng, checked: true, unreported: []TunnelView{{}}}, "1 tunnels are in accounts the tunnel run could not read"},
 		{"a tunnel no credential reaches", &cycleRun{e: w.eng, checked: true, tunnels: []reconcile.TunnelState{{Name: "pco-abc123", AccountID: "acc9", ID: "t9", Exists: true}}},
-			"no credential reaches tunnel pco-abc123 in account acc9"},
+			"no credential reaches tunnel pco-abc123 in account acc9: add one for the account with pco credential add; the CA is not rotated until its secret is"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := store.CARotation{Node: "pve3", StartedAt: t0}

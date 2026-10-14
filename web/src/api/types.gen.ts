@@ -115,6 +115,7 @@ export interface CARotationView {
   next?: string
   finishedAt?: string
   refused?: string[]
+  held?: string
 }
 
 // resolve.CandidateResult

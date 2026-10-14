@@ -431,8 +431,9 @@ func (c *cycleRun) rotateTunnels(rec *store.CARotation) (bool, string) {
 		}
 	}
 	if len(unreached) > 0 {
+		c.caHeld = "the CA waits: no credential reaches " + andList(unreached)
 		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels",
-			fmt.Errorf("no credential reaches %s: add one for the account with pco credential add", andList(unreached)))
+			fmt.Errorf("no credential reaches %s: add one for the account with pco credential add; the CA is not rotated until its secret is", andList(unreached)))
 	}
 	save := func() error { return c.e.d.Store.SaveCARotation(*rec) }
 	for _, t := range c.tunnels {
@@ -624,7 +625,7 @@ func (c *cycleRun) rotationView() *CARotationView {
 	if err != nil || !found {
 		return nil
 	}
-	v := &CARotationView{Node: rec.Node, Also: slices.Clone(rec.Also), StartedAt: rec.StartedAt, Done: slices.Clone(rec.Done), FinishedAt: rec.FinishedAt}
+	v := &CARotationView{Node: rec.Node, Also: slices.Clone(rec.Also), StartedAt: rec.StartedAt, Done: slices.Clone(rec.Done), FinishedAt: rec.FinishedAt, Held: c.caHeld}
 	for _, step := range rotationSteps {
 		if !slices.Contains(rec.Done, step) {
 			v.Next = step

@@ -171,6 +171,8 @@ type CARotationView struct {
 	FinishedAt time.Time `json:"finishedAt,omitzero"`
 	// Refused are the nodes whose certificate the new CA refused.
 	Refused []string `json:"refused,omitempty"`
+	// Held says why a step the CA waits on cannot be done.
+	Held string `json:"held,omitempty"`
 }
 
 // BlockView is an address blocked on every node because an agent saw the
