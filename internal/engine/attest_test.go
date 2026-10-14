@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -307,20 +308,27 @@ func TestAConflictBlocksTheAddressOnEveryNode(t *testing.T) {
 	require.Empty(t, s.Blocks)
 }
 
+// dbConflict has the agent of pve3 report the MAC of db's card on the port
+// of another guest.
+func dbConflict(st *agentproto.Status) {
+	st.Observations = []agentproto.Observation{{Kind: agentproto.ObservationConflict, MAC: dbCard, Bridge: "vmbr0", Port: "tap140i0", At: t0}}
+}
+
 // A block outlives the controller that made it: one that takes over, or
-// starts again, finds it stored and keeps it in every snapshot for as long
-// as the one before would have, also when no agent reports the conflict
-// any more; it ends when that one would have ended it.
+// starts again, finds it stored and keeps it in every snapshot, also when
+// no agent reports the conflict any more. The ten quiet minutes before it
+// may end are counted on the new controller's own clock, from when it
+// first saw the block: never from a time another clock wrote.
 func TestAConflictBlockSurvivesATakeover(t *testing.T) {
 	w := threeNodes(t)
 	w.settle()
-	w.acts["pve3"].edit = func(st *agentproto.Status) {
-		st.Observations = []agentproto.Observation{{Kind: agentproto.ObservationConflict, MAC: dbCard, Bridge: "vmbr0", Port: "tap140i0", At: t0}}
-	}
+	w.acts["pve3"].edit = dbConflict
 	w.tick(time.Second)
 	lastReport := w.clock.now()
 	w.acts["pve3"].edit = nil
-	w.tick(time.Second)
+	for w.clock.now().Sub(lastReport) < 8*time.Minute {
+		w.tick(10 * time.Second)
+	}
 	blocks, err := w.store.Blocks()
 	require.NoError(t, err)
 	require.Contains(t, blocks, dbAddr)
@@ -329,6 +337,7 @@ func TestAConflictBlockSurvivesATakeover(t *testing.T) {
 	w.eng = w.newEngine()
 	w.watchHere(t)
 	st := w.tick(time.Second)
+	took := w.clock.now()
 
 	require.True(t, hasProblem(st, "10.0.0.22 is blocked on every node: its MAC "+dbCard+" was seen on tap140i0 of pve3"), st.Problems)
 	require.Len(t, st.Cluster.Blocks, 1)
@@ -339,10 +348,10 @@ func TestAConflictBlockSurvivesATakeover(t *testing.T) {
 	}
 	require.Equal(t, planner.StateWithdrawn, route(st, "db.example.com").State)
 
-	for w.clock.now().Sub(lastReport) < blockQuiet-15*time.Second {
+	for w.clock.now().Sub(took) < blockQuiet-15*time.Second {
 		w.tick(10 * time.Second)
 	}
-	require.Contains(t, w.eng.place.blocks, dbAddr, "under ten minutes since the last report")
+	require.Contains(t, w.eng.place.blocks, dbAddr, "under ten minutes since this controller first saw it, though longer since the last report")
 	w.tick(20 * time.Second)
 	require.NotContains(t, w.eng.place.blocks, dbAddr)
 	blocks, err = w.store.Blocks()
@@ -352,21 +361,74 @@ func TestAConflictBlockSurvivesATakeover(t *testing.T) {
 	require.Empty(t, s.Blocks)
 }
 
+// A block ends only on a fresh attestation of the guest's card by its
+// node: ten quiet minutes alone end nothing.
+func TestABlockEndsOnlyOnceTheHostingNodeAttestsAgain(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].edit = dbConflict
+	w.tick(time.Second)
+	w.acts["pve3"].edit = nil
+	w.acts["pve2"].edit = func(st *agentproto.Status) { st.Attestations = nil }
+
+	for range 80 {
+		w.tick(10 * time.Second)
+	}
+	require.Contains(t, w.eng.place.blocks, dbAddr, "pve2 did not attest the card again")
+
+	w.acts["pve2"].edit = nil
+	w.tick(10 * time.Second)
+	require.NotContains(t, w.eng.place.blocks, dbAddr)
+}
+
+// A block that cannot be stored holds all the same, in every snapshot, and
+// the cycle says that a takeover would lose it.
+func TestABlockThatCannotBeStoredHoldsInMemory(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	require.NoError(t, os.WriteFile(filepath.Join(w.paths.Cluster, "blocks"), []byte("not a directory"), 0o600))
+	w.acts["pve3"].edit = dbConflict
+
+	st := w.tick(time.Second)
+
+	require.True(t, hasProblem(st, "saving the block of 10.0.0.22: "), st.Problems)
+	require.True(t, hasProblem(st, "it holds in the memory of this controller alone"), st.Problems)
+	require.True(t, hasProblem(st, "10.0.0.22 is blocked on every node"), st.Problems)
+	require.Contains(t, w.eng.place.blocks, dbAddr)
+	for _, node := range []string{"pve2", "pve3"} {
+		s, _ := w.r.lastOf(node)
+		require.Contains(t, s.Blocks, agentproto.Block{Addr: dbAddr, Reason: agentproto.BlockConflict}, node)
+	}
+	require.Equal(t, planner.StateWithdrawn, route(st, "db.example.com").State)
+}
+
 // Blocks that cannot be read hold the cycle: no snapshot goes out on what
-// is not known.
+// is not known, every agent keeps the blocks it has, and a security event
+// says so once.
 func TestUnreadableBlocksServeNothing(t *testing.T) {
 	w := threeNodes(t)
 	w.settle()
+	w.acts["pve3"].edit = dbConflict
+	w.tick(time.Second)
 	served := len(w.r.served)
-	require.NoError(t, os.MkdirAll(filepath.Join(w.paths.Cluster, "blocks"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(w.paths.Cluster, "blocks", "10.0.0.9.json"), []byte("{"), 0o600))
 	w.eng = w.newEngine()
 	w.watchHere(t)
 
 	st := w.tick(time.Second)
+	w.tick(time.Second)
 
 	require.Contains(t, st.Hold, "reading the blocked addresses")
-	require.Len(t, w.r.served, served)
+	require.Len(t, w.r.served, served, "no snapshot went out")
+	s, _ := w.r.lastOf("pve2")
+	require.Contains(t, s.Blocks, agentproto.Block{Addr: dbAddr, Reason: agentproto.BlockConflict}, "the agents keep the blocks they had")
+	var said int
+	for _, ev := range w.eng.Events(time.Time{}) {
+		if ev.Kind == kindBlock && ev.Security && strings.Contains(ev.Message, "cannot be read") {
+			said++
+		}
+	}
+	require.Equal(t, 1, said, "said once")
 }
 
 // A conflict reported by an appliance agent, or of a MAC no route

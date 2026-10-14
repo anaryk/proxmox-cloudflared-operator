@@ -82,7 +82,9 @@ func (f *fleetView) node(name string) *agentFacts {
 // MAC bound to its guest where it must not be: on the port of another guest,
 // or gone from the guest's port while the guest did not migrate. It is
 // stored, so that a controller that takes over keeps it; saved is when the
-// store last had it as it is.
+// store last had it as it is, and seen when this process first had it, by
+// its own clock: the quiet before a block may end is counted from there as
+// well as from the last report, which another controller's clock wrote.
 type conflictBlock struct {
 	addr       netip.Addr
 	guest      model.GuestRef
@@ -92,6 +94,13 @@ type conflictBlock struct {
 	since      time.Time
 	lastReport time.Time
 	saved      time.Time
+	seen       time.Time
+}
+
+// quiet says whether no agent reported what blocks an address for
+// blockQuiet, as this process counts it.
+func (b *conflictBlock) quiet(now time.Time) bool {
+	return now.Sub(b.lastReport) >= blockQuiet && now.Sub(b.seen) >= blockQuiet
 }
 
 // blockSaveEvery is how much the last report of a block moves on before it
@@ -105,20 +114,36 @@ func (b *conflictBlock) stored() store.Block {
 
 // readBlocks reads the blocks stored, once per process; false when they
 // cannot be read, which holds the cycle: no snapshot goes out on what is
-// not known.
+// not known, so every agent keeps the blocks it has, and a security event
+// says so once.
 func (c *cycleRun) readBlocks() bool {
 	blocks, err := c.e.d.Store.Blocks()
 	if err != nil {
 		c.hold(c.storeProblem("reading the blocked addresses", err))
+		c.sayOnce("blocks", Event{At: c.now, Level: levelError, Kind: kindBlock, Security: true,
+			Message: fmt.Sprintf("the blocked addresses cannot be read (%v): nothing is served, and every node keeps the blocks it has, until they can be", err)})
 		return false
 	}
 	mem := &c.e.place
 	mem.blocks = make(map[netip.Addr]*conflictBlock, len(blocks))
 	for addr, b := range blocks {
 		mem.blocks[addr] = &conflictBlock{addr: addr, guest: b.Guest, mac: b.MAC, node: b.Node, port: b.Port, why: b.Why,
-			since: b.Since, lastReport: b.LastReport, saved: c.now}
+			since: b.Since, lastReport: b.LastReport, saved: c.now, seen: c.now}
 	}
 	return true
+}
+
+// sayOnce adds an event once per process and key.
+func (c *cycleRun) sayOnce(key string, ev Event) {
+	mem := &c.e.place
+	if mem.refused == nil {
+		mem.refused = map[string]bool{}
+	}
+	if mem.refused[key+"\x00"+ev.Message] {
+		return
+	}
+	mem.refused[key+"\x00"+ev.Message] = true
+	c.events = append(c.events, ev)
 }
 
 // saveBlock writes a block, which holds in memory either way.
@@ -378,7 +403,7 @@ func (c *cycleRun) followBlocks() {
 	}
 	maps.DeleteFunc(mem.moved, func(key string, _ time.Time) bool { return !seenMoves[key] })
 	for addr, b := range mem.blocks {
-		if c.now.Sub(b.lastReport) < blockQuiet || c.attestation(c.hostOf(b.guest), b.mac) == nil {
+		if !b.quiet(c.now) || c.attestation(c.hostOf(b.guest), b.mac) == nil {
 			continue
 		}
 		if err := c.e.d.Store.DeleteBlock(addr); err != nil {
@@ -420,7 +445,7 @@ func (c *cycleRun) block(cd card, mac, node, port, why string) {
 			}
 			continue
 		}
-		b := &conflictBlock{addr: addr, guest: cd.ref.guest, mac: mac, node: node, port: port, why: why, since: c.now, lastReport: c.now}
+		b := &conflictBlock{addr: addr, guest: cd.ref.guest, mac: mac, node: node, port: port, why: why, since: c.now, lastReport: c.now, seen: c.now}
 		mem.blocks[addr] = b
 		c.saveBlock(b)
 		c.events = append(c.events, Event{At: c.now, Level: levelError, Kind: kindBlock, Subject: addr.String(), Guest: cd.ref.guest.String(), Node: node,
