@@ -62,6 +62,23 @@ func (r *TunnelReconciler) ListPinned(account string) {
 	}
 }
 
+// Deleted forgets a pinned tunnel the caller deleted at Cloudflare: the
+// listing of its account, up to a minute old, and the last read of it no
+// longer name it, so that the next runs do not take it for one that still
+// exists.
+func (r *TunnelReconciler) Deleted(account, name, id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := account + "/" + name
+	if m, ok := r.pinned[key]; ok && m.state.ID == id {
+		delete(r.pinned, key)
+	}
+	if l, ok := r.listed[account]; ok {
+		l.tunnels = slices.DeleteFunc(slices.Clone(l.tunnels), func(t cfapi.Tunnel) bool { return t.ID == id })
+		r.listed[account] = l
+	}
+}
+
 // NewTunnelReconciler returns a reconciler that reaches each account through
 // the client of its credential.
 //

@@ -213,6 +213,32 @@ func TestAPinnedTunnelGoneFromTheListingIsForgotten(t *testing.T) {
 	require.True(t, last.res.Tunnels[1].Verified)
 }
 
+// A pinned tunnel the caller deleted is not reported from what the listing
+// and the last read found before: the next runs would take it for one that
+// still exists.
+func TestAPinnedTunnelDeletedIsNotReportedAsLastSeen(t *testing.T) {
+	ctx := context.Background()
+	f := newFake("acct1")
+	c := &clock{t0}
+	r := newReconciler(Clients{"cred1": f}, c)
+	gone := f.SeedTunnel("acct1", pinnedName("pve2"), rulesOf(ours, app))
+	plans := []planner.TunnelPlan{planFor("acct1", "cred1", web)}
+	r.ListPinned("acct1")
+	res := r.Run(ctx, plans, knownAcct1, Enforce)
+	require.Empty(t, res.Problems)
+	require.True(t, slices.ContainsFunc(res.Tunnels, func(s TunnelState) bool { return s.ID == gone.ID && s.Verified }), "emptied")
+
+	require.NoError(t, f.DeleteTunnel(ctx, "acct1", gone.ID))
+	r.Deleted("acct1", gone.Name, gone.ID)
+	c.t = t0.Add(time.Second)
+	n := len(f.Calls())
+	res = r.Run(ctx, plans, knownAcct1, Enforce)
+
+	require.Empty(t, res.Problems)
+	require.False(t, slices.ContainsFunc(res.Tunnels, func(s TunnelState) bool { return s.ID == gone.ID }))
+	require.Empty(t, callsAbout(f, n, gone))
+}
+
 // A tunnel without a plan is emptied only when this install wrote what it
 // holds; one that holds nothing is left as it is, and so, with a problem, is
 // one that holds rules of another writer.
