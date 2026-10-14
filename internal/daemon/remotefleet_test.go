@@ -14,6 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/clusterapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
 // fakeController is the controller a remote fleet answers for.
@@ -38,7 +39,7 @@ func (f *fakeController) TakeAgentEvents(_ string, st agentproto.Status, _ agent
 	return st.EventCursor
 }
 
-func (f *fakeController) NoteAgentEpoch(ep agentproto.Epoch) {
+func (f *fakeController) NoteAgentEpoch(_ string, _ pki.Kind, ep agentproto.Epoch) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.epochs = append(f.epochs, ep)
@@ -157,6 +158,48 @@ func TestTheRemoteFleetWaitsForTheSeqOfACycle(t *testing.T) {
 	}()
 	reports = f.Reports(t.Context(), 5*time.Second, map[string]uint64{otherNode: 2})
 	require.Equal(t, uint64(2), reports[otherNode].Status.SeqApplied)
+}
+
+// A status that does not hold together is refused for its node alone, and
+// is not kept: the reports of the others go on, and a heartbeat that waits
+// on the agent of this node holds no other node's report.
+func TestABadStatusIsRefusedForItsNodeAlone(t *testing.T) {
+	now := t0
+	f, ctl := newTestFleet(&now)
+	_, err := f.Report(t.Context(), "pve3", agentproto.Status{Node: "pve3", SeqApplied: 1})
+	require.NoError(t, err)
+
+	for name, st := range map[string]agentproto.Status{
+		"of another node":             {Node: "pve3"},
+		"of an epoch no draw makes":   {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: agentproto.MaxGeneration + 1, Nonce: "x"}},
+		"of an epoch without a nonce": {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: 3}},
+	} {
+		_, err := f.Report(t.Context(), otherNode, st)
+		require.Error(t, err, name)
+	}
+	reports := f.Reports(t.Context(), 0, nil)
+	require.NotContains(t, reports, otherNode)
+	require.Equal(t, uint64(1), reports["pve3"].Status.SeqApplied, "the other node's report stands")
+	require.Equal(t, []agentproto.Epoch{{}}, ctl.epochs, "only the status taken reached the lease")
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	f.attach(ctl, func(context.Context) agentproto.Status {
+		close(held)
+		<-release
+		return agentproto.Status{}
+	})
+	go func() { _, _ = f.Report(context.Background(), otherNode, agentproto.Status{Node: otherNode}) }()
+	<-held
+	done := make(chan map[string]engine.NodeReport, 1)
+	go func() { done <- f.Reports(context.Background(), 0, nil) }()
+	select {
+	case got := <-done:
+		require.Contains(t, got, "pve3")
+	case <-time.After(5 * time.Second):
+		t.Fatal("a heartbeat that waits held the reports of the others")
+	}
+	close(release)
 }
 
 // A host node joins with pco setup and issues its own certificates: the

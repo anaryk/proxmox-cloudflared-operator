@@ -60,7 +60,6 @@ type clusterPart struct {
 	log    zerolog.Logger
 
 	mu        sync.Mutex
-	multi     bool
 	listening *clusterRun
 	following *clusterRun
 	client    *agent.Client
@@ -126,17 +125,22 @@ func (c *clusterPart) tick(ctx context.Context) {
 		_, err := c.keeper.Gate(ctx)
 		return err
 	})
-	multi := c.clustered()
+	// What this node is, and whether it serves the others, is read anew at
+	// every tick: a registry that cannot be read serves nobody, and the
+	// endpoint's checks read the registry and the enrolments again at every
+	// request.
+	multi, err := c.clustered()
 	st := c.keeper.State()
-	holder := st.Holder && st.Valid
+	holder := st.Holder && st.Valid && err == nil
 	c.observe.note(c.eng.State().Mode == engine.ModeObserve, c.now())
 
 	c.mu.Lock()
-	c.multi = multi
 	following, listening := c.following, c.listening
 	c.mu.Unlock()
 
 	switch {
+	case err != nil:
+		c.log.Warn().Err(err).Msg("the node registry cannot be read; this node serves no agent until it can")
 	case multi && following == nil:
 		c.startClient(ctx)
 	case !multi && following != nil:
@@ -167,16 +171,14 @@ func (c *clusterPart) stopPart(r **clusterRun) {
 
 // clustered says whether the registry names a node besides this one that
 // was not removed.
-func (c *clusterPart) clustered() bool {
+func (c *clusterPart) clustered() (bool, error) {
 	nodes, err := c.st.Nodes()
 	if err != nil {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.multi
+		return false, err
 	}
 	return slices.ContainsFunc(nodes, func(n store.NodeEntry) bool {
 		return n.Name != c.node && n.State != store.NodeRemoved
-	})
+	}), nil
 }
 
 // startClient starts the client of this node's agent, once the agent is
@@ -311,33 +313,6 @@ func (c *clusterPart) sources(context.Context) (clusterapi.Sources, error) {
 		src.Nodes[n.Name] = addrs
 	}
 	return src, nil
-}
-
-// Controller says whether this node is the controller: it stands alone, or
-// it holds the lease.
-func (c *clusterPart) Controller() bool {
-	c.mu.Lock()
-	multi := c.multi
-	c.mu.Unlock()
-	return !multi || c.keeper.State().Holder
-}
-
-// ControllerAddr names the node leader.json names as the holder, its agent
-// address and since when it holds the lease; ok while its agent hears that
-// controller call its lease valid.
-func (c *clusterPart) ControllerAddr() (node, addr string, since time.Time, ok bool) {
-	rec, _, found, err := c.st.Leader()
-	if err != nil || !found || rec.Node == "" || !rec.ReleasedAt.IsZero() && !rec.ReleasedAt.Before(rec.AcquiredAt) {
-		return "", "", time.Time{}, false
-	}
-	if nodes, err := c.st.Nodes(); err == nil {
-		for _, n := range nodes {
-			if n.Name == rec.Node && n.AgentAddress.IsValid() {
-				addr = n.AgentAddress.String()
-			}
-		}
-	}
-	return rec.Node, addr, rec.AcquiredAt, addr != "" && c.eng.HeardLive(c.now())
 }
 
 // observeWindow remembers since when the controller is in observe-only

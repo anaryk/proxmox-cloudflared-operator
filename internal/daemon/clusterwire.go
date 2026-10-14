@@ -45,7 +45,6 @@ func newClusterPart(cfg Config, deps Deps, st *store.Store, hl *hostLease, log z
 		w := hl.keeper.State().Writer
 		return agentproto.Epoch{InstallID: w.InstallID, Generation: w.Generation, Nonce: w.Nonce}
 	})
-	c.multi = c.clustered()
 	return c
 }
 

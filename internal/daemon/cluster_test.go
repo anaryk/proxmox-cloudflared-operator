@@ -147,6 +147,15 @@ func TestTheControllerServesTheAgentOfTheOtherNode(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, segs)
 
+	// A registry that cannot be read serves nobody: the endpoint closes,
+	// and opens again once it can be read.
+	endpoint := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), first.deps.Cluster.Port).String()
+	damaged := filepath.Join(first.paths.Cluster, "nodes", "pve9.json")
+	require.NoError(t, os.WriteFile(damaged, []byte("{not json"), 0o600))
+	require.Eventually(t, func() bool { return !listens(endpoint) }, 10*time.Second, 20*time.Millisecond)
+	require.NoError(t, os.Remove(damaged))
+	require.Eventually(t, func() bool { return listens(endpoint) }, 10*time.Second, 20*time.Millisecond)
+
 	require.NoError(t, r2.stop())
 	require.NoError(t, r1.stop())
 }
@@ -168,6 +177,16 @@ func TestASingleNodeOpensNoAgentEndpoint(t *testing.T) {
 	require.Error(t, err, "nothing listens")
 	require.NoDirExists(t, filepath.Join(w.paths.Local, "agent", "tls"), "no certificate is issued")
 	require.NoError(t, r.stop())
+}
+
+// listens says whether something takes a connection at addr.
+func listens(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func entryIn(t *testing.T, st *store.Store, name string) store.NodeEntry {

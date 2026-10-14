@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/netip"
 	"sync"
@@ -26,7 +27,7 @@ var errHostJoin = errors.New("a host node joins with pco setup, not over the age
 type controllerSide interface {
 	LeaseValid(now time.Time) (bool, time.Duration)
 	TakeAgentEvents(node string, st agentproto.Status, epoch agentproto.Epoch) uint64
-	NoteAgentEpoch(ep agentproto.Epoch)
+	NoteAgentEpoch(node string, kind pki.Kind, ep agentproto.Epoch)
 	Trigger()
 }
 
@@ -103,6 +104,9 @@ func (f *RemoteFleet) Snapshot(ctx context.Context, node string, epoch agentprot
 // Report takes a status of node and answers with the controller's
 // heartbeat. The events it carries go into the controller's log.
 func (f *RemoteFleet) Report(ctx context.Context, node string, st agentproto.Status) (agentproto.Heartbeat, error) {
+	if err := checkStatus(node, st); err != nil {
+		return agentproto.Heartbeat{}, err
+	}
 	now := f.now()
 	epoch := f.epoch()
 	f.mu.Lock()
@@ -112,7 +116,7 @@ func (f *RemoteFleet) Report(ctx context.Context, node string, st agentproto.Sta
 	if ctl != nil {
 		// An epoch above the controller's stops its writes now, not with
 		// the next cycle.
-		ctl.NoteAgentEpoch(st.EpochSeen)
+		ctl.NoteAgentEpoch(node, st.Kind, st.EpochSeen)
 		ack = ctl.TakeAgentEvents(node, st, epoch)
 	}
 	kept := st
@@ -162,6 +166,21 @@ func (f *RemoteFleet) Report(ctx context.Context, node string, st agentproto.Sta
 		}
 	}
 	return hb, nil
+}
+
+// checkStatus refuses a status that does not hold together, for its node
+// alone: one of another node, or that follows an epoch no draw makes. The
+// endpoint has bounded and decoded it already.
+func checkStatus(node string, st agentproto.Status) error {
+	if st.Node != node {
+		return fmt.Errorf("the status is of node %q, sent by node %s", st.Node, node)
+	}
+	if st.EpochSeen.Generation != 0 {
+		if _, err := agentproto.ParseEpoch(st.EpochSeen.String()); err != nil {
+			return fmt.Errorf("the status of node %s follows an epoch no draw makes: %w", node, err)
+		}
+	}
+	return nil
 }
 
 // Reports returns the last report of every node, fresh while it is at most

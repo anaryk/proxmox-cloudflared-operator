@@ -366,7 +366,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
 	gid, uids, web := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
-	srv.SetRole(cp)
+	srv.SetRole(api.LeaseRole(eng.State, hl.alone))
 	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, dh.awaitBound, log, beside...)
