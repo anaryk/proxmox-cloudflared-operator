@@ -19,13 +19,17 @@ import (
 // card: the store is not known to hold all that the nodes hold.
 const problemCatchUp = "no service address and no managed card is made until the store is checked against every node: %s"
 
+// problemReportRefused names what a node's report says its gateway maps that
+// is not taken from it. It holds nothing: a report that is not taken is
+// proof that the report is wrong, not that the address is in use.
+const problemReportRefused = "node %s reports that its gateway maps %s, not taken from it: %s"
+
 // catchUp makes sure that a store that lags behind what the nodes hold gives
 // nothing twice, before the cycle allocates anything: the pool of service
 // addresses moves on past every service address an agent's gateway maps or
 // a configuration verified at Cloudflare sends a connector to, and a managed
 // card that a guest has keeps its lease. Until every node the registry
-// serves has reported in an epoch, and while any report names an address in
-// use that is not taken from it, the gate of an expanding write stays
+// serves has reported in an epoch the gate of an expanding write stays
 // closed: nothing is allocated from a store that may not be current. A node
 // alone has its store to itself, which nothing else writes, and does not
 // run it.
@@ -65,7 +69,7 @@ func (c *cycleRun) silentNode() string {
 			continue
 		}
 		rep, ok := reports[name]
-		if !ok || !rep.Fresh || c.now.Sub(rep.ReceivedAt) >= silentAfter {
+		if !ok || !c.fresh(rep) {
 			return name
 		}
 	}
@@ -82,15 +86,15 @@ const maxCatchUp = 1024
 // cycle: what a report or the inventory holds never grows the work of a
 // cycle, or the store, without bound. The rest waits for the next cycle.
 const (
-	maxReported    = 4096
+	maxReported    = agentproto.MaxServiceAddrs
 	maxLeasesAgain = 64
 )
 
 // raisePool moves the pool of service addresses on past the highest service
 // address the gateway of an admitted node maps or a verified configuration
 // names. It says why nothing may be allocated now: the pool could not be
-// read or moved, or a report names an address at or past the pool's next
-// that is not taken from it.
+// read or moved. What a report names at or past the pool's next that is not
+// taken from it is a problem line, and said once as an event.
 func (c *cycleRun) raisePool() string {
 	next, _, _, err := c.e.d.Store.ServicePool()
 	if err != nil {
@@ -120,7 +124,8 @@ func (c *cycleRun) raisePool() string {
 		if r.addr.IsValid() && r.addr.Less(want) {
 			continue
 		}
-		return fmt.Sprintf("node %s reports that its gateway maps %s, which is not taken from it: %s", r.node, r.what(), r.why)
+		// The line is an event when it appears; it holds nothing.
+		c.problem(problemReportRefused, r.node, r.what(), r.why)
 	}
 	return ""
 }
@@ -146,9 +151,8 @@ func (r refusedReport) what() string {
 // certificate names, and what is not taken: the addresses of a node that is
 // not Active or Draining or of a report that names another node, those past
 // maxCatchUp beyond next, and every one of a report that names more than
-// maxReported. What is not taken moves the pool nowhere, so that no node
-// can give the pool away; it holds every allocation instead, while it names
-// an address the pool would give.
+// maxReported. What is not taken moves the pool nowhere and holds nothing.
+// A report that is not fresh is not gone by at all.
 func (c *cycleRun) reportedServices(next netip.Addr) (map[netip.Addr]bool, []refusedReport) {
 	out := map[netip.Addr]bool{}
 	var refused []refusedReport
@@ -159,13 +163,13 @@ func (c *cycleRun) reportedServices(next netip.Addr) (map[netip.Addr]bool, []ref
 	reports := c.reportsNow()
 	for _, name := range slices.Sorted(maps.Keys(reports)) {
 		rep := reports[name]
+		if !c.fresh(rep) {
+			continue
+		}
 		n, known := c.nodes[name]
 		admitted := known && (n.Node.State == store.NodeActive || n.Node.State == store.NodeDraining)
 		if count := len(rep.Status.ServiceAddrs); count > maxReported {
-			why := fmt.Sprintf("more than %d", maxReported)
-			c.saidOnce("many "+name, Event{At: c.now, Level: levelWarn, Kind: kindNetwork, Subject: name,
-				Message: fmt.Sprintf("node %s reports that its gateway maps %d service addresses, %s; none of them is taken", name, count, why)})
-			refused = append(refused, refusedReport{node: name, n: count, why: why})
+			refused = append(refused, refusedReport{node: name, n: count, why: fmt.Sprintf("more than %d", maxReported)})
 			continue
 		}
 		for _, addr := range rep.Status.ServiceAddrs {
@@ -185,12 +189,15 @@ func (c *cycleRun) reportedServices(next netip.Addr) (map[netip.Addr]bool, []ref
 				out[addr] = true
 				continue
 			}
-			c.saidOnce(name+" "+addr.String(), Event{At: c.now, Level: levelWarn, Kind: kindNetwork, Subject: name,
-				Message: fmt.Sprintf("node %s reports that its gateway maps %s, which is not taken from it: %s", name, addr, why)})
 			refused = append(refused, refusedReport{node: name, addr: addr, why: why})
 		}
 	}
 	return out, refused
+}
+
+// fresh says that rep is recent enough to go by.
+func (c *cycleRun) fresh(rep NodeReport) bool {
+	return rep.Fresh && c.now.Sub(rep.ReceivedAt) < silentAfter
 }
 
 // keepCardLeases gives every managed card of a guest whose lease is missing

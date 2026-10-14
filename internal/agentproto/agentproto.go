@@ -34,6 +34,9 @@ const (
 	MaxStatusBytes = 1 << 20
 	MaxEventBatch  = 500
 	MaxResend      = 10000
+	// MaxServiceAddrs is the most service addresses a status may say its
+	// node's gateway maps: more than a pool of them leaves room for.
+	MaxServiceAddrs = 4096
 
 	// MaxSnapshotBytes bounds what an agent reads of a snapshot, so that a
 	// controller gone wrong cannot make it hold more without end. A node

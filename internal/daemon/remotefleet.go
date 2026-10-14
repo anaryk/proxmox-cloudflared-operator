@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -169,11 +170,19 @@ func (f *RemoteFleet) Report(ctx context.Context, node string, st agentproto.Sta
 }
 
 // checkStatus refuses a status that does not hold together, for its node
-// alone: one of another node, or that follows an epoch no draw makes. The
-// endpoint has bounded and decoded it already.
+// alone: one of another node, or that follows an epoch no draw makes, and
+// one over the bounds of the protocol. The endpoint bounds and decodes the
+// body before; the bounds are held here again so that no other way in
+// hands the engine more than one status may carry.
 func checkStatus(node string, st agentproto.Status) error {
 	if st.Node != node {
 		return fmt.Errorf("the status is of node %q, sent by node %s", st.Node, node)
+	}
+	if err := agentproto.CheckStatusBounds(st); err != nil {
+		return fmt.Errorf("the status of node %s: %w", node, err)
+	}
+	if body, err := json.Marshal(st); err != nil || len(body) > agentproto.MaxStatusBytes {
+		return fmt.Errorf("the status of node %s is %w: a body is at most %d bytes", node, agentproto.ErrTooLarge, agentproto.MaxStatusBytes)
 	}
 	if st.EpochSeen.Generation != 0 {
 		if _, err := agentproto.ParseEpoch(st.EpochSeen.String()); err != nil {

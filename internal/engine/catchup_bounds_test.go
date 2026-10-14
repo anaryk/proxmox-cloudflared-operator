@@ -29,7 +29,7 @@ func TestAReportOfTooManyServiceAddressesIsNotTaken(t *testing.T) {
 	next, _, _, err := w.store.ServicePool()
 	require.NoError(t, err)
 	require.Equal(t, netip.MustParseAddr("198.18.1.0"), next)
-	require.Contains(t, w.eventMessages(), fmt.Sprintf("node pve2 reports that its gateway maps %d service addresses, more than %d; none of them is taken",
+	require.Contains(t, w.eventMessages(), fmt.Sprintf("node pve2 reports that its gateway maps %d service addresses, not taken from it: more than %d",
 		maxReported+1, maxReported))
 }
 

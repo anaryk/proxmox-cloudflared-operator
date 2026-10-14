@@ -34,6 +34,15 @@ func events(n int) []json.RawMessage {
 	return out
 }
 
+// addrs are n addresses of the pool of service addresses.
+func addrs(n int) []netip.Addr {
+	out := make([]netip.Addr, 0, n)
+	for a := netip.MustParseAddr("198.18.1.0"); len(out) < n; a = a.Next() {
+		out = append(out, a)
+	}
+	return out
+}
+
 func TestDecodeStatusBounds(t *testing.T) {
 	body := statusBody(t, fullStatus())
 	cases := []struct {
@@ -48,6 +57,8 @@ func TestDecodeStatusBounds(t *testing.T) {
 		{"501 events", bytes.NewReader(statusBody(t, Status{Node: "node2", Events: events(MaxEventBatch + 1)})), true},
 		{"a resend of 10 000 events", bytes.NewReader(statusBody(t, Status{Node: "node2", Resend: MaxResend})), false},
 		{"a resend of 10 001 events", bytes.NewReader(statusBody(t, Status{Node: "node2", Resend: MaxResend + 1})), true},
+		{"4096 service addresses", bytes.NewReader(statusBody(t, Status{Node: "node2", ServiceAddrs: addrs(MaxServiceAddrs)})), false},
+		{"4097 service addresses", bytes.NewReader(statusBody(t, Status{Node: "node2", ServiceAddrs: addrs(MaxServiceAddrs + 1)})), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

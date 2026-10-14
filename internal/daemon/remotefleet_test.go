@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -173,6 +174,8 @@ func TestABadStatusIsRefusedForItsNodeAlone(t *testing.T) {
 		"of another node":             {Node: "pve3"},
 		"of an epoch no draw makes":   {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: agentproto.MaxGeneration + 1, Nonce: "x"}},
 		"of an epoch without a nonce": {Node: otherNode, EpochSeen: agentproto.Epoch{InstallID: clusterInstall, Generation: 3}},
+		"of more service addresses than a gateway maps": {Node: otherNode, ServiceAddrs: serviceAddrs(agentproto.MaxServiceAddrs + 1)},
+		"larger than a status body": {Node: otherNode, Problems: []string{strings.Repeat("x", agentproto.MaxStatusBytes)}},
 	} {
 		_, err := f.Report(t.Context(), otherNode, st)
 		require.Error(t, err, name)
@@ -200,6 +203,15 @@ func TestABadStatusIsRefusedForItsNodeAlone(t *testing.T) {
 		t.Fatal("a heartbeat that waits held the reports of the others")
 	}
 	close(release)
+}
+
+// serviceAddrs are n service addresses from the start of the pool.
+func serviceAddrs(n int) []netip.Addr {
+	out := make([]netip.Addr, 0, n)
+	for a := netip.MustParseAddr("198.18.1.0"); len(out) < n; a = a.Next() {
+		out = append(out, a)
+	}
+	return out
 }
 
 // A host node joins with pco setup and issues its own certificates: the
