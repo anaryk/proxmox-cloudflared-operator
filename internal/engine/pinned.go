@@ -50,8 +50,12 @@ func (c *cycleRun) checkRuleCount() {
 // node is a replica of it, and the tunnel pinned to the node, to a host
 // agent alone. A node of a state the cycle does not know, one that is not
 // served, and an appliance agent get no pinned tunnel; a node outside the
-// replica set gets no shared one. Only an enforcing cycle that ran the
-// connectors of this node hands tokens out.
+// replica set gets no shared one. A joining node does get its own pinned
+// tunnel while the plan has routes there: after a reboot the node comes
+// back joining with its guests, and their pinned routes are served through
+// that tunnel alone, so holding its token until admission would keep them
+// down for as long as the admission takes. Only an enforcing cycle that
+// ran the connectors of this node hands tokens out.
 func (c *cycleRun) remoteTunnels(node string) []agentproto.Tunnel {
 	n, ok := c.nodes[node]
 	if !ok || !servedState(n.Node.State) || !c.connected || c.cfHold || c.mode() != reconcile.Enforce {
