@@ -153,6 +153,34 @@ action that writes to the store fails, until quorum is back.
 To move pco to another node for good, follow
 [Back up and recover](backup-and-recovery.md#move-pco-to-another-node).
 
+## Look after the nodes
+
+Ask the controller, on the node that holds the lease:
+
+- [pco cluster status](../cli/pco-cluster-status.md) shows the controller, quorum, the
+  upgrade and a rotation under way, and [pco node list](../cli/pco-node-list.md) the state of
+  every node.
+- Before a node's maintenance, [pco node drain](../cli/pco-node-drain.md) takes it out of the
+  shared tunnel, and [pco node undrain](../cli/pco-node-undrain.md) takes it back. Proxmox's
+  maintenance mode drains it by itself.
+- [pco node admit](../cli/pco-node-admit.md) lets a node in that waits for the admin, as an
+  appliance agent by the fingerprint of its certificate, and
+  [pco cluster join-token](../cli/pco-cluster-join-token.md) makes the token such an agent
+  joins with.
+- [pco node forget](../cli/pco-node-forget.md) removes a node that is gone and rotates the
+  secret it held; with `--compromised`, every secret of the install (see
+  [Security](../security.md#what-a-compromised-forget-leaves-open-and-for-how-long)).
+- [pco cluster handoff](../cli/pco-cluster-handoff.md) moves the lease to another node, and
+  [pco node set](../cli/pco-node-set.md) says whether a node may hold it.
+- [pco cluster unblock](../cli/pco-cluster-unblock.md) ends the block of an address before
+  its time, and [pco cluster finish-upgrade](../cli/pco-cluster-finish-upgrade.md) ends an
+  upgrade once every node runs the new release.
+
+On any node, [pco agent status](../cli/pco-agent-status.md) shows what the agent of that node
+follows, and [pco agent reset-epoch](../cli/pco-agent-reset-epoch.md) makes it forget the epoch
+it remembers. The groups: [pco cluster](../cli/pco-cluster.md), [pco node](../cli/pco-node.md),
+[pco agent](../cli/pco-agent.md).
+
 ## Check
 
 ```sh
