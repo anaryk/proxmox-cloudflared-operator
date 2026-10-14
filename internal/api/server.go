@@ -144,6 +144,9 @@ type Server struct {
 	// checkPeers is whether a request is answered only when its peer is one
 	// of allowedUIDs. It starts as what the platform can do; tests set it.
 	checkPeers bool
+	// rootUID is the uid whose requests count as root's: 0, unless a test
+	// names its own.
+	rootUID uint32
 	// bodyTimeout is how long a peer has to send the body of a POST.
 	bodyTimeout time.Duration
 	// shutdownTimeout is how long Serve waits for running requests.
@@ -191,6 +194,11 @@ func (s *Server) OnListening(fn func()) { s.onListening = fn }
 // Serve returns an error for which errors.Is(err, context.DeadlineExceeded)
 // holds. It has to be set before Serve is called.
 func (s *Server) SetShutdownTimeout(d time.Duration) { s.shutdownTimeout = d }
+
+// SetRootUID names the uid whose requests count as root's where the peer is
+// checked, for a test that does not run as root. It has to be set before Serve
+// is called.
+func (s *Server) SetRootUID(uid uint32) { s.rootUID = uid }
 
 // Handler returns the whole API, the peer check included. A request is
 // answered only when the context of its connection says who the peer is, which

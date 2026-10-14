@@ -155,8 +155,9 @@ func TestTheClusterRoutesReachTheEngine(t *testing.T) {
 	} {
 		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
 			f := &fakeEngine{}
-			s := newServer(f)
-			rec := do(s, tt.method, tt.target, tt.body)
+			// Root asks, as some of these routes are root's alone.
+			s := New(f, "1.2.3", []uint32{0}, zerolog.Nop())
+			rec := send(s, requestFrom(0, tt.method, tt.target, tt.body))
 			require.Equal(t, tt.status, rec.Code, rec.Body.String())
 			require.Contains(t, rec.Body.String(), tt.contains)
 			require.Contains(t, f.called(), tt.call)

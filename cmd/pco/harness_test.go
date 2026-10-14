@@ -629,6 +629,8 @@ func serveFake(t *testing.T, e *fakeEngine) string {
 	t.Helper()
 	socket := filepath.Join(testutil.ShortDir(t), "pco", "pco.sock")
 	srv := api.New(e, "1.2.3", []uint32{uint32(os.Getuid())}, zerolog.Nop())
+	// The commands are tested as root runs them, whoever runs the tests.
+	srv.SetRootUID(uint32(os.Getuid()))
 	ctx, cancel := context.WithCancel(t.Context())
 	ready := make(chan struct{})
 	srv.OnListening(func() { close(ready) })

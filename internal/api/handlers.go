@@ -251,7 +251,7 @@ func (s *Server) postAdopt(c *gin.Context) {
 // connector of it. Of the users that may use the socket only root may ask,
 // where the peer can be told.
 func (s *Server) postRotateTunnel(c *gin.Context) {
-	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != 0) {
+	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != s.rootUID) {
 		s.fail(c, errRootOnly)
 		return
 	}
@@ -274,7 +274,7 @@ func (s *Server) postRotateTunnel(c *gin.Context) {
 // agents and Cloudflare say, and, confirmed, draws a new epoch that makes
 // this node the writer. Only root may ask, where the peer can be told.
 func (s *Server) postPromote(c *gin.Context) {
-	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != 0) {
+	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != s.rootUID) {
 		s.fail(c, errPromoteBy)
 		return
 	}

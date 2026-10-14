@@ -123,7 +123,7 @@ func (s *Server) postUnblock(c *gin.Context) {
 // may ask, where the peer can be told: it is the first step of pco uninstall
 // --cluster.
 func (s *Server) postUninstallCluster(c *gin.Context) {
-	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != 0) {
+	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != s.rootUID) {
 		s.fail(c, errUninstallBy)
 		return
 	}
@@ -246,7 +246,7 @@ func (s *Server) getLocalAgent(c *gin.Context) {
 // postResetEpoch forgets the epoch the agent of this node remembers. Only
 // root may ask, where the peer can be told.
 func (s *Server) postResetEpoch(c *gin.Context) {
-	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != 0) {
+	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != s.rootUID) {
 		s.fail(c, errResetEpochBy)
 		return
 	}
@@ -264,5 +264,5 @@ func (s *Server) postResetEpoch(c *gin.Context) {
 // byRoot says whether root asks, where the peer can be told.
 func (s *Server) byRoot(c *gin.Context) bool {
 	uid, ok := peerUID(c.Request.Context())
-	return !s.checkPeers || ok && uid == 0
+	return !s.checkPeers || ok && uid == s.rootUID
 }
