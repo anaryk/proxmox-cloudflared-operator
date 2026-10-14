@@ -116,5 +116,16 @@
   ],
   "problems": [
     "the forwarding-table watch is not running"
+  ],
+  "legs": [
+    {
+      "id": "vmbr1",
+      "up": true
+    },
+    {
+      "id": "vmbr2.20",
+      "up": false,
+      "problem": "10.20.0.250 is answered by bc:24:11:00:00:09"
+    }
   ]
 }

@@ -3,9 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 )
 
@@ -14,8 +19,8 @@ import (
 // of guests' cards the controller hands it, and the gateway, which it drives
 // from the networks of its desired state while the controller runs on
 // another node. doctor makes the checks of the node a doctor action of the
-// controller asks for.
-func agentDeps(res agent.Resolver, conns agent.Connectors, filter agent.Egress, gw *gatewayPart,
+// controller asks for, and probe answers its probe actions.
+func agentDeps(res agent.Resolver, conns agent.Connectors, filter agent.Egress, gw *gatewayPart, probe nodeProbe,
 	doctor func(context.Context) (json.RawMessage, error)) agent.Deps {
 	run := setup.NewHostRunner()
 	d := agent.Deps{
@@ -26,8 +31,33 @@ func agentDeps(res agent.Resolver, conns agent.Connectors, filter agent.Egress, 
 	}
 	if gw != nil {
 		d.Gateway = agentGateway{gw}
+		if probe.gw != nil && probe.prober != nil {
+			d.Interfaces, d.ProbeAddr = probe.prober.Interfaces, probe.addr
+		}
 	}
 	return d
+}
+
+// nodeProbe is what a probe action of the controller is answered from: the
+// interfaces the prober sees and the gateway of the node, whose namespace
+// the unit starts when no leg needed it yet.
+type nodeProbe struct {
+	gw     *gatewayPart
+	prober resolve.Prober
+	unit   Netns
+}
+
+// addr asks who answers for addr on a bridge and VLAN of the node, as the
+// engine's probe does where it runs.
+func (n nodeProbe) addr(ctx context.Context, bridge string, vlan int, addr netip.Addr) ([]net.HardwareAddr, error) {
+	macs, err := n.gw.Probe(ctx, bridge, vlan, addr)
+	if errors.Is(err, gateway.ErrNotPinned) && n.unit != nil {
+		if serr := n.unit.Start(ctx); serr != nil {
+			return nil, fmt.Errorf("starting the gateway namespace: %w", serr)
+		}
+		macs, err = n.gw.Probe(ctx, bridge, vlan, addr)
+	}
+	return macs, err
 }
 
 // agentGateway is the gateway as the agent drives it: what it is given is

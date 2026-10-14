@@ -35,6 +35,7 @@ type view struct {
 	set         []egress.Target
 	localBlocks []netip.Addr
 	services    []netip.Addr // what the gateway maps
+	legs        []agentproto.LegReport
 	actions     []agentproto.ActionResult
 	notes       []string // what holds whatever a pass finds
 	problems    []string // of the last pass
@@ -76,6 +77,7 @@ func (a *Agent) fill() {
 	r.epoch, r.seq, r.seqAt, r.stood = a.remembered, a.applied, a.seqAt, a.stood
 	r.set = slices.Clone(a.set)
 	r.services = slices.Clone(a.gwServices)
+	r.legs = slices.Clone(a.gwLegs)
 	r.notes = nil
 	for _, note := range []string{a.stood, a.unreadable, a.refused} {
 		if note != "" {
@@ -182,6 +184,7 @@ func (a *Agent) Status(context.Context) agentproto.Status {
 		Egress:         r.egress,
 		LocalBlocks:    slices.Clone(r.localBlocks),
 		ServiceAddrs:   slices.Clone(r.services),
+		Legs:           slices.Clone(r.legs),
 		Clock:          now,
 		Actions:        append(slices.Clone(r.actions), a.doctorAnswers()...),
 		Problems:       a.problems(r, now),

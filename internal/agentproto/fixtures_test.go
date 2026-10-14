@@ -186,6 +186,24 @@ func fullStatus() Status {
 			{ID: "a2", Error: "the guest is not on this node"},
 		},
 		Problems: []string{"the forwarding-table watch is not running"},
+		Legs:     []LegReport{{ID: "vmbr1", Up: true}, {ID: "vmbr2.20", Problem: "10.20.0.250 is answered by bc:24:11:00:00:09"}},
+	}
+}
+
+func fullProbe() Probe {
+	return Probe{Bridge: "vmbr2", VLAN: 20, Addr: addr("10.20.0.250")}
+}
+
+func fullProbeAnswer() ProbeAnswer {
+	return ProbeAnswer{
+		Interfaces: []ProbeIface{
+			{Name: "vmbr2", Bridge: "vmbr2", Addrs: []netip.Prefix{netip.MustParsePrefix("192.168.4.12/24")}},
+			{Name: "eno2", Master: "vmbr2"},
+			{Name: "vmbr2.20", Bridge: "vmbr2", VLAN: 20, Addrs: []netip.Prefix{netip.MustParsePrefix("10.20.0.1/24")}},
+			{Name: "leg1", Master: "vmbr1", Bridge: "vmbr1", Via: "vmbr1"},
+		},
+		AnsweredBy: []string{"bc:24:11:00:00:09"},
+		NotProbed:  "the gateway namespace is not up",
 	}
 }
 

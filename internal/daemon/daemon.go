@@ -498,7 +498,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Inventory: inv,
 		StartOnly: func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Restart:   restart,
-		Fleet:     engine.NewLocalFleet(agentDeps(res, conns, filter, gw, cp.doctor.run)),
+		Fleet:     engine.NewLocalFleet(agentDeps(res, conns, filter, gw, nodeProbe{gw: gw, prober: deps.Prober, unit: deps.Namespace}, cp.doctor.run)),
 		NewClient: holdingClients(deps.clients(settings.CloudflareBudget, regate(hl)), hl.keeper),
 		Node:      cfg.Node,
 		Now:       deps.Now,

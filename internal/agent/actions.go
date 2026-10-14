@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 
@@ -37,10 +38,10 @@ func (p *pass) actions() {
 			a.startDoctor(p.ctx, act.ID)
 			continue
 		}
-		err := a.runAction(p.ctx, p.s, act)
-		res := agentproto.ActionResult{ID: act.ID, OK: err == nil}
+		data, err := a.runAction(p.ctx, p.s, act)
+		res := agentproto.ActionResult{ID: act.ID, OK: err == nil, Data: data}
 		if err != nil {
-			res.Error = err.Error()
+			res.Error, res.Data = err.Error(), nil
 		}
 		a.answers[act.ID] = res
 		next[act.ID] = store.ActionDone{Kind: act.Kind, At: p.now, Error: res.Error}
@@ -56,12 +57,15 @@ func (p *pass) actions() {
 	}
 }
 
-// runAction carries out one action.
-func (a *Agent) runAction(ctx context.Context, s agentproto.Snapshot, act agentproto.Action) error {
-	if act.Kind == agentproto.ActionPVEWrite {
-		return a.pveWrite(ctx, s, act.Args)
+// runAction carries out one action, and returns what its answer carries.
+func (a *Agent) runAction(ctx context.Context, s agentproto.Snapshot, act agentproto.Action) (json.RawMessage, error) {
+	switch act.Kind {
+	case agentproto.ActionPVEWrite:
+		return nil, a.pveWrite(ctx, s, act.Args)
+	case agentproto.ActionProbe:
+		return a.probe(ctx, act.Args)
 	}
-	return fmt.Errorf("this agent does not carry out %s actions", act.Kind)
+	return nil, fmt.Errorf("this agent does not carry out %s actions", act.Kind)
 }
 
 // actionResults are the answers to the actions the snapshot lists that the

@@ -109,3 +109,26 @@ func TestTheStatusNamesTheServiceAddressesTheGatewayMaps(t *testing.T) {
 		require.Empty(t, st.ServiceAddrs)
 	})
 }
+
+// The status says how the gateway last found each leg, for the views of the
+// networks on the controller.
+func TestTheStatusSaysHowTheLegsAre(t *testing.T) {
+	e := newEnv(t)
+	e.gw = &fakeGateway{}
+	e.agent = e.newAgent()
+	s := e.snapshot()
+	s.Networks = managedNetworks(t)
+
+	st := e.apply(s)
+
+	require.Equal(t, []agentproto.LegReport{{ID: "lan", Up: true}, {ID: gateway.ManagedBridge, Up: true}}, st.Legs)
+
+	t.Run("a snapshot without legs takes them out of the status", func(t *testing.T) {
+		raw, err := json.Marshal(gateway.Cache{})
+		require.NoError(t, err)
+		s := e.snapshot()
+		s.Networks = raw
+		st := e.apply(s)
+		require.Empty(t, st.Legs)
+	})
+}

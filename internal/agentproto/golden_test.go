@@ -61,6 +61,8 @@ func TestTheGoldensPinProtocolOne(t *testing.T) {
 	t.Run("agent view", func(t *testing.T) { requireRoundTrip(t, "agent_view.json", fullAgentView()) })
 	t.Run("pve write", func(t *testing.T) { requireRoundTrip(t, "pve_write.json", fullPVEWrite()) })
 	t.Run("refusal", func(t *testing.T) { requireRoundTrip(t, "refusal.json", fullRefusal()) })
+	t.Run("probe", func(t *testing.T) { requireRoundTrip(t, "probe.json", fullProbe()) })
+	t.Run("probe answer", func(t *testing.T) { requireRoundTrip(t, "probe_answer.json", fullProbeAnswer()) })
 }
 
 func TestAnEmptySnapshotSurvivesTheWire(t *testing.T) {

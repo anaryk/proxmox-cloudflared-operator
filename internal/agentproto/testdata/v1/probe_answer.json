@@ -1,0 +1,33 @@
+{
+  "interfaces": [
+    {
+      "name": "vmbr2",
+      "bridge": "vmbr2",
+      "addrs": [
+        "192.168.4.12/24"
+      ]
+    },
+    {
+      "name": "eno2",
+      "master": "vmbr2"
+    },
+    {
+      "name": "vmbr2.20",
+      "bridge": "vmbr2",
+      "vlan": 20,
+      "addrs": [
+        "10.20.0.1/24"
+      ]
+    },
+    {
+      "name": "leg1",
+      "master": "vmbr1",
+      "bridge": "vmbr1",
+      "via": "vmbr1"
+    }
+  ],
+  "answeredBy": [
+    "bc:24:11:00:00:09"
+  ],
+  "notProbed": "the gateway namespace is not up"
+}

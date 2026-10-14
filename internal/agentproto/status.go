@@ -46,6 +46,9 @@ type Status struct {
 	Resend   int            `json:"resend,omitempty"`
 	Actions  []ActionResult `json:"actions,omitempty"`
 	Problems []string       `json:"problems,omitempty"`
+	// Legs are the legs of the networks as the node's gateway last found
+	// them, at most MaxLegReports.
+	Legs []LegReport `json:"legs,omitempty"`
 }
 
 // TargetReport is how a target of the snapshot fares on the agent's node.

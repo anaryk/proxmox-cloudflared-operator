@@ -273,6 +273,7 @@ func (p *pass) syncGateway(set []egress.Target) {
 	}
 	p.a.gwInUse = len(p.cache.Legs) > 0 || len(services) > 0
 	p.a.gwServices = serviceAddrs(services)
+	p.a.gwLegs = legReports(states)
 	for _, st := range states {
 		switch {
 		case !st.Up:

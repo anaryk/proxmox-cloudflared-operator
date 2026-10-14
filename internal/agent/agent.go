@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,9 @@ const (
 
 	// pveWriteTimeout bounds a write of a guest's configuration.
 	pveWriteTimeout = 30 * time.Second
+	// probeTimeout bounds a probe action, within the half minute the
+	// controller waits for the answer.
+	probeTimeout = 10 * time.Second
 )
 
 // Resolver is the part of *resolve.Resolver the agent uses. It must be safe
@@ -150,6 +154,12 @@ type Deps struct {
 	// as when an address whose MAC moved failed its verification, so that it
 	// is reported soon. It may be nil.
 	Changed func()
+	// Interfaces are the interfaces of the node as the prober sees them, and
+	// ProbeAddr asks who answers for an address on a bridge and VLAN: what
+	// a probe action of the controller is answered from, on a host. Nil
+	// refuses the action.
+	Interfaces func(ctx context.Context) ([]resolve.HostIface, error)
+	ProbeAddr  func(ctx context.Context, bridge string, vlan int, addr netip.Addr) ([]net.HardwareAddr, error)
 	// Doctor makes the checks of this node and its agent, for a doctor
 	// action of the controller, and returns the findings as JSON. Nil
 	// refuses the action.
@@ -205,9 +215,11 @@ type Agent struct {
 	gwInUse   bool            // the gateway was last given a leg or a service
 	// gwServices are the service addresses the gateway was last given.
 	gwServices []netip.Addr
-	filtered   filteredMemory
-	rep        view       // what the last pass found, for Status and View
-	repMu      sync.Mutex // guards rep
+	// gwLegs are the legs as the gateway last found them.
+	gwLegs   []agentproto.LegReport
+	filtered filteredMemory
+	rep      view       // what the last pass found, for Status and View
+	repMu    sync.Mutex // guards rep
 
 	heardMu sync.Mutex
 	heardAt time.Time // the last snapshot or heartbeat of a controller

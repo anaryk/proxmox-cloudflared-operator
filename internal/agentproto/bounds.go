@@ -60,11 +60,14 @@ func DecodeStatus(r io.Reader) (Status, error) {
 
 // CheckStatusBounds refuses a decoded status over the bounds of the protocol
 // with ErrTooLarge: more than MaxEventBatch events, a resend of more than
-// MaxResend, more than MaxServiceAddrs service addresses.
+// MaxResend, more than MaxServiceAddrs service addresses, more than
+// MaxLegReports legs.
 func CheckStatusBounds(st Status) error {
 	switch {
 	case len(st.ServiceAddrs) > MaxServiceAddrs:
 		return fmt.Errorf("the status is %w: %d service addresses, at most %d", ErrTooLarge, len(st.ServiceAddrs), MaxServiceAddrs)
+	case len(st.Legs) > MaxLegReports:
+		return fmt.Errorf("the status is %w: %d legs, at most %d", ErrTooLarge, len(st.Legs), MaxLegReports)
 	case len(st.Events) > MaxEventBatch:
 		return fmt.Errorf("the status is %w: %d events, at most %d go in one", ErrTooLarge, len(st.Events), MaxEventBatch)
 	case st.Resend > MaxResend:

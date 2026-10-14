@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
@@ -87,4 +88,24 @@ func serviceAddrs(services []gateway.Service) []netip.Addr {
 	}
 	slices.SortFunc(out, netip.Addr.Compare)
 	return slices.Compact(out)
+}
+
+// maxLegProblem bounds what a leg report says of its problem.
+const maxLegProblem = 512
+
+// legReports are the legs as the gateway found them, for the status: at
+// most one for each mark.
+func legReports(states []gateway.LegState) []agentproto.LegReport {
+	var out []agentproto.LegReport
+	for _, st := range states {
+		if len(out) == agentproto.MaxLegReports {
+			break
+		}
+		problem := st.Problem
+		if len(problem) > maxLegProblem {
+			problem = problem[:maxLegProblem]
+		}
+		out = append(out, agentproto.LegReport{ID: st.ID, Up: st.Up, Problem: problem})
+	}
+	return out
 }
