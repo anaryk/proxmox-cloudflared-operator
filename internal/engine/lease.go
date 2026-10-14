@@ -52,7 +52,7 @@ const (
 func (c *cycleRun) leaseAdmits() bool {
 	l := c.e.d.Lease
 	if l == nil {
-		return true
+		return !c.agentsAhead()
 	}
 	defer func() {
 		st := l.State()

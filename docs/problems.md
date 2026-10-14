@@ -372,6 +372,19 @@ A guest outside the pool `pco` that runs configured with a MAC of the appliance 
 of its own, `configured with the MAC <mac> of the appliance lxc/<vmid>`, and its routes are
 rejected; see [Troubleshooting](troubleshooting.md#a-guest-with-the-appliances-mac).
 
+### The appliance in a cluster
+
+These come from a controller container, about the agent containers of the other nodes, and from
+an agent container about itself. An agent serves the node it was installed on and no other.
+
+| Line | Meaning and cause | What to do |
+|---|---|---|
+| `agent <vmid> runs on <node>, enrolled for <node>; move it back or enrol it again` | The container of a node's agent runs on another node: an admin's `pct migrate`, or a restore elsewhere. The controller serves it nothing and the endpoint takes no connection from it; the agent stops its connectors and empties its egress filter, as a copy does, until it is back. A container that is being migrated is left alone until it arrived. | `pct migrate` it back; or `pco node forget <node>` and install an agent on the node it is on now, with a new join token. |
+| `agent <vmid> is a Proxmox HA resource; agents are bound to their node` | The container of an agent was made an HA resource, which the HA manager may move to another node. The agent serves nothing while it is one, and a container that is one cannot join. | `ha-manager remove ct:<vmid>`. |
+| `the agent of node <node> follows epoch <epoch>, above this controller's <generation>.<nonce>: the store is older than what the agents were last told, as after a restore or a relocation on replicated storage; nothing is written until pco appliance recover draws above it` | The controller's volume came back older than the epoch an agent follows: a restore, or the HA manager relocated the controller onto a replica of its volume one replication interval old. What it would write could undo what it decided since, revocations included. It only observes. | Check that this is the controller you mean to run, then `pco appliance recover` in it. |
+| `the join is refused for good: <why>; pco cluster join-token on the controller makes a new token` | The agent container's join cannot succeed: the controller refused its token (its log says why), the token is for another node or install, expired, or its file was not root's alone. The token was removed from the volume. | A new token on the controller, then install the agent again with it. |
+| `node <node> is contested: <why>; pco node forget <node> removes the entry, and a new token enrols the node again` | A join token was used twice, or its first use came from a container that does not match what it said: another node, MAC or address. The node is admitted to nothing. A security event. | Find out who used the token; then `pco node forget <node>` and a new token. |
+
 ## Event kinds
 
 `pco events` lists what changed, oldest first. Each event has a time, a level (`info`, `warn`

@@ -67,6 +67,10 @@ func (c *cycleRun) publishRemote() {
 		if name == c.e.d.Node || !servedState(n.State) {
 			continue
 		}
+		if why := c.agentMoved(n); why != "" {
+			c.problem("%s", why)
+			continue
+		}
 		s := c.desired()
 		s.Node, s.State = name, agentproto.NodeState(n.State)
 		s.Endpoints = slices.Clone(endpoints)
