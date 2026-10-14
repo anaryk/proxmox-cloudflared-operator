@@ -24,9 +24,12 @@ const (
 )
 
 // startMoves reads the moves stored. The first cycle of this process gives
-// up every move a controller before it had not switched the records of: its
-// timers are gone, and the records still point where the stored placement
-// says. A move past the switch is finished.
+// up every move a controller before it had only added the rules of: its
+// timers are gone, and the records still point where they did. A move whose
+// rules were rolled out goes on: the last controller may have switched the
+// records before it noted so, and only a DNS run tells which tunnel they
+// point at, so the rules stay in both until one did. A move past the switch
+// is finished.
 func (c *cycleRun) startMoves() {
 	moves, err := c.e.d.Store.Moves()
 	if err != nil {
@@ -43,7 +46,7 @@ func (c *cycleRun) startMoves() {
 	mem.movesRead = true
 	for _, owner := range slices.Sorted(maps.Keys(moves)) {
 		m := moves[owner]
-		if m.Step == store.MoveCNAMEsSwitched {
+		if m.Step != store.MoveRulesAdded {
 			continue
 		}
 		if err := c.e.d.Store.DeleteMove(owner); err != nil {
@@ -52,8 +55,36 @@ func (c *cycleRun) startMoves() {
 		}
 		delete(c.moves, owner)
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
-			Message: fmt.Sprintf("the move of %s from %s to %s is given up: it had not switched the records when this controller took over", owner, m.From, m.To)})
+			Message: fmt.Sprintf("the move of %s from %s to %s is given up: its rules were not rolled out when this controller took over", owner, m.From, m.To)})
 	}
+}
+
+// giveUp ends a move whose owner is placed in the tunnel it came from
+// again. One that had only added the rules is dropped: its records never
+// left. One whose rules were rolled out is turned around instead, as a move
+// back at the same step: its records may point at the tunnel it went to
+// already, so both tunnels keep the rules until a DNS run put every record
+// back, and the rules of the tunnel left go as the old ones of any move
+// do. It returns the move as it stands, and whether it is still under way.
+func (c *cycleRun) giveUp(owner string, m store.Move) (store.Move, bool) {
+	if m.Step == store.MoveRulesAdded {
+		if err := c.e.d.Store.DeleteMove(owner); err != nil {
+			return m, true
+		}
+		delete(c.moves, owner)
+		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
+			Message: fmt.Sprintf("the move of %s from %s to %s is given up: it is placed in %s again", owner, m.From, m.To, m.From)})
+		return m, false
+	}
+	back := store.Move{Owner: owner, From: m.To, To: m.From, Step: store.MoveRolledOut, At: c.now}
+	if err := c.e.d.Store.SaveMove(back); err != nil {
+		c.problem("giving up the move of %s from %s to %s: %v", owner, m.From, m.To, err)
+		return m, true
+	}
+	c.moves[owner] = back
+	c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
+		Message: fmt.Sprintf("the move of %s from %s to %s is given up: it is placed in %s again, and its records go back there", owner, m.From, m.To, m.From)})
+	return back, true
 }
 
 // moving is where the records of an owner's routes point in this cycle and
@@ -84,12 +115,11 @@ func (c *cycleRun) moving(owner string, cur placed, stored bool, want placed) (p
 	}
 	from, to := c.placedOf(m.From, cur.why), c.placedOf(m.To, want.why)
 	if want.same(from) && m.Step != store.MoveCNAMEsSwitched {
-		if err := c.e.d.Store.DeleteMove(owner); err == nil {
-			delete(c.moves, owner)
-			c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
-				Message: fmt.Sprintf("the move of %s from %s to %s is given up: it is placed in %s again", owner, m.From, m.To, m.From)})
+		var on bool
+		if m, on = c.giveUp(owner, m); !on {
 			return from, nil
 		}
+		from, to = c.placedOf(m.From, cur.why), c.placedOf(m.To, want.why)
 	}
 	if m.Step == store.MoveRulesAdded {
 		return from, &to

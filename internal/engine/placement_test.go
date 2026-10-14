@@ -234,8 +234,9 @@ func TestAMoveKeepsTheOldRulesUntilTheRecordsSwitched(t *testing.T) {
 	require.Empty(t, moves)
 }
 
-// A new controller takes over in the middle of a move: one that had not
-// switched the records is given up, one that had is finished.
+// A new controller takes over in the middle of a move: one that had only
+// added its rules is given up, one whose rules were rolled out goes on,
+// and one that had switched the records is finished.
 func TestANewControllerAbortsAMoveBeforeTheSwitchAndFinishesOneAfter(t *testing.T) {
 	for _, step := range []string{store.MoveRulesAdded, store.MoveRolledOut, store.MoveCNAMEsSwitched} {
 		t.Run(step, func(t *testing.T) {
@@ -262,6 +263,17 @@ func TestANewControllerAbortsAMoveBeforeTheSwitchAndFinishesOneAfter(t *testing.
 			if step == store.MoveCNAMEsSwitched {
 				require.Contains(t, moves, "qemu/101", "finished, not given up")
 				require.Equal(t, pinned1, w.recordTunnel(t, "www.example.com"))
+				return
+			}
+			if step == store.MoveRolledOut {
+				// Nothing wants the route pinned: the move is turned around,
+				// and its rules stay in both tunnels until the records are
+				// seen where they are.
+				require.Contains(t, moves, "qemu/101", "turned around, not dropped")
+				require.Equal(t, store.Move{Owner: "qemu/101", From: pinned1, To: tunnelName, Step: store.MoveCNAMEsSwitched, At: moves["qemu/101"].At, CNAMEAt: moves["qemu/101"].CNAMEAt}, moves["qemu/101"])
+				require.Equal(t, tunnelName, w.recordTunnel(t, "www.example.com"))
+				require.Equal(t, []string{tunnelName, pinned1}, w.servedIn(t, "www.example.com"))
+				w.requireNothingWithdrawn(t, hosts3...)
 				return
 			}
 			require.Empty(t, moves)
