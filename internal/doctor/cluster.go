@@ -108,6 +108,7 @@ func RunWith(ctx context.Context, st engine.State, env Env, opts Options) []Find
 	}
 	out := runNode(ctx, st, env)
 	out = append(out, clusterChecks(st, src, env.Now())...)
+	out = append(out, applianceClusterChecks(ctx, src)...)
 	if err == nil {
 		out = append(out, agentChecks(ctx, st, env, view)...)
 	}

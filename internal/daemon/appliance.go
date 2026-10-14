@@ -182,7 +182,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	env.App = applianceDoctor(env, parts, state, local, app, deps)
 	if parts.cluster != nil {
-		env.Cluster = applianceDoctorCluster{st: st, eng: eng}
+		env.Cluster = applianceDoctorCluster{st: st, eng: eng, px: parts.client}
 	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{

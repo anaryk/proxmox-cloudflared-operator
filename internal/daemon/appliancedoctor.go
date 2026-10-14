@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -23,6 +27,7 @@ import (
 type applianceDoctorCluster struct {
 	st  *store.Store
 	eng *engine.Engine
+	px  *pve.Client
 }
 
 var _ doctor.ClusterSource = applianceDoctorCluster{}
@@ -43,6 +48,62 @@ func (d applianceDoctorCluster) Facts() engine.ClusterFacts { return d.eng.Clust
 
 func (d applianceDoctorCluster) Ask(ctx context.Context, nodes []string, wait time.Duration) map[string]doctor.AgentAnswer {
 	return doctorCluster{eng: d.eng}.Ask(ctx, nodes, wait)
+}
+
+// ApplianceFacts reads where the controller's container and the agent
+// containers of the registry are, as the Proxmox API says.
+func (d applianceDoctorCluster) ApplianceFacts(ctx context.Context) (doctor.ApplianceFacts, error) {
+	inst, found, err := d.st.Install()
+	switch {
+	case err != nil:
+		return doctor.ApplianceFacts{}, err
+	case !found || inst.Appliance == nil:
+		return doctor.ApplianceFacts{}, errors.New("the install records no appliance")
+	}
+	res, err := d.px.Resources(ctx)
+	if err != nil {
+		return doctor.ApplianceFacts{}, err
+	}
+	ha, err := d.px.HAResources(ctx)
+	if err != nil {
+		return doctor.ApplianceFacts{}, err
+	}
+	jobs, err := d.px.Replication(ctx)
+	if err != nil {
+		return doctor.ApplianceFacts{}, err
+	}
+	isHA := func(vmid int) bool {
+		return slices.ContainsFunc(ha, func(r pve.HAResource) bool { return r.Ref == model.GuestRef{Kind: model.KindLXC, VMID: vmid} })
+	}
+	f := doctor.ApplianceFacts{VMID: inst.Appliance.VMID, HA: isHA(inst.Appliance.VMID), Storage: inst.Appliance.Storage}
+	for _, j := range jobs {
+		if j.Guest.VMID == f.VMID {
+			f.Replication = append(f.Replication, j.ID)
+		}
+	}
+	nodes, err := d.st.Nodes()
+	if err != nil {
+		return doctor.ApplianceFacts{}, err
+	}
+	for _, n := range nodes {
+		if n.Kind != string(pki.KindAppliance) || n.VMID == 0 || n.State == store.NodeRemoved {
+			continue
+		}
+		a := doctor.AgentContainer{Node: n.Name, VMID: n.VMID, HA: isHA(n.VMID), Cmode: "tty"}
+		ref := model.GuestRef{Kind: model.KindLXC, VMID: n.VMID}
+		if i := slices.IndexFunc(res, func(r pve.Resource) bool { return r.Kind == model.KindLXC && r.VMID == n.VMID }); i >= 0 {
+			a.Found, a.RunsOn, a.Lock = true, res[i].Node, res[i].Lock
+			cfg, err := d.px.GuestConfig(ctx, a.RunsOn, ref)
+			switch {
+			case err != nil:
+				a.Err = err.Error()
+			case cfg.Values["cmode"] != "":
+				a.Cmode = cfg.Values["cmode"]
+			}
+		}
+		f.Agents = append(f.Agents, a)
+	}
+	return f, nil
 }
 
 // caExpires is when the current CA of the install ends; zero before there
