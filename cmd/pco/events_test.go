@@ -85,3 +85,32 @@ func TestEventsRefusesASinceItCannotRead(t *testing.T) {
 	}
 	require.Empty(t, e.called())
 }
+
+// --kind security asks for the audit trail, which shows the node that acted
+// and who asked.
+func TestEventsOfTheAuditTrail(t *testing.T) {
+	r, e := daemonWithEvents(t, []engine.Event{
+		{At: t0.Add(-time.Hour), Level: "info", Kind: "enrol", Subject: "pve2", Message: "took the certificate of pve2", Node: "pve1", Security: true},
+		{At: t0.Add(-time.Minute), Level: "warn", Kind: "admin", Subject: "pve3", Message: "forgot pve3", Actor: "root@pam", Node: "pve2", Security: true},
+	})
+
+	res := r.run("", "events", "--kind", "security")
+
+	require.NoError(t, res.err)
+	require.Equal(t, []string{"security"}, e.lastKinds())
+	requireGolden(t, "events_security.golden", res.out)
+}
+
+// The merged log of a cluster shows the node an event comes from.
+func TestEventsOfOtherNodesShowTheirNode(t *testing.T) {
+	events := someEvents()
+	events[2].Node = "pve2"
+	r, e := daemonWithEvents(t, events)
+
+	res := r.run("", "events", "--kind", "route", "--kind", "conflict")
+
+	require.NoError(t, res.err)
+	require.Equal(t, []string{"route", "conflict"}, e.lastKinds())
+	require.Contains(t, res.out, "NODE")
+	require.Contains(t, res.out, "pve2")
+}

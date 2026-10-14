@@ -64,6 +64,7 @@ type fakeEngine struct {
 	state  engine.State
 	events []engine.Event
 	since  time.Time // what the last request for the events asked for
+	kinds  []string  // and of which kinds
 
 	addView, checkView engine.CredentialView
 	addErr, checkErr   error
@@ -130,7 +131,7 @@ func (f *fakeEngine) QueryEvents(q engine.EventQuery) ([]engine.Event, error) {
 	f.record("events")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.since = q.Since
+	f.since, f.kinds = q.Since, q.Kind
 	return f.events, nil
 }
 
@@ -150,6 +151,12 @@ func (f *fakeEngine) lastSince() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.since
+}
+
+func (f *fakeEngine) lastKinds() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.kinds
 }
 
 // Credentials answers with the credentials of the state.

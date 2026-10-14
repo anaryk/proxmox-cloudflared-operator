@@ -1,0 +1,3 @@
+TIME                       LEVEL  NODE  KIND   SUBJECT  ACTOR     MESSAGE
+2026-10-01T13:00:00+02:00  info   pve1  enrol  pve2     -         took the certificate of pve2
+2026-10-01T13:59:00+02:00  warn   pve2  admin  pve3     root@pam  forgot pve3

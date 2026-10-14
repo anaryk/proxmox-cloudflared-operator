@@ -376,7 +376,16 @@ rejected; see [Troubleshooting](troubleshooting.md#a-guest-with-the-appliances-m
 
 `pco events` lists what changed, oldest first. Each event has a time, a level (`info`, `warn`
 or `error`), one of these kinds, a subject and a message. The daemon keeps the last thousand
-since it started; the journal has all of them.
+since it started; the journal has all of them. `pco events --kind <kind>` lists one kind.
+
+Some events are of the audit trail: those marked as security events (`enrol`, `rotation`,
+`attestation`, `block`, a forgotten node), what admins did (`admin`, with who asked) and what
+happened to the lease (`lease`). The node that made one writes it to its journal with the field
+`security=true`, and to its own file `security-events/<node>.json` in the cluster root, which
+keeps the last 500. `pco events --kind security` merges the files of every node by time; it
+answers on any node of a cluster, also while no node holds the lease, and shows the node that
+acted and the admin who asked. Events an agent of another node sent the controller are that
+node's to record, never the controller's.
 
 | Kind | Level | Reports | What to do |
 |---|---|---|---|

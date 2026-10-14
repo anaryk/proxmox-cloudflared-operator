@@ -121,24 +121,31 @@ func (c *Client) CredentialsRaw(ctx context.Context) (json.RawMessage, error) {
 }
 
 // Events returns the events after since, oldest first; the zero time asks for
-// all of them.
-func (c *Client) Events(ctx context.Context, since time.Time) ([]engine.Event, error) {
+// all of them. With kinds, only the events of those kinds; the kind security
+// alone asks for the audit trail of every node.
+func (c *Client) Events(ctx context.Context, since time.Time, kinds ...string) ([]engine.Event, error) {
 	var events []engine.Event
-	err := c.call(ctx, c.short, http.MethodGet, eventsPath(since), nil, &events)
+	err := c.call(ctx, c.short, http.MethodGet, eventsPath(since, kinds), nil, &events)
 	return events, err
 }
 
 // EventsRaw is Events as the daemon sent it.
-func (c *Client) EventsRaw(ctx context.Context, since time.Time) (json.RawMessage, error) {
-	return c.raw(ctx, c.short, eventsPath(since))
+func (c *Client) EventsRaw(ctx context.Context, since time.Time, kinds ...string) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, eventsPath(since, kinds))
 }
 
-func eventsPath(since time.Time) string {
-	path := "/v1/events"
+func eventsPath(since time.Time, kinds []string) string {
+	q := url.Values{}
 	if !since.IsZero() {
-		path += "?" + url.Values{"since": {since.UTC().Format(time.RFC3339Nano)}}.Encode()
+		q.Set("since", since.UTC().Format(time.RFC3339Nano))
 	}
-	return path
+	for _, k := range kinds {
+		q.Add("kind", k)
+	}
+	if len(q) == 0 {
+		return "/v1/events"
+	}
+	return "/v1/events?" + q.Encode()
 }
 
 // Apply leaves observe-only mode. With confirmDeletes it confirms what waits
