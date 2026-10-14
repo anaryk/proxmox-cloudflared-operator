@@ -26,8 +26,9 @@ const RotationWindow = 10 * time.Minute
 // enrolling certificates nobody asked for.
 const ObserveWindow = 24 * time.Hour
 
-// The kind of the security events of the check.
-const eventKindEnrolment = "enrolment"
+// The kind of the security events of the check, as the engine names the
+// events of the enrolment of a node.
+const eventKindEnrolment = "enrol"
 
 // Registry is what the check reads of the store, and writes when the registry
 // follows a node's enrolment. *store.Store is one.

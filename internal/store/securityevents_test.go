@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -84,4 +85,44 @@ func TestAFileOfSecurityEventsStaysUnderTheLimitOfAFile(t *testing.T) {
 	require.True(t, strings.HasPrefix(got[len(got)-1].Message, "19 "), "the newest is kept")
 
 	require.ErrorContains(t, s.AppendSecurityEvent("pve1", securityEvent(t0, strings.Repeat("y", maxFileSize))), "limit")
+}
+
+func TestSecurityEventsAreAppendedTogether(t *testing.T) {
+	s, _ := openStore(t)
+
+	require.NoError(t, s.AppendSecurityEvents("pve1", []SecurityEvent{securityEvent(t0, "one"), securityEvent(t0.Add(time.Second), "two")}))
+	require.NoError(t, s.AppendSecurityEvents("pve1", nil))
+
+	got, err := s.SecurityEvents()
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, "pve1", got[1].Node)
+	e := securityEvent(t0, "of another")
+	e.Node = "pve2"
+	require.ErrorContains(t, s.AppendSecurityEvents("pve1", []SecurityEvent{securityEvent(t0, "fine"), e}), "pve2")
+}
+
+// The trail is read as the files hold it: each event of the node whose file
+// holds it, an enrolment of the earlier kind as enrol, and a file that
+// cannot be used left out with why, while the others are read.
+func TestTheTrailIsReadFileByFile(t *testing.T) {
+	s, _ := openStore(t)
+	claims := securityEvent(t0, "says it is of pve9")
+	claims.Node, claims.Kind = "pve9", "enrolment"
+	require.NoError(t, s.cluster.put(kindSecurityEvents, "pve1", securityLog{Node: "pve1", Events: []SecurityEvent{claims}}, true))
+	require.NoError(t, s.cluster.put(kindSecurityEvents, "pve2", securityLog{Node: "pve3", Events: []SecurityEvent{securityEvent(t0, "moved")}}, true))
+	_, path, err := s.cluster.file(kindSecurityEvents, "pve4")
+	require.NoError(t, err)
+	require.NoError(t, s.AppendSecurityEvent("pve4", securityEvent(t0, "soon damaged")))
+	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
+
+	got, skipped, err := s.SecurityTrail()
+
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "pve1", got[0].Node)
+	require.Equal(t, "enrol", got[0].Kind)
+	require.Len(t, skipped, 2)
+	require.Contains(t, skipped[0], "pve2")
+	require.Contains(t, skipped[1], "pve4")
 }
