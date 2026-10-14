@@ -39,6 +39,9 @@ type installFlags struct {
 	o                applianceinstall.Options
 	tokenFile        string
 	noTags, keepTmpl bool
+	// joinFile and join are where an agent's join token is read from:
+	// a file, or with "-" standard input or the terminal.
+	joinFile, join string
 }
 
 const installLong = "Install the pco appliance on this Proxmox VE node: an unprivileged Debian container that\n" +
@@ -71,22 +74,36 @@ const installLong = "Install the pco appliance on this Proxmox VE node: an unpri
 	"--resume <journal>, which takes the --checksums, --release-base and --template given\n" +
 	"with it over those of the run. The Cloudflare token, from --cf-token-file, is optional\n" +
 	"and can be added inside later. It runs as root on the node and exits 0 once the\n" +
-	"appliance is installed, 1 otherwise."
+	"appliance is installed, 1 otherwise.\n\n" +
+	"In a cluster, --kind controller installs the appliance the others join: it also serves the\n" +
+	"agent endpoint, tcp/8644 on net0's address, which its container's firewall opens to ipset\n" +
+	"pco-agents alone, and its token may read its own storage. It serves the node it runs on\n" +
+	"itself. --kind agent installs the agent of one other node, with the join token pco cluster\n" +
+	"join-token --node <node> made on the controller, read from --join-file or with --join -\n" +
+	"(never an argument): the token is pushed onto the agent's volume, which removes it once the\n" +
+	"controller answered; the agent's token only audits, pco@pve and the controller's token may\n" +
+	"put cards on it, and its address goes into the controller's ipset. An agent is refused\n" +
+	"beside a combined appliance (pco appliance convert turns that into the controller), on a\n" +
+	"node an agent or the controller serves, and with --ha.\n\n" +
+	"--ha makes the controller a Proxmox HA resource: the node that runs it arms its watchdog and\n" +
+	"fences itself when it loses quorum, which resets every guest on that node. --ha-nodes keeps\n" +
+	"it on those nodes. On shared storage a relocated controller goes on writing; on replicated\n" +
+	"storage its volume may be one interval old, and it only observes until pco appliance recover."
 
 const installExample = `  # Install with the defaults: the next free VMID, DHCP on vmbr0
   pco appliance install --storage local-zfs --checksums checksums.txt
 
-  # On a VLAN-aware vmbr0, in the untagged VLAN the node's own address is in
-  pco appliance install --storage local-zfs --vlan 1 --checksums checksums.txt
-
   # A static address on VLAN 20 of a VLAN-aware bridge, and the first Cloudflare token
   pco appliance install --storage local-zfs --bridge vmbr1 --vlan 20 --ip 192.0.2.120/24,gw=192.0.2.1 --vmid 120 --cf-token-file /root/cf-token
 
-  # Offline, from a template file, without a question
-  pco appliance install --storage local-zfs --template /root/pco-appliance_1.4.0_amd64.tar.zst --yes
-
   # Finish a run that was killed
-  pco appliance install --resume /root/.pco-appliance-install/20261006T101500-3f2a.json`
+  pco appliance install --resume /root/.pco-appliance-install/20261006T101500-3f2a.json
+
+  # The controller of a cluster, an HA resource kept on two nodes of shared storage
+  pco appliance install --kind controller --storage ceph-ct --ha --ha-nodes pve1,pve2 --checksums checksums.txt
+
+  # The agent of this node, with the token made on the controller
+  pco appliance install --kind agent --storage local-zfs --join-file /root/pve3.join --checksums checksums.txt`
 
 func (a *app) applianceInstallCmd() *cobra.Command {
 	var f installFlags
@@ -125,6 +142,12 @@ func (a *app) applianceInstallCmd() *cobra.Command {
 	flags.BoolVar(&f.keepTmpl, "keep-template", true, "keep a template this run downloaded when the run is taken back")
 	flags.BoolVar(&f.o.DenyAccess, "deny-access", false, "add the NoAccess lines shown, those on / or /vms too, for the principals that could reach into the appliance, instead of refusing")
 	flags.StringVar(&f.o.Resume, "resume", "", "finish the run of this journal, or take it back")
+	flags.StringVar(&f.o.Kind, "kind", applianceinstall.KindCombined, "combined for a node of its own; in a cluster, controller for the one "+
+		"that the agents join, agent for each other node")
+	flags.StringVar(&f.joinFile, "join-file", "", "read an agent's join token from this file")
+	flags.StringVar(&f.join, "join", "", `"-" reads an agent's join token from standard input, or asks for it at a terminal`)
+	flags.BoolVar(&f.o.HA, "ha", false, "make a controller a Proxmox HA resource (read the help first)")
+	flags.StringSliceVar(&f.o.HANodes, "ha-nodes", nil, "the nodes an HA controller is kept on, repeated or separated by commas")
 	return cmd
 }
 
@@ -168,6 +191,12 @@ func (a *app) nodeInstaller(cmd *cobra.Command, f *installFlags) (*applianceinst
 		o.RegisterTags = &no
 	}
 	o.KeepTemplate = f.keepTmpl
+	if o.Kind == applianceinstall.KindCombined {
+		o.Kind = ""
+	}
+	if o.JoinToken, err = a.joinToken(cmd, f); err != nil {
+		return nil, o, err
+	}
 	if f.tokenFile != "" {
 		if o.CloudflareToken, err = a.tokenOfFile(cmd, f.tokenFile); err != nil {
 			return nil, o, err
@@ -182,6 +211,24 @@ func (a *app) nodeInstaller(cmd *cobra.Command, f *installFlags) (*applianceinst
 		o.CloudflareAPI = override
 	}
 	return applianceinstall.New(setup.NewHostRunner(), p, a.now, rand.Reader, applianceinstall.JournalDir), o, nil
+}
+
+// joinToken reads an agent's join token from --join-file or with --join -;
+// never from an argument or the environment.
+func (a *app) joinToken(cmd *cobra.Command, f *installFlags) (string, error) {
+	switch {
+	case f.join != "" && f.join != "-":
+		return "", errors.New("--join takes - alone: the join token is never an argument; --join - reads it from standard input, or give --join-file")
+	case f.join != "" && f.joinFile != "":
+		return "", errors.New("--join and --join-file are one or the other")
+	case f.join == "" && f.joinFile == "":
+		return "", nil
+	}
+	tok, err := a.readSecretInput(cmd, f.joinFile, "join token: ")
+	if err != nil {
+		return "", fmt.Errorf("the join token: %w", err)
+	}
+	return strings.TrimSpace(tok), nil
 }
 
 // onTheNode refuses a command of the node inside an appliance.

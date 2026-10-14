@@ -36,6 +36,22 @@ with it over those of the run. The Cloudflare token, from `--cf-token-file`, is 
 and can be added inside later. It runs as root on the node and exits 0 once the
 appliance is installed, 1 otherwise.
 
+In a cluster, `--kind` controller installs the appliance the others join: it also serves the
+agent endpoint, tcp/8644 on net0's address, which its container's firewall opens to ipset
+pco-agents alone, and its token may read its own storage. It serves the node it runs on
+itself. `--kind` agent installs the agent of one other node, with the join token pco cluster
+join-token `--node` `<node>` made on the controller, read from `--join-file` or with `--join` -
+(never an argument): the token is pushed onto the agent's volume, which removes it once the
+controller answered; the agent's token only audits, pco@pve and the controller's token may
+put cards on it, and its address goes into the controller's ipset. An agent is refused
+beside a combined appliance (pco appliance convert turns that into the controller), on a
+node an agent or the controller serves, and with `--ha`.
+
+`--ha` makes the controller a Proxmox HA resource: the node that runs it arms its watchdog and
+fences itself when it loses quorum, which resets every guest on that node. `--ha-nodes` keeps
+it on those nodes. On shared storage a relocated controller goes on writing; on replicated
+storage its volume may be one interval old, and it only observes until pco appliance recover.
+
 ## Usage
 
 ```text
@@ -48,17 +64,17 @@ pco appliance install [flags]
 # Install with the defaults: the next free VMID, DHCP on vmbr0
 pco appliance install --storage local-zfs --checksums checksums.txt
 
-# On a VLAN-aware vmbr0, in the untagged VLAN the node's own address is in
-pco appliance install --storage local-zfs --vlan 1 --checksums checksums.txt
-
 # A static address on VLAN 20 of a VLAN-aware bridge, and the first Cloudflare token
 pco appliance install --storage local-zfs --bridge vmbr1 --vlan 20 --ip 192.0.2.120/24,gw=192.0.2.1 --vmid 120 --cf-token-file /root/cf-token
 
-# Offline, from a template file, without a question
-pco appliance install --storage local-zfs --template /root/pco-appliance_1.4.0_amd64.tar.zst --yes
-
 # Finish a run that was killed
 pco appliance install --resume /root/.pco-appliance-install/20261006T101500-3f2a.json
+
+# The controller of a cluster, an HA resource kept on two nodes of shared storage
+pco appliance install --kind controller --storage ceph-ct --ha --ha-nodes pve1,pve2 --checksums checksums.txt
+
+# The agent of this node, with the token made on the controller
+pco appliance install --kind agent --storage local-zfs --join-file /root/pve3.join --checksums checksums.txt
 ```
 
 ## Flags
@@ -72,9 +88,14 @@ pco appliance install --resume /root/.pco-appliance-install/20261006T101500-3f2a
     --cores int                 the cores of the container (default 1)
     --deny-access               add the NoAccess lines shown, those on / or /vms too, for the principals that could reach into the appliance, instead of refusing
     --gate-tag string           the gate tag of the appliance (default cf-tunnel)
+    --ha                        make a controller a Proxmox HA resource (read the help first)
+    --ha-nodes strings          the nodes an HA controller is kept on, repeated or separated by commas
 -h, --help                      help for install
     --ip string                 dhcp, or the card's address with its prefix and an optional gateway, as 192.0.2.120/24,gw=192.0.2.1 (default "dhcp")
+    --join string               "-" reads an agent's join token from standard input, or asks for it at a terminal
+    --join-file string          read an agent's join token from this file
     --keep-template             keep a template this run downloaded when the run is taken back (default true)
+    --kind string               combined for a node of its own; in a cluster, controller for the one that the agents join, agent for each other node (default "combined")
     --memory int                the memory of the container, in MB (default 768)
     --nameserver strings        a name server of the appliance, up to 3, repeated or separated by commas (default: those the node asks, behind systemd-resolved's stub the ones it forwards to)
     --no-registered-tags        do not register the gate tags, which lets whoever may edit a guest set them

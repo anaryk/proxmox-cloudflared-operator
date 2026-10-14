@@ -141,6 +141,12 @@ func (a *app) credentialAddCmd() *cobra.Command {
 // readToken reads the token from the file, or from standard input; a terminal
 // is asked for it without echo. A trailing newline is not part of the token.
 func (a *app) readToken(cmd *cobra.Command, file string) (string, error) {
+	return a.readSecretInput(cmd, file, tokenPrompt)
+}
+
+// readSecretInput reads a secret from the file, or from standard input; a
+// terminal is asked for it with prompt, without echo.
+func (a *app) readSecretInput(cmd *cobra.Command, file, prompt string) (string, error) {
 	var raw []byte
 	var err error
 	in := cmd.InOrStdin()
@@ -152,7 +158,7 @@ func (a *app) readToken(cmd *cobra.Command, file string) (string, error) {
 			s.printf("warning: %s can be read by others; restrict it with chmod 600\n", file)
 		}
 	case terminal:
-		raw, err = a.promptToken(cmd, fd)
+		raw, err = a.promptToken(cmd, fd, prompt)
 	default:
 		raw, err = io.ReadAll(io.LimitReader(in, maxTokenInput+1))
 		if err == nil && len(raw) > maxTokenInput {
@@ -169,9 +175,9 @@ func (a *app) readToken(cmd *cobra.Command, file string) (string, error) {
 	return token, nil
 }
 
-func (a *app) promptToken(cmd *cobra.Command, fd int) ([]byte, error) {
+func (a *app) promptToken(cmd *cobra.Command, fd int, prompt string) ([]byte, error) {
 	s := &screen{w: cmd.ErrOrStderr()}
-	s.printf("%s", tokenPrompt)
+	s.printf("%s", prompt)
 	if err := s.done(); err != nil {
 		return nil, err
 	}

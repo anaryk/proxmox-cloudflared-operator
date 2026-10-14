@@ -179,3 +179,31 @@ func TestApplianceInstallerCommandsAreDocumented(t *testing.T) {
 		require.True(t, byName[name].Hidden, name)
 	}
 }
+
+// An agent's join token comes from a file or standard input, never an
+// argument: a value of --join other than - is refused without being shown.
+func TestTheJoinTokenIsReadFromAFileOrStandardInput(t *testing.T) {
+	a, cmd, _, _ := commandWith(strings.NewReader("pco1.from-stdin\n"), false)
+	f := installFlags{o: applianceinstall.Options{Yes: true, Kind: applianceinstall.KindAgent}, join: "-"}
+	_, o, err := a.nodeInstaller(cmd, &f)
+	require.NoError(t, err)
+	require.Equal(t, "pco1.from-stdin", o.JoinToken)
+
+	file := filepath.Join(t.TempDir(), "pve3.join")
+	require.NoError(t, os.WriteFile(file, []byte("pco1.from-file\n"), 0o600))
+	a, cmd, _, _ = commandWith(unreadable{t}, false)
+	f = installFlags{o: applianceinstall.Options{Yes: true, Kind: applianceinstall.KindAgent}, joinFile: file}
+	_, o, err = a.nodeInstaller(cmd, &f)
+	require.NoError(t, err)
+	require.Equal(t, "pco1.from-file", o.JoinToken)
+
+	f = installFlags{o: applianceinstall.Options{Yes: true}, join: "pco1.secret-on-the-line"}
+	_, _, err = a.nodeInstaller(cmd, &f)
+	require.ErrorContains(t, err, "--join takes - alone")
+	require.NotContains(t, err.Error(), "secret-on-the-line")
+
+	f = installFlags{o: applianceinstall.Options{Yes: true, Kind: applianceinstall.KindCombined}}
+	_, o, err = a.nodeInstaller(cmd, &f)
+	require.NoError(t, err)
+	require.Empty(t, o.Kind, "a combined appliance is the one without a kind")
+}
