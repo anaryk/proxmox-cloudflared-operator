@@ -26,10 +26,12 @@ type guardWorld struct {
 	placeErr,
 	accErr error
 	acc access.Data
+	at  time.Time
 }
 
 func (w *guardWorld) guard() *agentGuard {
 	return &agentGuard{
+		now:  func() time.Time { return w.at },
 		vmid: 9301, node: "pve2", ownUser: "pco@pve",
 		verdict: func(context.Context) appliance.Verdict { return w.verdict },
 		placement: func(context.Context) ([]pve.Resource, []pve.HAResource, error) {
@@ -138,4 +140,34 @@ func TestAnAgentContainerWithoutATokenSaysWhatItNeeds(t *testing.T) {
 	require.Contains(t, checks["agent"], "no certificate and no join token")
 	require.NotContains(t, checks, "state", "and not with the line of a container without state")
 	require.NoError(t, d.stop())
+}
+
+// Verdicts that cannot be made are stood in for by the last ones for five
+// minutes; after that the agent holds until a check is made again.
+func TestAnAgentHoldsOnceNothingCouldBeJudgedForFiveMinutes(t *testing.T) {
+	w := goodGuardWorld()
+	w.at = time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	g := w.guard()
+	serve, _ := g.judge(t.Context())
+	require.True(t, serve)
+
+	w.placeErr = errors.New("no answer")
+	w.at = w.at.Add(time.Minute)
+	serve, _ = g.judge(t.Context())
+	require.True(t, serve)
+	w.at = w.at.Add(4*time.Minute + 59*time.Second)
+	serve, _ = g.judge(t.Context())
+	require.True(t, serve)
+	w.at = w.at.Add(time.Second)
+	serve, why := g.judge(t.Context())
+	require.False(t, serve)
+	require.Contains(t, why, "nothing proves this agent for 5m0s: where the container runs cannot be read: no answer")
+
+	w.placeErr = nil
+	serve, _ = g.judge(t.Context())
+	require.True(t, serve, "a check that is made again ends it")
+
+	w.verdict = appliance.Verdict{Pending: true, Why: appliance.WhyPendingNIC}
+	serve, _ = g.judge(t.Context())
+	require.True(t, serve, "a pending NIC keeps the verdict before")
 }

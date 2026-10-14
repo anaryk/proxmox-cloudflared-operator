@@ -112,6 +112,7 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 			return res, ha, err
 		},
 		access: func(ctx context.Context) (access.Data, error) { return engine.ReadAccess(ctx, client) },
+		now:    deps.Now,
 	}
 
 	gw.start(ctx)
@@ -366,9 +367,19 @@ type agentGuard struct {
 	verdict   func(ctx context.Context) appliance.Verdict
 	placement func(ctx context.Context) ([]pve.Resource, []pve.HAResource, error)
 	access    func(ctx context.Context) (access.Data, error)
+	now       func() time.Time
 
 	identity, bound, reach judged
+	// undecided is since when a part could not be judged in every check,
+	// and why the last one could not; zero while each was judged.
+	undecided    time.Time
+	undecidedWhy string
 }
+
+// undecidedFor is how long the verdicts of the checks before may stand in
+// for checks that cannot be made: an agent that cannot read Proxmox for
+// longer cannot tell that it was moved, copied or reached into.
+const undecidedFor = 5 * time.Minute
 
 // judged is one part of the verdict, as last decided.
 type judged struct {
@@ -390,21 +401,27 @@ func (j judged) holds(waiting string) (bool, string) {
 }
 
 func (g *agentGuard) judge(ctx context.Context) (bool, string) {
+	why := ""
 	switch v := g.verdict(ctx); {
 	case v.Copy:
 		g.identity.set(false, v.Why)
-	case !v.OK && v.Why == appliance.WhyIncomplete:
+	case !v.OK && (v.Why == appliance.WhyIncomplete || v.Why == appliance.WhyPendingNIC):
+		why = v.Why
 	case !v.OK:
 		g.identity.set(false, v.Why)
 	default:
 		g.identity.set(true, "")
 	}
-	if res, ha, err := g.placement(ctx); err == nil {
-		if b := appliance.BoundTo(g.vmid, g.node, res, ha); !b.Pending {
-			g.bound.set(b.Bound, b.Why)
-		}
+	if res, ha, err := g.placement(ctx); err != nil {
+		why = "where the container runs cannot be read: " + err.Error()
+	} else if b := appliance.BoundTo(g.vmid, g.node, res, ha); b.Pending {
+		why = b.Why
+	} else {
+		g.bound.set(b.Bound, b.Why)
 	}
-	if d, err := g.access(ctx); err == nil {
+	if d, err := g.access(ctx); err != nil {
+		why = "the access control of Proxmox cannot be read: " + err.Error()
+	} else {
 		if exposed := access.Refused(d, g.vmid, appliance.Pool, g.ownUser); len(exposed) > 0 {
 			ids := make([]string, len(exposed))
 			for i, p := range exposed {
@@ -414,6 +431,18 @@ func (g *agentGuard) judge(ctx context.Context) (bool, string) {
 		} else {
 			g.reach.set(true, "")
 		}
+	}
+	now := g.now()
+	switch {
+	case why == "":
+		g.undecided, g.undecidedWhy = time.Time{}, ""
+	case g.undecided.IsZero():
+		g.undecided, g.undecidedWhy = now, why
+	default:
+		g.undecidedWhy = why
+	}
+	if !g.undecided.IsZero() && now.Sub(g.undecided) >= undecidedFor {
+		return false, fmt.Sprintf("nothing proves this agent for %s: %s", now.Sub(g.undecided).Round(time.Second), g.undecidedWhy)
 	}
 	for _, part := range []struct {
 		j       judged
