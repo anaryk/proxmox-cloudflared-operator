@@ -638,6 +638,7 @@ func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []mapping
 	legs := c.wantedLegs(nets)
 	services := c.wantedServices(legs, mappings)
 	pins := c.wantedPins(services, cards.leases)
+	services = pinnedOnly(services, pins)
 	sticky := c.wantedSticky(cards.attachments)
 	if len(legs) == 0 && len(services) == 0 && !c.e.gwInUse {
 		// The gateway holds no leg a freed mark could move from.
@@ -735,6 +736,19 @@ func (c *cycleRun) wantedPins(services []gateway.Service, leases map[string]stor
 	return out
 }
 
+// pinnedOnly are the services whose address behind its leg has a pin: one
+// that would forward to an address no MAC is pinned for forwards nothing, as
+// any card could answer there.
+func pinnedOnly(services []gateway.Service, pins []gateway.Pin) []gateway.Service {
+	pinned := map[behindLeg]bool{}
+	for _, p := range pins {
+		if len(p.MAC) == 6 {
+			pinned[behindLeg{p.Leg, p.Addr}] = true
+		}
+	}
+	return slices.DeleteFunc(services, func(s gateway.Service) bool { return !pinned[behindLeg{s.Leg, s.Addr}] })
+}
+
 // behindLeg is an address behind a leg.
 type behindLeg struct {
 	leg  string
@@ -770,6 +784,9 @@ func (c *cycleRun) wantedSticky(atts map[string]store.Attachment) []gateway.Stic
 // takes on the bridge, so that no other port can take the MAC over, with the
 // address the card may send from. A guest that is stopped has no port; its
 // entry is given all the same, and the gateway adds it when the port appears.
+// An attachment whose card the inventory does not give the guest, at its
+// index on the managed network with its MAC, pins nothing: the port would be
+// another card's.
 func (c *cycleRun) stickyOn(node string, atts map[string]store.Attachment) []gateway.Sticky {
 	var out []gateway.Sticky
 	for _, a := range atts {
@@ -782,11 +799,12 @@ func (c *cycleRun) stickyOn(node string, atts map[string]store.Attachment) []gat
 		if !ok || g.Node != node || merr != nil || len(mac) != 6 {
 			continue
 		}
-		firewall := slices.ContainsFunc(g.NICs, func(n model.NIC) bool {
-			return n.Index == a.NIC && n.Bridge == gateway.ManagedBridge && n.Firewall
-		})
+		nic, carded := g.NIC(a.NIC)
+		if own, err := net.ParseMAC(nic.MAC); !carded || err != nil || nic.Bridge != gateway.ManagedBridge || own.String() != mac.String() {
+			continue
+		}
 		out = append(out, gateway.Sticky{MAC: mac, Bridge: gateway.ManagedBridge, Addr: a.Addr,
-			Port: gateway.GuestPort(ref.Kind == model.KindLXC, ref.VMID, a.NIC, firewall)})
+			Port: gateway.GuestPort(ref.Kind == model.KindLXC, ref.VMID, a.NIC, nic.Firewall)})
 	}
 	slices.SortFunc(out, func(a, b gateway.Sticky) int { return cmp.Compare(a.Port, b.Port) })
 	return out
@@ -844,7 +862,9 @@ func (c *cycleRun) boundAddrs() map[mappingKey]bool {
 		}
 	}
 	for _, rl := range c.remoteLegs {
-		out[rl.key] = true
+		if !rl.refused {
+			out[rl.key] = true
+		}
 	}
 	return out
 }

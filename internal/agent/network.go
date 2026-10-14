@@ -2,10 +2,12 @@ package agent
 
 import (
 	"cmp"
+	"net"
 	"net/netip"
 	"slices"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
 // withLeases adds to the pins proven in this pass the pins of the leases of
@@ -33,6 +35,47 @@ func (p *pass) withLeases(proven []gateway.Pin) []gateway.Pin {
 	}
 	slices.SortFunc(out, func(a, b gateway.Pin) int { return cmp.Or(cmp.Compare(a.Leg, b.Leg), a.Addr.Compare(b.Addr)) })
 	return out
+}
+
+// withBindings adds to the pins proven in this pass, for a service the set
+// holds from a binding kept from an earlier pass, the MAC of that binding,
+// when the snapshot gives the guest of its route a card of that MAC: the
+// service forwards only to that card.
+func (p *pass) withBindings(services []gateway.Service, proven []gateway.Pin) []gateway.Pin {
+	out := slices.Clone(proven)
+	pinned := func(leg string, addr netip.Addr) bool {
+		return slices.ContainsFunc(out, func(pin gateway.Pin) bool { return pin.Leg == leg && pin.Addr == addr })
+	}
+	for _, s := range services {
+		if pinned(s.Leg, s.Addr) {
+			continue
+		}
+		for _, t := range p.s.Targets {
+			b, ok := p.bindings[t.Route.Hostname]
+			if !ok || b.Via != s.Leg || b.Addr != s.Addr || b.Service != s.Service || t.Guest == nil {
+				continue
+			}
+			mac, err := net.ParseMAC(b.MAC)
+			if err != nil || len(mac) != 6 || !slices.ContainsFunc(t.Guest.NICs, func(n model.NIC) bool {
+				own, err := net.ParseMAC(n.MAC)
+				return err == nil && own.String() == mac.String()
+			}) {
+				continue
+			}
+			out = append(out, gateway.Pin{Leg: s.Leg, Addr: s.Addr, MAC: mac})
+			break
+		}
+	}
+	return out
+}
+
+// pinnedOnly are the services whose address behind its leg has a pin: one
+// that would forward to an address no MAC is pinned for forwards nothing, as
+// any card could answer there.
+func pinnedOnly(services []gateway.Service, pins []gateway.Pin) []gateway.Service {
+	return slices.DeleteFunc(services, func(s gateway.Service) bool {
+		return !slices.ContainsFunc(pins, func(pin gateway.Pin) bool { return pin.Leg == s.Leg && pin.Addr == s.Addr && len(pin.MAC) == 6 })
+	})
 }
 
 // serviceAddrs are the service addresses the gateway was given, once each,

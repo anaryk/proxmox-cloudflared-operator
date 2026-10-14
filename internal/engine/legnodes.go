@@ -17,6 +17,11 @@ const (
 	// node serves a route and has no leg on a replica.
 	problemLegMissing = "network %s has no leg on node %s; its routes are served from the nodes that have one"
 
+	// problemLegRefused says that what a node reported of a target behind
+	// one of its legs does not match what the controller knows of the node,
+	// the network and the guest: the target is not served through the leg.
+	problemLegRefused = "node %s reported %s behind network %s, which is refused: %s; it is not served through the leg"
+
 	// whyLeg is why a route behind a leg of a network of single nodes is
 	// pinned to the node of the leg.
 	whyLeg = "it is reached through network %s, which is a segment of node %s alone"
@@ -33,6 +38,9 @@ type remoteLeg struct {
 	service netip.Addr
 	why     string
 	ok      bool // the node verified it, at its service address
+	// refused says that what the node reported is not taken: it names a
+	// leg, an address or a card the controller does not know of it.
+	refused bool
 }
 
 // noteNets keeps the networks of the cycle, and which are networks of
@@ -69,20 +77,67 @@ func (c *cycleRun) serveRemoteLegs(ms mappings) {
 		if err != nil || res.Binding == nil || res.Binding.Via == "" || !serves(rt, res) {
 			continue
 		}
-		c.remoteLegs[rt.Hostname] = &remoteLeg{rt: rt, res: res, node: node, key: c.keyOn(res.Binding.Via, node, res.Target.Addr), ok: tr.OK}
+		rl := &remoteLeg{rt: rt, res: res, node: node, key: c.keyOn(res.Binding.Via, node, res.Target.Addr), ok: tr.OK}
+		if why := c.legRefused(rt, res, node); why != "" {
+			rl.refused, rl.why = true, why
+			c.problem(problemLegRefused, node, rt.Hostname, res.Binding.Via, why)
+		}
+		c.remoteLegs[rt.Hostname] = rl
 	}
 	for _, host := range slices.Sorted(maps.Keys(c.remoteLegs)) {
 		rl := c.remoteLegs[host]
-		if _, attached := c.nets[rl.key.network]; !attached {
-			rl.why = fmt.Sprintf("network %s is not attached", rl.key.network)
-		} else {
-			rl.service, rl.why = c.mappingFor(rl.rt, rl.res, rl.key, ms)
+		if rl.refused {
+			continue
 		}
+		rl.service, rl.why = c.mappingFor(rl.rt, rl.res, rl.key, ms)
 		if !rl.service.IsValid() {
 			c.problem(problemServiceHeld, host, rl.key.network, rl.why)
 		}
 	}
 	c.legsMissing()
+}
+
+// legRefused says why what node reported of the target of rt behind one of
+// its legs is not taken; empty when it is. An agent's word decides no leg,
+// address or card: the network must be attached with a leg on that node, the
+// address a guest's on the network, and the binding of the route's guest,
+// which runs on that node, through a card the inventory gives the guest on
+// the network's bridge and VLAN, of the MAC the address has on the managed
+// network.
+func (c *cycleRun) legRefused(rt model.Route, res resolve.Result, node string) string {
+	b, addr := res.Binding, res.Target.Addr
+	n, attached := c.nets[b.Via]
+	if !attached {
+		return fmt.Sprintf("network %s is not attached", b.Via)
+	}
+	if _, ok := n.Legs[node]; !ok {
+		return fmt.Sprintf("node %s has no leg into it", node)
+	}
+	if !n.Prefix.Contains(addr) || slices.Contains(slices.Collect(maps.Values(n.Legs)), addr) || addr == n.Prefix.Masked().Addr() {
+		return fmt.Sprintf("%v is no guest's address on %s", addr, n.Prefix)
+	}
+	if rt.Guest == nil || b.Guest != rt.Guest.String() || b.Addr != addr {
+		return fmt.Sprintf("the binding is of %s at %v, not of the route's guest", b.Guest, b.Addr)
+	}
+	g, ok := c.snap.Guest(*rt.Guest)
+	if !ok || g.Node != node {
+		return fmt.Sprintf("%s does not run on node %s", rt.Guest, node)
+	}
+	mac, err := model.NormalizeMAC(b.MAC)
+	if err != nil {
+		return fmt.Sprintf("the binding has no MAC: %v", err)
+	}
+	card := slices.ContainsFunc(g.NICs, func(nic model.NIC) bool {
+		own, err := model.NormalizeMAC(nic.MAC)
+		return err == nil && own == mac && nic.Bridge == n.Bridge && nic.VLAN == n.VLAN
+	})
+	switch {
+	case !card:
+		return fmt.Sprintf("%s has no card %s on %s", rt.Guest, mac, store.SegmentID(n.Bridge, n.VLAN))
+	case n.Kind == store.NetworkManaged && store.ManagedMAC(addr) != mac:
+		return fmt.Sprintf("%v on the managed network is the address of card %s, not %s", addr, store.ManagedMAC(addr), mac)
+	}
+	return ""
 }
 
 // remoteOnly is the gateway step of a node without a gateway of its own in a
@@ -132,7 +187,7 @@ func (c *cycleRun) legOf(rt model.Route) (node, network string, ok bool) {
 	if res, found := c.results[rt.Hostname]; found && c.resolverOf(rt) == c.e.d.Node && res.Binding != nil && res.Binding.Via != "" {
 		return c.e.d.Node, res.Binding.Via, true
 	}
-	if rl, found := c.remoteLegs[rt.Hostname]; found {
+	if rl, found := c.remoteLegs[rt.Hostname]; found && !rl.refused {
 		return rl.node, rl.key.network, true
 	}
 	return "", "", false

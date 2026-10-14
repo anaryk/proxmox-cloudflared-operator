@@ -261,7 +261,8 @@ func (p *pass) syncGateway(set []egress.Target) {
 		services = append(services, gateway.Service{Leg: m.leg, Service: service, Addr: m.addr, Ports: slices.Compact(slices.Sorted(slices.Values(ps)))})
 	}
 	slices.SortFunc(services, func(a, b gateway.Service) int { return cmp.Or(cmp.Compare(a.Leg, b.Leg), a.Addr.Compare(b.Addr)) })
-	pins := p.withLeases(p.gatewayPins(services))
+	pins := p.withLeases(p.withBindings(services, p.gatewayPins(services)))
+	services = pinnedOnly(services, pins)
 	if len(p.cache.Legs) == 0 && len(services) == 0 && !p.a.gwInUse {
 		return
 	}

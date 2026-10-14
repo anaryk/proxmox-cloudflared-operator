@@ -114,7 +114,7 @@ func (c *cycleRun) servedAt(m mapping, match func(model.Route, resolve.Result) b
 		}
 	}
 	for _, rl := range c.remoteLegs {
-		if rl.key == m.key() && match(rl.rt, rl.res) {
+		if !rl.refused && rl.key == m.key() && match(rl.rt, rl.res) {
 			return true
 		}
 	}

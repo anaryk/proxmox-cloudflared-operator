@@ -84,6 +84,7 @@ func (w *world) runFor(d time.Duration) State {
 func TestATargetOnANetworkOfTheClusterHasOneServiceAddressOnEveryNode(t *testing.T) {
 	w, gw := legsWorld(t, func(w *world) {
 		w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve1": "10.0.0.250", "pve2": "10.0.0.251", "pve3": "10.0.0.252"})
+		w.cardOn(102, "vmbr1")
 		w.res.goVia("db.example.com", "vmbr1")
 		for _, n := range []string{"pve2", "pve3"} {
 			w.acts[n].legs = map[string]string{"db.example.com": "vmbr1"}
@@ -119,6 +120,7 @@ func TestATargetOnANetworkOfTheClusterHasOneServiceAddressOnEveryNode(t *testing
 	t.Run("a replica without a leg is named", func(t *testing.T) {
 		w, _ := legsWorld(t, func(w *world) {
 			w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve1": "10.0.0.250", "pve2": "10.0.0.251"})
+			w.cardOn(102, "vmbr1")
 			w.res.goVia("db.example.com", "vmbr1")
 			w.acts["pve2"].legs = map[string]string{"db.example.com": "vmbr1"}
 			w.acts["pve3"].fail = map[string]string{"db.example.com": "no leg into vmbr1"}
@@ -142,6 +144,8 @@ func TestTheSameAddressOnANetworkOfEachNodeIsTwoTargets(t *testing.T) {
 	isolated := netip.MustParseAddr("10.60.0.5")
 	w, _ := legsWorld(t, func(w *world) {
 		w.attach(t, "vmbr9", 3, store.ScopeNode, "10.60.0.0/24", map[string]string{"pve2": "10.60.0.250", "pve3": "10.60.0.250"})
+		w.cardOn(102, "vmbr9")
+		w.cardOn(103, "vmbr9")
 		w.res.addrs["app.example.com"] = isolated
 		w.acts["pve2"].legs = map[string]string{"db.example.com": "vmbr9"}
 		w.acts["pve2"].addrs = map[string]netip.Addr{"db.example.com": isolated}
@@ -180,5 +184,64 @@ func requireNoProblem(t *testing.T, st State, part string) {
 	t.Helper()
 	for _, p := range st.Problems {
 		require.NotContains(t, p, part)
+	}
+}
+
+// cardOn puts the one card of the guest of vmid on bridge.
+func (w *world) cardOn(vmid int, bridge string) {
+	snap := w.inv.snapshot()
+	for i := range snap.Guests {
+		if snap.Guests[i].Ref.VMID == vmid {
+			snap.Guests[i].NICs[0].Bridge = bridge
+		}
+	}
+	w.inv.set(snap)
+}
+
+// What an agent reports of a target behind its leg decides nothing the
+// controller does not know: a leg the node has not, an address outside the
+// network, a guest of another node or a card the guest has not on the
+// network's bridge is refused, and the target is not served through the leg.
+func TestALegTheControllerDoesNotKnowIsRefused(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(w *world)
+		why   string
+	}{
+		{"no leg on the node", func(w *world) {
+			w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve1": "10.0.0.250", "pve3": "10.0.0.252"})
+			w.cardOn(102, "vmbr1")
+		}, "node pve2 has no leg into it"},
+		{"an address outside the network", func(w *world) {
+			w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.9.0.0/24", map[string]string{"pve2": "10.9.0.251"})
+			w.cardOn(102, "vmbr1")
+		}, "10.0.0.22 is no guest's address on 10.9.0.0/24"},
+		{"the leg's own address", func(w *world) {
+			w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve2": "10.0.0.22"})
+			w.cardOn(102, "vmbr1")
+		}, "10.0.0.22 is no guest's address on 10.0.0.0/24"},
+		{"a card on another bridge", func(w *world) {
+			w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve2": "10.0.0.251"})
+		}, "qemu/102 has no card bc:24:11:00:02:01 on vmbr1"},
+		{"a network that is not attached", func(w *world) {}, "network vmbr1 is not attached"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, _ := legsWorld(t, func(w *world) {
+				tc.setup(w)
+				w.acts["pve2"].legs = map[string]string{"db.example.com": "vmbr1"}
+			})
+
+			st := w.runFor(time.Minute)
+
+			require.Contains(t, st.Problems, "node pve2 reported db.example.com behind network vmbr1, which is refused: "+tc.why+"; it is not served through the leg")
+			all, err := w.store.ServiceAddrs()
+			require.NoError(t, err)
+			require.Empty(t, all)
+			r := route(st, "db.example.com")
+			require.NotEqual(t, planner.StateActive, r.State)
+			require.Empty(t, r.Service, "its real address is never dialed")
+			require.False(t, w.targetOf(t, "pve3", "db.example.com").Service.IsValid())
+		})
 	}
 }
