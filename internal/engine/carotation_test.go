@@ -443,6 +443,30 @@ func TestTheConnectionsOfTheOldSecretEndAfterTheRollout(t *testing.T) {
 	require.Equal(t, 1, count(w.callsSince(n), "CleanUpConnections acc1 "+id), "once")
 }
 
+// A connector has rolled the new secret out only by a report its agent
+// sent after the secret was given: one from before says nothing of it,
+// however fresh it still is.
+func TestTheRolloutWaitsForAReportAfterTheRotation(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+
+	st := w.tick(time.Second)
+	require.Equal(t, stepRollout, st.Cluster.CARotation.Next, "the report of this cycle was sent before the secret was given")
+	rotatedAt := w.rotationRecord(t).At
+	require.Equal(t, w.clock.now(), rotatedAt)
+
+	w.acts["pve2"].silent = true
+	st = w.tick(time.Second)
+	require.Equal(t, stepRollout, st.Cluster.CARotation.Next, "pve2 reported nothing since")
+	require.True(t, hasProblem(st, "waiting for the connectors of pco-abc123 to run with the new secret"), st.Problems)
+
+	w.acts["pve2"].silent = false
+	st = w.tick(time.Second)
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+}
+
 // The steps that write at Cloudflare or replace the CA wait while the cycle
 // may not write as it sees: in observe-only mode, and while a hold of the
 // tunnel run, the egress filter, the gateway or an add-only cycle keeps it

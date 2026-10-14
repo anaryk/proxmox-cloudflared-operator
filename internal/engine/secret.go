@@ -288,7 +288,7 @@ func (e *Engine) rotateFor(ctx context.Context, t reconcile.TunnelState, r *stor
 		if err := e.patchSecret(ctx, t); err != nil {
 			return err
 		}
-		r.Rotated = append(r.Rotated, t.ID)
+		r.Rotated, r.At = append(r.Rotated, t.ID), e.d.Now()
 		if err := save(); err != nil {
 			return fmt.Errorf("recording the rotation of the secret of tunnel %s in account %s: %w", t.Name, t.AccountID, err)
 		}

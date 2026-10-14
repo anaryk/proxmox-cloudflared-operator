@@ -268,7 +268,7 @@ func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bo
 		}
 		return c.rotateTunnels(rec)
 	case stepRollout:
-		if waiting := c.notRolledOut(rec.Rotated); len(waiting) > 0 {
+		if waiting := c.notRolledOut(rec.TunnelsRotated); len(waiting) > 0 {
 			return false, fmt.Sprintf(problemRotationRollout, rec.Node, andList(waiting))
 		}
 		if why := c.rotationHeld(); why != "" {
@@ -395,19 +395,30 @@ func (c *cycleRun) cleanUpRotated(rec *store.CARotation) (bool, string) {
 // with the new secret yet on every node that runs one: the replicas for
 // the shared tunnel, the node of a pinned one. A node whose report is stale,
 // or says nothing of the tunnel, has not rolled it out.
-func (c *cycleRun) notRolledOut(rotated []string) []string {
+func (c *cycleRun) notRolledOut(r store.TunnelsRotated) []string {
 	waiting := map[string]bool{}
 	for _, t := range c.tunnels {
-		if !slices.Contains(rotated, t.ID) {
+		if !slices.Contains(r.Rotated, t.ID) {
 			continue
 		}
 		for _, node := range c.runners(t) {
-			if !c.readyOn(node, t.ID) {
+			if !c.readySince(node, t.ID, r.At) {
 				waiting[t.Name] = true
 			}
 		}
 	}
 	return slices.Sorted(maps.Keys(waiting))
+}
+
+// readySince says whether node runs a ready connector of a tunnel by a
+// status read after since: this node's in this cycle, another's by a report
+// received after since. A status from before says nothing of a secret given
+// at since.
+func (c *cycleRun) readySince(node, tunnelID string, since time.Time) bool {
+	if node == c.e.d.Node {
+		return c.now.After(since) && c.readyOn(node, tunnelID)
+	}
+	return c.fleet.node(node).report.ReceivedAt.After(since) && c.readyOn(node, tunnelID)
 }
 
 // runners are the nodes that run a connector of a tunnel: the replicas of

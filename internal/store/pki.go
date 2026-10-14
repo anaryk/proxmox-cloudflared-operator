@@ -349,6 +349,9 @@ type TunnelsRotated struct {
 	// and TakenUp those of them whose rotation was followed through.
 	Rotated []string `json:"rotated,omitempty"`
 	TakenUp []string `json:"takenUp,omitempty"`
+	// At is when a secret was last given: a connector runs with it only by
+	// a report sent after.
+	At time.Time `json:"at,omitzero"`
 	// Connectors are, by tunnel id, the ids of the connectors the nodes
 	// ran, which are dropped at Cloudflare.
 	Connectors map[string][]string `json:"connectors,omitempty"`
