@@ -325,16 +325,30 @@ func (f *fakeWatch) running(t *testing.T) (func() map[netip.Addr]egress.Pin, fun
 	return f.bound, f.onMove
 }
 
-// fakeObserver is the observer of the forwarding tables: it counts its runs
-// and runs until its context ends.
+// fakeObserver is the observer of the forwarding tables: it counts its runs,
+// those running and the most that ran at once, and runs until its context
+// ends.
 type fakeObserver struct {
-	runs atomic.Int64
+	runs, active atomic.Int64
+	mu           sync.Mutex
+	most         int64
 }
 
 func (f *fakeObserver) observe(ctx context.Context, _ func() map[string]egress.Expected, _ func(egress.Observation)) error {
 	f.runs.Add(1)
+	n := f.active.Add(1)
+	defer f.active.Add(-1)
+	f.mu.Lock()
+	f.most = max(f.most, n)
+	f.mu.Unlock()
 	<-ctx.Done()
 	return nil
+}
+
+func (f *fakeObserver) mostAtOnce() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.most
 }
 
 // fakeRuleset is the watch of the nftables ruleset: a test calls what the

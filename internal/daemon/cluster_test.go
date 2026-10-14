@@ -214,6 +214,32 @@ func TestEveryNodeOfTheClusterWatchesItsForwardingTables(t *testing.T) {
 	require.NoError(t, r1.stop())
 }
 
+// The observer of the forwarding tables runs while the registry names
+// another node, stops when this node stands alone again, and starts again
+// when another node joins: one at a time, none left behind.
+func TestTheObserverFollowsTheNodesOfTheRegistry(t *testing.T) {
+	w := newWorld(t)
+	w.deps.Cluster = ClusterDeps{Port: freePort(t), Every: 20 * time.Millisecond}
+	r := w.start()
+	r.await(func(st engine.State) bool { return st.Lease != nil && st.Lease.Valid })
+	other := store.NodeEntry{Name: otherNode, Since: t0, Kind: "host", State: store.NodeJoining, StateSince: t0}
+	running := func(n int64) func() bool { return func() bool { return w.tables.active.Load() == n } }
+
+	require.NoError(t, w.store.SaveNode(other))
+	require.Eventually(t, running(1), 10*time.Second, 10*time.Millisecond)
+	other.State = store.NodeRemoved
+	require.NoError(t, w.store.SaveNode(other))
+	require.Eventually(t, running(0), 10*time.Second, 10*time.Millisecond)
+	other.State = store.NodeJoining
+	require.NoError(t, w.store.SaveNode(other))
+	require.Eventually(t, running(1), 10*time.Second, 10*time.Millisecond)
+
+	require.NoError(t, r.stop())
+	require.Zero(t, w.tables.active.Load(), "the observer ends with the daemon")
+	require.EqualValues(t, 2, w.tables.runs.Load())
+	require.EqualValues(t, 1, w.tables.mostAtOnce())
+}
+
 // A node that stands alone opens no agent endpoint and runs no client: it
 // runs as before.
 func TestASingleNodeOpensNoAgentEndpoint(t *testing.T) {
