@@ -243,6 +243,9 @@ func TestAConflictIsReportedWhileItHoldsAndBlocksTheAddressAtOnce(t *testing.T) 
 		Owner: &model.GuestRef{Kind: model.KindLXC, VMID: 102}, At: t0,
 	}, st.Observations[0], "the kind of the owner is the snapshot's")
 	e.agent.Wait()
+	// The observation is in the status as the watch hands it over; the
+	// address leaves the filter in the same handling, a moment later.
+	require.Eventually(t, func() bool { return len(log.all()) > 0 }, 5*time.Second, time.Millisecond)
 	require.Equal(t, "egress remove 10.0.0.11", log.all()[0], "the address this node serves on the MAC is out at once")
 	e.said(t, conflictSaid)
 
