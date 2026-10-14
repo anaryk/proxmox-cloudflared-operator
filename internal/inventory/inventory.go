@@ -144,6 +144,13 @@ type Inventory struct {
 	cache  map[model.GuestRef]cacheEntry
 	last   Snapshot
 	goodAt time.Time // of the last complete refresh
+	// remembered is what an earlier process read of the watched guests,
+	// guarded by mu; kept what is passed on to the next, and keptOwn says
+	// that a refresh of this one made it; both guarded by keptMu.
+	remembered map[model.GuestRef]pve.GuestConfig
+	keptMu     sync.Mutex
+	kept       []Remembered
+	keptOwn    bool
 
 	// forced are the nodes whose every guest the next refresh reads again,
 	// asked for between refreshes; guarded by forceMu.
@@ -385,6 +392,9 @@ func (i *Inventory) refreshGuests(ctx context.Context, r *run, rows []pve.Resour
 	if ctx.Err() != nil {
 		return nil, nil
 	}
+	if r.complete {
+		i.keep(ts)
+	}
 	guests := make([]model.Guest, len(ts))
 	cache := make(map[model.GuestRef]cacheEntry, len(ts))
 	for j, t := range ts {
@@ -511,15 +521,20 @@ func (i *Inventory) configEntry(r *run, row pve.Resource, res configResult, offl
 	ref := refOf(row)
 	entry, cached := i.cache[ref]
 	switch {
-	case offline:
-		// A guest that is not cached cannot be told apart from one that is
-		// gone. Only a watched one has routes that must not be dropped.
-		if !cached && i.isWatched(r, row, pve.GuestConfig{}) {
+	case offline && !cached:
+		// What an earlier process read stands in for what this one could
+		// not; it is read again once the node is back. Without it a guest
+		// cannot be told apart from one that is gone, and only a watched
+		// one has routes that must not be dropped.
+		if cfg, ok := i.remembered[ref]; ok {
+			entry.cfg, cached = cfg, true
+		} else if i.isWatched(r, row, pve.GuestConfig{}) {
 			r.fail("guest %s: node %s is offline and the guest is not cached", label(row), row.Node)
 		}
-	case !res.attempted:
+	case offline, !res.attempted:
 	case res.err == nil:
 		entry.cfg, entry.cfgAt, cached = res.cfg, r.now, true
+		delete(i.remembered, ref)
 	case pve.IsNotFound(res.err):
 		i.log.Debug().Stringer("guest", ref).Str("node", row.Node).Msg("config not found; the guest may have moved")
 		r.fail("config for %s not found on %s; will re-check", label(row), row.Node)

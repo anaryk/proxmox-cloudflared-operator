@@ -38,6 +38,10 @@ func memorySample() EngineMemory {
 			{AccountID: "acc1", Targets: targetsOf("10.0.0.11:8080", "10.0.0.11:80")},
 			{AccountID: "acc3"},
 		},
+		Guests: []RememberedGuest{
+			{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 200}, Values: map[string]string{"hostname": "db-1"}},
+			{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Digest: "d1", Values: map[string]string{"name": "web-1", "description": "www.example.com -> :8080"}},
+		},
 	}
 }
 
@@ -90,6 +94,10 @@ func TestEngineMemoryComesBackInOrder(t *testing.T) {
 			{AccountID: "acc1", Targets: targetsOf("10.0.0.11:80", "10.0.0.11:8080")},
 			{AccountID: "acc2", Targets: targetsOf("10.0.0.12:443")},
 			{AccountID: "acc3", Targets: []netip.AddrPort{}},
+		},
+		Guests: []RememberedGuest{
+			{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Digest: "d1", Values: map[string]string{"name": "web-1", "description": "www.example.com -> :8080"}},
+			{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 200}, Values: map[string]string{"hostname": "db-1"}},
 		},
 	}, got)
 	require.Equal(t, []string{"meta/engine-memory.json"}, stored(t, p.Local))

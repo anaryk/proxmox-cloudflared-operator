@@ -81,6 +81,20 @@ type fakeInventory struct {
 	hasDeadline bool
 	onRefresh   func()
 	forced      []string // the nodes ForceRefresh named, in order
+	// kept is what Remembered returns, given what Remember was last given.
+	kept, given []inventory.Remembered
+}
+
+func (f *fakeInventory) Remembered() []inventory.Remembered {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.kept)
+}
+
+func (f *fakeInventory) Remember(rs []inventory.Remembered) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.given = slices.Clone(rs)
 }
 
 func (f *fakeInventory) ForceRefresh(node string) {

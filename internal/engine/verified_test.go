@@ -3,10 +3,13 @@ package engine
 import (
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -134,6 +137,36 @@ func TestTheMemoryKeepsTheVerifiedConfigurationsPerTunnel(t *testing.T) {
 	old := newEnv(t).eng
 	old.rememberEgress(store.EngineMemory{InstallID: testInstall, Verified: []store.VerifiedTargets{{AccountID: testAccount, Targets: toAddrPorts(egressTargets("10.0.0.11:8080"))}}})
 	require.Equal(t, egressTargets("10.0.0.11:8080"), old.verified[tunnelRef{testAccount, tunnelName}])
+}
+
+// What the inventory read of the watched guests goes into the memory of a
+// cluster's controller, and a controller after it gives it to its inventory
+// before its first refresh: a guest of a node that went down with the last
+// controller is built from it, and no cycle holds for it. A node alone keeps
+// no guests in its memory.
+func TestTheMemoryCarriesTheGuestsOverToTheNextController(t *testing.T) {
+	web := inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Digest: "d1", Values: map[string]string{"name": "web", "description": "www.example.com -> :8080"}}
+
+	alone := newEnv(t)
+	alone.inv.kept = []inventory.Remembered{web}
+	alone.enforce()
+	alone.cycle()
+	m, err := alone.store.EngineMemory()
+	require.NoError(t, err)
+	require.Empty(t, m.Guests)
+
+	w := threeNodes(t)
+	w.inv.kept = []inventory.Remembered{web}
+	w.settle()
+	m, err = w.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, []store.RememberedGuest{{Ref: web.Ref, Digest: web.Digest, Values: web.Values}}, m.Guests)
+
+	w.inv.kept = nil
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	w.tick(time.Second)
+	require.Equal(t, []inventory.Remembered{web}, w.inv.given)
 }
 
 // A tunnel whose account the run reported on is not taken for unreported

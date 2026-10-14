@@ -350,6 +350,7 @@ func (c *cycleRun) prepare() bool {
 	if !c.readRegistry() {
 		return false
 	}
+	c.e.clustered = c.clustered()
 	node, err := c.e.fleet.agentOf(inst)
 	if err != nil {
 		c.hold(c.problem("starting the agent of this node: %v", err))

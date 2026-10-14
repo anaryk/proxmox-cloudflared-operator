@@ -267,6 +267,48 @@ func TestRefreshOfARoutedGuestOnAnOfflineNodeIsIncompleteUntilCached(t *testing.
 	require.Zero(t, src.count("config "+refDB.String()))
 }
 
+// What a refresh read of the watched guests is remembered, as much of each
+// configuration as a guest is built from: a process that starts while the
+// node of one is offline builds it from that, and the snapshot is complete.
+// A guest of a node that is online is read as always.
+func TestRefreshOfAGuestOnAnOfflineNodeUsesWhatWasRemembered(t *testing.T) {
+	src := newFake()
+	src.configs[refApp].Values["lxc.cgroup2.devices.allow"] = "c 10:200 rwm"
+	before, _ := newInventory(src, Options{})
+	first := before.Refresh(t.Context())
+	kept := before.Remembered()
+
+	var refs []model.GuestRef
+	for _, r := range kept {
+		refs = append(refs, r.Ref)
+		require.NotContains(t, r.Values, "lxc.cgroup2.devices.allow", "only what a guest is built from is kept")
+	}
+	require.Equal(t, []model.GuestRef{refApp, refWeb, refBatch}, refs, "the watched guests, in the order of the snapshot")
+
+	src.setOnline("pve2", false)
+	inv, _ := newInventory(src, Options{})
+	inv.Remember(kept)
+	snap := inv.Refresh(t.Context())
+
+	require.True(t, snap.Complete, snap.Problems)
+	app := guestOf(t, snap, refApp)
+	want := guestOf(t, first, refApp)
+	require.Equal(t, want.NICs, app.NICs)
+	require.Equal(t, want.Name, app.Name)
+	require.Equal(t, want.Identity, app.Identity)
+	require.Equal(t, 1, src.count("config "+refApp.String()), "nothing more is asked of the offline node")
+	require.Equal(t, 2, src.count("config "+refWeb.String()), "a guest of an online node is read")
+	require.Contains(t, refsOf(inv.Remembered()), refApp, "what was remembered is remembered on")
+}
+
+func refsOf(rs []Remembered) []model.GuestRef {
+	out := make([]model.GuestRef, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.Ref)
+	}
+	return out
+}
+
 func TestRefreshGuestBecomingWatchedIsFetchedAtOnce(t *testing.T) {
 	src := newFake()
 	inv, clk := newInventory(src, Options{})

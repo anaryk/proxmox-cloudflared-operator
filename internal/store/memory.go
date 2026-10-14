@@ -49,6 +49,19 @@ type EngineMemory struct {
 	// configuration sends a connector to it, also across a restart.
 	Egress   []netip.AddrPort  `json:"egress,omitempty"`
 	Verified []VerifiedTargets `json:"verified,omitempty"`
+	// Guests are the configurations of the watched guests as the inventory
+	// last read them whole, as much of each as a guest is built from: a
+	// controller that takes over while the node of one is offline, and
+	// cannot read it, builds it from this.
+	Guests []RememberedGuest `json:"guests,omitempty"`
+}
+
+// RememberedGuest is the configuration of a watched guest as the inventory
+// last read it.
+type RememberedGuest struct {
+	Ref    model.GuestRef    `json:"ref"`
+	Digest string            `json:"digest,omitempty"`
+	Values map[string]string `json:"values"`
 }
 
 // VerifiedTargets are the targets of the configuration of a tunnel of an
@@ -140,6 +153,8 @@ func (m EngineMemory) sorted() EngineMemory {
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
 	m.Reports = slices.Clone(m.Reports)
 	slices.SortFunc(m.Reports, func(a, b CheckedCredential) int { return cmp.Compare(a.CredentialID, b.CredentialID) })
+	m.Guests = slices.Clone(m.Guests)
+	slices.SortFunc(m.Guests, func(a, b RememberedGuest) int { return model.CompareOwners(a.Ref.String(), b.Ref.String()) })
 	m.Egress = sortedTargets(m.Egress)
 	m.Verified = slices.Clone(m.Verified)
 	for i := range m.Verified {
@@ -170,6 +185,9 @@ func (m EngineMemory) sorted() EngineMemory {
 	}
 	if len(m.GoneGuests) == 0 {
 		m.GoneGuests = nil
+	}
+	if len(m.Guests) == 0 {
+		m.Guests = nil
 	}
 	if len(m.Reports) == 0 {
 		m.Reports = nil

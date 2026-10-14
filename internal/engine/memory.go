@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -52,6 +53,7 @@ func (e *Engine) recall(installID string) error {
 		e.gone[ref] = true
 	}
 	e.rememberEgress(m)
+	e.rememberGuests(m.Guests)
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
 	for _, r := range m.Reports {
@@ -90,12 +92,29 @@ func (e *Engine) memory() store.EngineMemory {
 	}
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
 	e.egressMemory(&m)
+	if e.clustered {
+		for _, r := range e.d.Inventory.Remembered() {
+			m.Guests = append(m.Guests, store.RememberedGuest{Ref: r.Ref, Digest: r.Digest, Values: r.Values})
+		}
+	}
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
 	for _, id := range slices.Sorted(maps.Keys(e.reports)) {
 		m.Reports = append(m.Reports, store.CheckedCredential{CredentialID: id, Report: cloneReport(e.reports[id])})
 	}
 	return m
+}
+
+// rememberGuests gives the inventory the guests an earlier controller read:
+// a guest of a node that is offline now is built from them, rather than
+// holding every cycle as one the inventory cannot tell from a guest that is
+// gone.
+func (e *Engine) rememberGuests(gs []store.RememberedGuest) {
+	rs := make([]inventory.Remembered, 0, len(gs))
+	for _, g := range gs {
+		rs = append(rs, inventory.Remembered{Ref: g.Ref, Digest: g.Digest, Values: g.Values})
+	}
+	e.d.Inventory.Remember(rs)
 }
 
 // memoryAccepting is the memory as it is once the engine accepted o: the

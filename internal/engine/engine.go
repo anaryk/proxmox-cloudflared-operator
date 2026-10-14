@@ -42,6 +42,11 @@ type Inventory interface {
 	Refresh(ctx context.Context) inventory.Snapshot
 	// ForceRefresh has the next refresh read every guest of node again.
 	ForceRefresh(node string)
+	// Remembered and Remember carry what the inventory read of the watched
+	// guests over to the controller after this one, which builds a guest of
+	// an offline node it never read from it.
+	Remembered() []inventory.Remembered
+	Remember(rs []inventory.Remembered)
 }
 
 // Identity is the self-identification of the appliance; nil on the host.
@@ -253,6 +258,10 @@ type Engine struct {
 	// stale zones, the tunnels seen and the guests confirmed gone.
 	remembered bool
 	memoryOf   string // the install the memory is of
+	// clustered says that the last cycle found other nodes in the
+	// registry: only then does the memory keep the guests, for a
+	// controller on another node.
+	clustered bool
 	// setAside says that the memory read was of another install, until a
 	// cycle says so.
 	setAside string
