@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -32,9 +31,6 @@ const problemCatchUp = "no service address and no managed card is made until the
 func (c *cycleRun) catchUp() {
 	if !c.writerRead || !c.clustered() {
 		return
-	}
-	if c.e.saidIn == nil {
-		c.e.saidIn = map[string]agentproto.Epoch{}
 	}
 	m := c.e.caught.of(c.epoch())
 	s := c.silentNodes()
@@ -223,10 +219,11 @@ func cardOwners(guests []model.Guest) map[string][]string {
 
 // saidOnce adds ev to the events of the cycle once per epoch and key.
 func (c *cycleRun) saidOnce(key string, ev Event) {
-	if c.e.saidIn[key] == c.epoch() {
+	said := c.e.caught.of(c.epoch()).said
+	if said[key] {
 		return
 	}
-	c.e.saidIn[key] = c.epoch()
+	said[key] = true
 	c.events = append(c.events, ev)
 }
 

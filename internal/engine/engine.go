@@ -20,7 +20,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
@@ -263,11 +262,8 @@ type Engine struct {
 	// earlier release, whose engine kept it.
 	egress   []egress.Target
 	verified map[tunnelRef][]egress.Target
-	// caught is what catchUp keeps of the epoch it last ran in, and saidIn,
-	// by what it said it of, the epoch catchUp last said something in, so
-	// that it says it once per epoch.
+	// caught is what catchUp keeps of the epoch it last ran in.
 	caught catchUpMemory
-	saidIn map[string]agentproto.Epoch
 	// writes are the writes of guests' cards handed the agents of other
 	// nodes.
 	writes pveWrites

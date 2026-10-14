@@ -41,12 +41,17 @@ type catchUpMemory struct {
 	// agents' word alone, and moved how far it moved in all.
 	guessed bool
 	moved   int
+	// said is what catchUp said as an event in the epoch, so that it says
+	// it once, and refused, by node, the line said of what its report names
+	// that is not taken, which stays the same for the epoch.
+	said    map[string]bool
+	refused map[string]string
 }
 
 // of is the memory of epoch.
 func (m *catchUpMemory) of(epoch agentproto.Epoch) *catchUpMemory {
-	if m.epoch != epoch {
-		*m = catchUpMemory{epoch: epoch}
+	if m.epoch != epoch || m.said == nil {
+		*m = catchUpMemory{epoch: epoch, said: map[string]bool{}, refused: map[string]string{}}
 	}
 	return m
 }
@@ -121,14 +126,44 @@ func (c *cycleRun) raisePool(m *catchUpMemory, settled bool, overdue []string) s
 	if settled {
 		m.guessed = true
 	}
+	c.sayRefused(m, refused, want)
+	return why
+}
+
+// sayRefused gives each node whose report names something not taken, at or
+// past want, one problem line: the lowest address, how many more, and why
+// the lowest is not taken. The line a node is first given in an epoch is
+// the one it keeps for the epoch, so that it is an event once.
+func (c *cycleRun) sayRefused(m *catchUpMemory, refused []refusedReport, want netip.Addr) {
+	first, more := map[string]refusedReport{}, map[string]int{}
 	for _, r := range refused {
 		if r.addr.IsValid() && r.addr.Less(want) {
 			continue
 		}
-		// The line is an event when it appears; it holds nothing.
-		c.problem(problemReportRefused, r.node, r.what(), r.why)
+		f, seen := first[r.node]
+		switch {
+		case !seen:
+			first[r.node] = r
+			continue
+		case !r.addr.IsValid() || f.addr.IsValid() && r.addr.Less(f.addr):
+			first[r.node] = r
+		}
+		more[r.node]++
 	}
-	return why
+	for _, node := range slices.Sorted(maps.Keys(first)) {
+		line, ok := m.refused[node]
+		if !ok {
+			r := first[node]
+			what := r.what()
+			if n := more[node]; n > 0 && r.addr.IsValid() {
+				what = fmt.Sprintf("%s and %d more", what, n)
+			}
+			line = fmt.Sprintf(problemReportRefused, node, what, r.why)
+			m.refused[node] = line
+		}
+		// The line is an event when it appears; it holds nothing.
+		c.problem("%s", line)
+	}
 }
 
 // storedServices are the service addresses the mappings of the store hold,

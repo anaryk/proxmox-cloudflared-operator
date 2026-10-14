@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,40 @@ func TestARefusedReportHoldsNoAllocation(t *testing.T) {
 	require.Len(t, all, 1, "the service address is made")
 	require.True(t, hasProblem(st, "node pve3 reports that its gateway maps 198.18.255.254, not taken from it"), st.Problems)
 	require.False(t, hasProblem(st, held), st.Problems)
+	require.Equal(t, 1, w.eventsStarting("node pve3 reports that its gateway maps"), "said once in the epoch")
+}
+
+// A node whose report names many addresses that are not taken is one line,
+// with how many.
+func TestARefusedReportIsOneLinePerNode(t *testing.T) {
+	w := threeNodes(t)
+	n := entryOf(t, w.env, "pve2")
+	n.State, n.StateSince = store.NodeContested, w.clock.now()
+	require.NoError(t, w.store.SaveNode(n))
+	w.acts["pve2"].edit = func(st *agentproto.Status) {
+		st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.7"), netip.MustParseAddr("198.18.1.5"), netip.MustParseAddr("198.18.1.6")}
+	}
+
+	st := w.tick(time.Second)
+
+	var lines []string
+	for _, p := range st.Problems {
+		if strings.HasPrefix(p, "node pve2 reports") {
+			lines = append(lines, p)
+		}
+	}
+	require.Equal(t, []string{"node pve2 reports that its gateway maps 198.18.1.5 and 2 more, not taken from it: the node is not admitted"}, lines)
+}
+
+// eventsStarting counts the engine's events whose message begins with prefix.
+func (w *world) eventsStarting(prefix string) int {
+	n := 0
+	for _, m := range w.eventMessages() {
+		if strings.HasPrefix(m, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 // The pool moves at any time for an address the controller can vouch for, one
