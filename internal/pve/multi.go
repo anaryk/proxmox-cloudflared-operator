@@ -2,15 +2,20 @@ package pve
 
 import (
 	"cmp"
+	"context"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // DefaultPort is the port pveproxy listens on.
@@ -30,7 +35,8 @@ type EndpointStatus struct {
 	// Current says that the next request goes to this endpoint first.
 	Current bool
 	// Err is why the last attempt at the endpoint failed, nil when it
-	// answered, or when nothing was asked of it yet.
+	// answered, or when nothing was asked of it yet. A request the caller
+	// gave up on says nothing of the endpoint.
 	Err error
 }
 
@@ -42,11 +48,13 @@ type EndpointStatus struct {
 // pinned to the certificate of this node, as the configuration's is.
 //
 // A request moves on when an endpoint refuses the connection, does not
-// verify, or answers a read with a server error; a write moves on only
-// while nothing of it was sent, since the other node might apply it twice
-// otherwise. A client error, a rejected token above all, is the answer of
-// every endpoint alike and is returned from the first. A deadline is for
-// the whole request, so an endpoint that hangs is not fallen back from.
+// verify, gives no answer within its share of the request's deadline, or
+// answers a read with a status that says pveproxy could not reach its
+// backend; a write moves on only while nothing of it was sent, since the
+// other node might apply it twice. A client error, a rejected token above
+// all, is the answer of every endpoint alike and is returned from the
+// first. An endpoint that gave no answer in time is not asked first again
+// until another one has failed.
 type Multi struct {
 	*Client
 	fb *fallback
@@ -94,8 +102,11 @@ func endpointURL(base *url.URL, ep Endpoint) (*url.URL, error) {
 	if err != nil {
 		host, port = strings.Trim(ep.Address, "[]"), DefaultPort
 	}
-	if host == "" || port == "" {
+	if host == "" {
 		return nil, errors.New("not an address with an optional port")
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return nil, fmt.Errorf("port %q is not between 1 and 65535", port)
 	}
 	return &url.URL{Scheme: base.Scheme, Host: net.JoinHostPort(host, port), Path: base.Path}, nil
 }
@@ -146,13 +157,16 @@ func (f *fallback) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	var first outcome
 	for k := range tries {
-		i := (start + k) % len(f.targets)
 		if k > 0 && req.Context().Err() != nil {
 			break
 		}
-		o := outcome{i: i}
-		o.resp, o.err = f.try(i, req)
-		f.note(o)
+		i := (start + k) % len(f.targets)
+		o := f.try(i, req, tries-k)
+		if o.cancelled {
+			first.discard()
+			return nil, o.err
+		}
+		f.note(o, start)
 		if o.final(req) {
 			first.discard()
 			return o.resp, o.err
@@ -166,32 +180,75 @@ func (f *fallback) RoundTrip(req *http.Request) (*http.Response, error) {
 	return first.resp, first.err
 }
 
-// try sends req to target i. The request is cloned so that each target
-// gets its own copy, with the body read anew.
-func (f *fallback) try(i int, req *http.Request) (*http.Response, error) {
+// try sends req to target i, within its share of what is left of the
+// request's deadline, with left targets still to try. The request is cloned
+// so that each target gets its own copy, with the body read anew.
+func (f *fallback) try(i int, req *http.Request, left int) outcome {
 	t := f.targets[i]
-	r := req.Clone(req.Context())
+	ctx, cancel := context.WithTimeout(req.Context(), share(req.Context(), left))
+	// Whether the attempt got a connection, new or kept, decides whether a
+	// write may have reached the endpoint.
+	var connected atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	})
+	r := req.Clone(ctx)
 	r.URL.Host = t.host
 	r.Host = ""
 	if req.GetBody != nil {
 		body, err := req.GetBody()
 		if err != nil {
-			return nil, err
+			cancel()
+			return outcome{i: i, err: err, cancelled: true}
 		}
 		r.Body = body
 	}
-	return t.rt.RoundTrip(r)
+	resp, err := t.rt.RoundTrip(r) //nolint:bodyclose // the body goes back to the caller, inside the outcome
+	if err != nil {
+		// Why the attempt ended is read before its context is cancelled,
+		// which would make every failure look like a timeout. The request's
+		// deadline is never shorter than the attempt's share of it, so a
+		// deadline is the endpoint's failure; only the caller giving up is
+		// not.
+		o := outcome{i: i, err: err, connected: connected.Load()}
+		switch {
+		case errors.Is(req.Context().Err(), context.Canceled):
+			o.cancelled = true
+		case ctx.Err() != nil:
+			o.timedOut = true
+			o.err = fmt.Errorf("no answer within its share of the deadline: %w", err)
+		}
+		cancel()
+		return o
+	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return outcome{i: i, resp: resp}
+}
+
+// share is the time one attempt gets: what is left of the deadline, divided
+// by the targets still to try, so that every one of them is tried.
+func share(ctx context.Context, left int) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return defaultTimeout
+	}
+	return time.Until(deadline) / time.Duration(max(left, 1))
 }
 
 // note keeps how the attempt went, and makes its target the current one
-// when it answered.
-func (f *fallback) note(o outcome) {
+// when it answered. The target the request started at, when it gave no
+// answer in time, hands the first place to the next one, so that the next
+// request does not wait for it again.
+func (f *fallback) note(o outcome, start int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
 	case o.err != nil:
 		f.errs[o.i] = o.err
-	case o.resp.StatusCode >= http.StatusInternalServerError:
+		if o.timedOut && o.i == start && f.current == start {
+			f.current = (start + 1) % len(f.targets)
+		}
+	case unreachable(o.resp.StatusCode):
 		f.errs[o.i] = &APIError{Status: o.resp.StatusCode, Message: http.StatusText(o.resp.StatusCode)}
 	default:
 		f.errs[o.i] = nil
@@ -204,20 +261,34 @@ type outcome struct {
 	i    int
 	resp *http.Response
 	err  error
+	// connected says the attempt had a connection to the endpoint, so a
+	// write may have reached it; timedOut that the attempt ran out of its
+	// share of the deadline; cancelled that the request's own context
+	// ended, which says nothing of the target.
+	connected bool
+	timedOut  bool
+	cancelled bool
 }
 
-// final says that the attempt decides the request: the endpoint answered,
-// the request's context is done, or the request is a write that may have
-// reached the endpoint, which must not be sent elsewhere as well.
+// final says that the attempt decides the request: the endpoint answered
+// for itself, or the request is a write that may have reached the endpoint,
+// which must not be sent elsewhere as well.
 func (o outcome) final(req *http.Request) bool {
 	read := req.Method == http.MethodGet || req.Method == http.MethodHead
 	switch {
 	case o.err != nil:
-		return req.Context().Err() != nil || !read && !beforeSending(o.err)
-	case o.resp.StatusCode >= http.StatusInternalServerError:
+		return !read && !o.beforeSending()
+	case unreachable(o.resp.StatusCode):
 		return !read
 	}
 	return true
+}
+
+// beforeSending says that the attempt failed before anything of the request
+// was sent: no connection was had, within the time or at all, or the
+// certificate did not verify, which ends the handshake.
+func (o outcome) beforeSending() bool {
+	return !o.connected || notVerified(o.err)
 }
 
 // discard drops a response that is not returned.
@@ -228,10 +299,25 @@ func (o outcome) discard() {
 	}
 }
 
-// beforeSending says that err happened before anything of the request was
-// sent: the connection could not be made, or the certificate did not
-// verify, which ends the handshake.
-func beforeSending(err error) bool {
-	var op *net.OpError
-	return (errors.As(err, &op) && op.Op == "dial") || notVerified(err)
+// unreachable says that the status is pveproxy's for a backend it could not
+// reach, or a gateway's for the same, not an answer of the API: 502, 503,
+// 504, and the 595 to 599 pveproxy answers with when its connection to the
+// node fails.
+func unreachable(status int) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return status >= 595 && status <= 599
+}
+
+// cancelOnClose ends the attempt's context when its body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnClose) Close() error {
+	defer b.cancel()
+	return b.ReadCloser.Close()
 }

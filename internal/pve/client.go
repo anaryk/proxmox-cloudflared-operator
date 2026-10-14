@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -28,8 +29,12 @@ import (
 
 const (
 	defaultTimeout = 10 * time.Second
-	maxBodyBytes   = 8 << 20
-	apiPath        = "api2/json"
+	// dialTimeout bounds the connection to an endpoint on its own, so that
+	// a node that does not answer at all is given up on before the request's
+	// deadline.
+	dialTimeout  = 3 * time.Second
+	maxBodyBytes = 8 << 20
+	apiPath      = "api2/json"
 )
 
 // DefaultURL is the Proxmox VE API of the node pco runs on.
@@ -183,6 +188,7 @@ func newTransport(base *url.URL, serverName string, pool *x509.CertPool, nodeCer
 	}
 	// No proxy on purpose: the API is local or on the management network.
 	return &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
 		TLSClientConfig:     tlsCfg,
 		TLSHandshakeTimeout: defaultTimeout,
 		IdleConnTimeout:     90 * time.Second,

@@ -55,6 +55,16 @@ func failing(t *testing.T, status int) (*httptest.Server, *recorder) {
 	})
 }
 
+// stalling is a node whose pveproxy takes the request, body and all, and
+// never answers until the client is gone.
+func stalling(t *testing.T) (*httptest.Server, *recorder) {
+	t.Helper()
+	return labServer(t, func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	})
+}
+
 // down is a node whose pveproxy is not listening.
 func down(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -63,39 +73,64 @@ func down(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// lab is a Multi for the nodes pve1, pve2, ... of a lab, each served by one
-// of the servers, verified under example.com, the name of the certificate
-// the test servers present, and counts the connections made to each.
+// hanging is the address of a node that lets connections in and never
+// speaks: the listener accepts nothing, so the handshake waits.
+func hanging(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().String()
+}
+
+// node is where a lab node is reached, and how a test may get in the way.
+type node struct {
+	addr string
+	// block, when set, makes the dial wait for the context and fail as a
+	// dial that ran out of time.
+	block bool
+}
+
+func at(srv *httptest.Server) node { return node{addr: srv.Listener.Addr().String()} }
+
+// lab is a Multi for the nodes pve1, pve2, ... of a lab, each reached at one
+// of the nodes given, verified under example.com, the name of the
+// certificate the test servers present, and counts the connections made to
+// each.
 type lab struct {
 	m     *Multi
 	dials []atomic.Int32
 }
 
-func newLab(t *testing.T, cfg Config, servers ...*httptest.Server) *lab {
+func newLab(t *testing.T, cfg Config, nodes ...node) *lab {
 	t.Helper()
 	cfg.BaseURL = cmp.Or(cfg.BaseURL, "https://pve1.lab.invalid:8006")
-	cfg.CAFile = cmp.Or(cfg.CAFile, writeCA(t, servers[0].Certificate()))
+	cfg.CAFile = cmp.Or(cfg.CAFile, writeCA(t, remoteServer(t).Certificate()))
 	cfg.ServerName = cmp.Or(cfg.ServerName, "example.com")
 	var eps []Endpoint
-	for i := 1; i < len(servers); i++ {
+	for i := 1; i < len(nodes); i++ {
 		eps = append(eps, Endpoint{Address: fmt.Sprintf("pve%d.lab.invalid", i+1), ServerName: "example.com"})
 	}
 	m, err := NewMulti(cfg, eps)
 	require.NoError(t, err)
-	return wire(t, m, servers...)
+	return wire(t, m, nodes...)
 }
 
-// wire makes the targets of m, in order, connect to servers.
-func wire(t *testing.T, m *Multi, servers ...*httptest.Server) *lab {
+// wire makes the targets of m, in order, connect to nodes, with the dial
+// timeout of the client.
+func wire(t *testing.T, m *Multi, nodes ...node) *lab {
 	t.Helper()
-	require.Len(t, m.fb.targets, len(servers))
-	l := &lab{m: m, dials: make([]atomic.Int32, len(servers))}
-	for i, srv := range servers {
-		addr := srv.Listener.Addr().String()
+	require.Len(t, m.fb.targets, len(nodes))
+	l := &lab{m: m, dials: make([]atomic.Int32, len(nodes))}
+	for i, n := range nodes {
 		tr := m.fb.targets[i].rt.(*http.Transport)
 		tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 			l.dials[i].Add(1)
-			return (&net.Dialer{}).DialContext(ctx, network, addr)
+			if n.block {
+				<-ctx.Done()
+				return nil, &net.OpError{Op: "dial", Net: network, Err: ctx.Err()}
+			}
+			return (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, network, n.addr)
 		}
 	}
 	return l
@@ -106,7 +141,7 @@ func (l *lab) dialed(i int) int { return int(l.dials[i].Load()) }
 func TestMultiTalksToTheFirstEndpointWhileItAnswers(t *testing.T) {
 	a, recA := answering(t)
 	b, recB := answering(t)
-	l := newLab(t, testConfig(""), a, b)
+	l := newLab(t, testConfig(""), at(a), at(b))
 
 	for range 3 {
 		v, err := l.m.Version(t.Context())
@@ -124,7 +159,7 @@ func TestMultiTalksToTheFirstEndpointWhileItAnswers(t *testing.T) {
 
 func TestMultiFallsBackWhenTheEndpointRefusesAndKeepsTheOneThatAnswered(t *testing.T) {
 	b, recB := answering(t)
-	l := newLab(t, testConfig(""), down(t), b)
+	l := newLab(t, testConfig(""), at(down(t)), at(b))
 
 	v, err := l.m.Version(t.Context())
 	require.NoError(t, err)
@@ -145,21 +180,43 @@ func TestMultiFallsBackWhenTheEndpointRefusesAndKeepsTheOneThatAnswered(t *testi
 	require.NoError(t, st[1].Err)
 }
 
-func TestMultiFallsBackOnAServerErrorOfARead(t *testing.T) {
-	a, recA := failing(t, http.StatusServiceUnavailable)
-	b, recB := answering(t)
-	l := newLab(t, testConfig(""), a, b)
+// pveproxy answers 595 to 599 when it cannot reach the daemon of its node,
+// and a gateway in front of it 502 to 504; any other server error is an
+// answer of the API, the same on every node.
+func TestMultiMovesOnFromAReadOnlyWhenTheEndpointCouldNotReachItsBackend(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 595, 599} {
+		t.Run(fmt.Sprintf("%d moves on", status), func(t *testing.T) {
+			a, recA := failing(t, status)
+			b, recB := answering(t)
+			l := newLab(t, testConfig(""), at(a), at(b))
 
-	v, err := l.m.Version(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, "9.1", v.Release)
-	require.Len(t, recA.requests(), 1)
-	require.Len(t, recB.requests(), 1)
+			v, err := l.m.Version(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, "9.1", v.Release)
+			require.Len(t, recA.requests(), 1)
+			require.Len(t, recB.requests(), 1)
 
-	var apiErr *APIError
-	require.ErrorAs(t, l.m.Status()[0].Err, &apiErr)
-	require.Equal(t, http.StatusServiceUnavailable, apiErr.Status)
-	require.Equal(t, "pve2.lab.invalid", l.m.Current().Address)
+			var apiErr *APIError
+			require.ErrorAs(t, l.m.Status()[0].Err, &apiErr)
+			require.Equal(t, status, apiErr.Status)
+			require.Equal(t, "pve2.lab.invalid", l.m.Current().Address)
+		})
+	}
+	for _, status := range []int{http.StatusInternalServerError, http.StatusNotImplemented, 594, 600} {
+		t.Run(fmt.Sprintf("%d is an answer", status), func(t *testing.T) {
+			a, _ := failing(t, status)
+			b, recB := answering(t)
+			l := newLab(t, testConfig(""), at(a), at(b))
+
+			_, err := l.m.Version(t.Context())
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			require.Equal(t, status, apiErr.Status)
+			require.Empty(t, recB.requests())
+			require.NoError(t, l.m.Status()[0].Err, "the endpoint answered")
+			require.Equal(t, "pve1.lab.invalid:8006", l.m.Current().Address)
+		})
+	}
 }
 
 func TestMultiReturnsAClientErrorFromTheFirstEndpoint(t *testing.T) {
@@ -167,7 +224,7 @@ func TestMultiReturnsAClientErrorFromTheFirstEndpoint(t *testing.T) {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			a, _ := failing(t, status)
 			b, recB := answering(t)
-			l := newLab(t, testConfig(""), a, b)
+			l := newLab(t, testConfig(""), at(a), at(b))
 
 			_, err := l.m.Version(t.Context())
 			var apiErr *APIError
@@ -187,7 +244,7 @@ func TestMultiVerifiesEachEndpointUnderItsOwnName(t *testing.T) {
 	cfg.ServerName = "example.com"
 	m, err := NewMulti(cfg, []Endpoint{{Address: "pve2.lab.invalid", ServerName: "pve2.lab.invalid"}})
 	require.NoError(t, err)
-	l := wire(t, m, down(t), b)
+	l := wire(t, m, at(down(t)), at(b))
 
 	_, err = l.m.Version(t.Context())
 	require.Error(t, err)
@@ -198,7 +255,7 @@ func TestMultiVerifiesEachEndpointUnderItsOwnName(t *testing.T) {
 
 	m, err = NewMulti(cfg, []Endpoint{{Address: "pve2.lab.invalid", ServerName: "example.com"}})
 	require.NoError(t, err)
-	l = wire(t, m, down(t), b)
+	l = wire(t, m, at(down(t)), at(b))
 	_, err = l.m.Version(t.Context())
 	require.NoError(t, err)
 	require.Len(t, recB.requests(), 1)
@@ -228,7 +285,7 @@ func TestMultiPinsAFallbackEndpointOnALoopbackAddress(t *testing.T) {
 			writeCert(t, filepath.Join(cfg.NodeCertDir, "pve-ssl.pem"), tls.Certificate{Certificate: [][]byte{served.Raw}})
 			m, err := NewMulti(cfg, []Endpoint{{Address: "127.0.0.1:" + portOf(t, b)}})
 			require.NoError(t, err)
-			l := wire(t, m, down(t), b)
+			l := wire(t, m, at(down(t)), at(b))
 
 			_, err = l.m.Version(t.Context())
 			if tt.ok {
@@ -243,34 +300,103 @@ func TestMultiPinsAFallbackEndpointOnALoopbackAddress(t *testing.T) {
 	}
 }
 
+// An endpoint gets its share of the request's deadline: one that takes the
+// connection and never answers, or never completes the handshake, is given
+// up on in time for the next one to be asked.
+func TestMultiMovesOnFromAnEndpointThatGivesNoAnswerInTime(t *testing.T) {
+	a, _ := stalling(t)
+	for name, first := range map[string]node{
+		"never answers":    at(a),
+		"never handshakes": {addr: hanging(t)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, recB := answering(t)
+			cfg := testConfig("")
+			cfg.Timeout = 2 * time.Second
+			l := newLab(t, cfg, first, at(b))
+
+			began := time.Now()
+			v, err := l.m.Version(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, "9.1", v.Release)
+			require.Less(t, time.Since(began), cfg.Timeout)
+			require.Len(t, recB.requests(), 1)
+			require.ErrorContains(t, l.m.Status()[0].Err, "no answer within")
+			require.ErrorIs(t, l.m.Status()[0].Err, context.DeadlineExceeded)
+			require.Equal(t, "pve2.lab.invalid", l.m.Current().Address)
+		})
+	}
+}
+
+// When every endpoint ran out of its share, the next request starts at the
+// one after the endpoint that was first, so that it is not waited for again.
+func TestMultiDoesNotStartAgainAtAnEndpointThatGaveNoAnswer(t *testing.T) {
+	cfg := testConfig("")
+	cfg.Timeout = 400 * time.Millisecond
+	l := newLab(t, cfg, node{addr: hanging(t)}, node{addr: hanging(t)})
+
+	v, err := l.m.Version(t.Context())
+	require.ErrorIs(t, err, context.DeadlineExceeded, "answered %+v; status %+v", v, l.m.Status())
+	require.Equal(t, 1, l.dialed(0))
+	require.Equal(t, 1, l.dialed(1))
+	require.Equal(t, "pve2.lab.invalid", l.m.Current().Address)
+	for _, st := range l.m.Status() {
+		require.ErrorContains(t, st.Err, "no answer within")
+	}
+}
+
 func TestMultiAWriteMovesOnOnlyBeforeAnythingWasSent(t *testing.T) {
 	ref := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
 	values := map[string]string{"net0": "virtio=BC:24:11:00:AA:B5,bridge=vmbr0"}
+	put := func(l *lab) error { return l.m.SetGuestConfig(t.Context(), "pve1", ref, values, "d1g3st") }
 
 	t.Run("refused", func(t *testing.T) {
 		b, recB := answering(t)
-		l := newLab(t, testConfig(""), down(t), b)
-		require.NoError(t, l.m.SetGuestConfig(t.Context(), "pve1", ref, values, "d1g3st"))
+		l := newLab(t, testConfig(""), at(down(t)), at(b))
+		require.NoError(t, put(l))
 		require.Len(t, recB.requests(), 1)
 		require.Equal(t, http.MethodPut, recB.requests()[0].method)
 		require.Equal(t, "/api2/json/nodes/pve1/qemu/101/config", recB.requests()[0].uri)
 	})
 
-	t.Run("server error", func(t *testing.T) {
-		a, recA := failing(t, http.StatusInternalServerError)
+	t.Run("the dial ran out of time", func(t *testing.T) {
 		b, recB := answering(t)
-		l := newLab(t, testConfig(""), a, b)
-		err := l.m.SetGuestConfig(t.Context(), "pve1", ref, values, "d1g3st")
+		cfg := testConfig("")
+		cfg.Timeout = time.Second
+		l := newLab(t, cfg, node{block: true}, at(b))
+		require.NoError(t, put(l))
+		require.Len(t, recB.requests(), 1)
+		require.Equal(t, http.MethodPut, recB.requests()[0].method)
+		require.ErrorContains(t, l.m.Status()[0].Err, "no answer within")
+	})
+
+	t.Run("no answer after the request was sent", func(t *testing.T) {
+		a, recA := stalling(t)
+		b, recB := answering(t)
+		cfg := testConfig("")
+		cfg.Timeout = time.Second
+		l := newLab(t, cfg, at(a), at(b))
+		err := put(l)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Len(t, recA.requests(), 1)
+		require.Empty(t, recB.requests(), "the write may have been applied; it is not sent again")
+	})
+
+	t.Run("server error", func(t *testing.T) {
+		a, recA := failing(t, http.StatusServiceUnavailable)
+		b, recB := answering(t)
+		l := newLab(t, testConfig(""), at(a), at(b))
+		err := put(l)
 		var apiErr *APIError
 		require.ErrorAs(t, err, &apiErr)
-		require.Equal(t, http.StatusInternalServerError, apiErr.Status)
+		require.Equal(t, http.StatusServiceUnavailable, apiErr.Status)
 		require.Len(t, recA.requests(), 1)
 		require.Empty(t, recB.requests(), "the write may have been applied; it is not sent again")
 	})
 }
 
 func TestMultiReturnsTheErrorOfTheFirstEndpointWhenNoneAnswers(t *testing.T) {
-	l := newLab(t, testConfig(""), down(t), down(t))
+	l := newLab(t, testConfig(""), at(down(t)), at(down(t)))
 	_, err := l.m.Version(t.Context())
 	var op *net.OpError
 	require.ErrorAs(t, err, &op)
@@ -282,21 +408,33 @@ func TestMultiReturnsTheErrorOfTheFirstEndpointWhenNoneAnswers(t *testing.T) {
 	require.Equal(t, "pve1.lab.invalid:8006", l.m.Current().Address)
 }
 
-func TestMultiStopsAtADeadline(t *testing.T) {
+// A caller that gives up says nothing of the endpoint it was waiting for.
+func TestMultiDoesNotBlameAnEndpointForTheCallersCancellation(t *testing.T) {
 	started := make(chan struct{}, 1)
 	a, _ := labServer(t, func(_ http.ResponseWriter, r *http.Request) {
 		started <- struct{}{}
 		<-r.Context().Done()
 	})
 	b, recB := answering(t)
-	cfg := testConfig("")
-	cfg.Timeout = 100 * time.Millisecond
-	l := newLab(t, cfg, a, b)
+	l := newLab(t, testConfig(""), at(a), at(b))
 
-	_, err := l.m.Version(t.Context())
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := l.m.Version(ctx)
+		done <- err
+	}()
 	<-started
-	require.Empty(t, recB.requests(), "a deadline is for the whole request, not a reason to ask another node")
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request did not return after the context was cancelled")
+	}
+	require.Empty(t, recB.requests())
+	require.NoError(t, l.m.Status()[0].Err)
+	require.Equal(t, "pve1.lab.invalid:8006", l.m.Current().Address)
 }
 
 func TestNewMultiChecksTheEndpoints(t *testing.T) {
@@ -315,6 +453,10 @@ func TestNewMultiChecksTheEndpoints(t *testing.T) {
 		{"an url", withCA, Endpoint{Address: "https://pve2.lab.invalid:8006"}, "address"},
 		{"a path", withCA, Endpoint{Address: "pve2.lab.invalid/api2"}, "address"},
 		{"a port alone", withCA, Endpoint{Address: ":8006"}, "address"},
+		{"port zero", withCA, Endpoint{Address: "pve2.lab.invalid:0"}, "port"},
+		{"port above the range", withCA, Endpoint{Address: "pve2.lab.invalid:65536"}, "port"},
+		{"port that is no number", withCA, Endpoint{Address: "pve2.lab.invalid:https"}, "port"},
+		{"port below zero", withCA, Endpoint{Address: "[fd00:4::2]:-1"}, "port"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -329,13 +471,17 @@ func TestNewMultiChecksTheEndpoints(t *testing.T) {
 		{Address: "fd00:4::3"},
 		{Address: "[fd00:4::4]:8006"},
 		{Address: "127.0.0.1"},
+		{Address: "pve6.lab.invalid:65535"},
 	})
 	require.NoError(t, err)
 	var hosts []string
 	for _, tg := range m.fb.targets {
 		hosts = append(hosts, tg.host)
 	}
-	require.Equal(t, []string{"pve1.lab.invalid:8006", "pve2.lab.invalid:8006", "pve3.lab.invalid:8443", "[fd00:4::3]:8006", "[fd00:4::4]:8006", "127.0.0.1:8006"}, hosts)
+	require.Equal(t, []string{
+		"pve1.lab.invalid:8006", "pve2.lab.invalid:8006", "pve3.lab.invalid:8443",
+		"[fd00:4::3]:8006", "[fd00:4::4]:8006", "127.0.0.1:8006", "pve6.lab.invalid:65535",
+	}, hosts)
 
 	m, err = NewMulti(withCA, nil)
 	require.NoError(t, err)
@@ -344,12 +490,26 @@ func TestNewMultiChecksTheEndpoints(t *testing.T) {
 
 func TestMultiIsAClient(t *testing.T) {
 	a, recA := answering(t)
-	l := newLab(t, testConfig(""), a)
+	l := newLab(t, testConfig(""), at(a))
 	require.NotNil(t, l.m.Client)
 	_, err := l.m.Resources(t.Context())
 	require.Error(t, err, "the version fixture is no list of resources; the call went through the client")
 	require.False(t, errors.Is(err, context.Canceled))
 	require.Equal(t, "/api2/json/cluster/resources?type=vm", recA.requests()[0].uri)
+}
+
+func TestEveryTransportGivesUpOnADialInTime(t *testing.T) {
+	c, err := New(testConfig("https://127.0.0.1:8006"))
+	require.NoError(t, err)
+	require.NotNil(t, c.hc.Transport.(*http.Transport).DialContext)
+
+	// A dialer with a timeout fails a connection that gets nowhere in time,
+	// whatever the request's deadline.
+	began := time.Now()
+	d := &net.Dialer{Timeout: 10 * time.Millisecond}
+	_, err = d.DialContext(t.Context(), "tcp", "192.0.2.1:8006")
+	require.Error(t, err)
+	require.Less(t, time.Since(began), time.Second)
 }
 
 func portOf(t *testing.T, srv *httptest.Server) string {
