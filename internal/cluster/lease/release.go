@@ -8,7 +8,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-// Release gives the lease back on a clean stop: no write passes the gate
+// Release gives the lease back on a clean stop, except on a node that stands
+// alone, which keeps the lock (keepLock): no write passes the gate
 // from its start, leader.json gets releasedAt, the lock is refreshed once and
 // removed right after that refresh found the tenure's nonce. A keeper that
 // cannot write, fenced or without quorum, leaves the lock to expire: a fenced
@@ -30,10 +31,14 @@ func (k *Keeper) Handoff(ctx context.Context, to string) error {
 }
 
 func (k *Keeper) letGo(ctx context.Context, to string, closing bool) error {
+	alone := closing && to == "" && k.standalone()
 	if err := k.takeOp(ctx); err != nil {
 		return err
 	}
 	defer k.putOp()
+	if alone {
+		return k.keepLock()
+	}
 	quorate, at := k.cfg.Quorum()
 	k.mu.Lock()
 	if closing {
@@ -107,6 +112,22 @@ func (k *Keeper) letGo(ctx context.Context, to string, closing bool) error {
 		k.holdBack = k.mono() + HandoffBackoff
 	}
 	k.log.Info().Str("epoch", epoch).Msg("the lease is " + why)
+	return nil
+}
+
+// keepLock ends the tenure on a clean stop of a node that stands alone
+// without touching the lock or leader.json: nobody else can take it, and the
+// next start in the same boot keeps the epoch. The caller holds op.
+func (k *Keeper) keepLock() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.closed = true
+	if !k.holder {
+		return nil
+	}
+	epoch := epochOf(k.rec.Writer)
+	k.endTenure("stopped; a node that stands alone keeps its lock for its next start")
+	k.log.Info().Str("epoch", epoch).Msg("stopped; the lock is kept, as this node stands alone")
 	return nil
 }
 

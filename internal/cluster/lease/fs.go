@@ -11,8 +11,9 @@ import (
 // errno pmxcfs answered, for errors.Is: EEXIST from Mkdir is a lock that is
 // there; EACCES is a refresh of another node's lock or with an older mtime,
 // any write without quorum, and every answer to an unlock request, also to
-// one that has the lock removed; ENOENT is a lock that is gone; ENOTEMPTY a
-// lock something put a file into. Rmdir removes any lock, whoever owns it.
+// one that has the lock removed, or one on a lock with a file inside, which
+// never expires; ENOENT is a lock that is gone; EBUSY a refresh during a
+// change of the membership. Rmdir removes any lock, whoever owns it.
 type FS interface {
 	// Mkdir makes the directory, never its parents.
 	Mkdir(path string) error
@@ -25,6 +26,8 @@ type FS interface {
 	// Rmdir removes the directory. pmxcfs does not check the owner of a
 	// lock: only a holder that just refreshed it may call it.
 	Rmdir(path string) error
+	// Entries counts what is in the directory, which any node may list.
+	Entries(path string) (int, error)
 }
 
 var (

@@ -135,6 +135,11 @@ type Config struct {
 	// identity of the cluster. why says what keeps it from being one.
 	Eligible func() (ok bool, why string)
 	Guard    Guard
+	// Standalone says that the node stands alone: the members file names no
+	// cluster and the registry no other node. Such a node has nobody to give
+	// the lease to: a clean stop keeps the lock, and after a reboot it takes
+	// its own lock at once with a new epoch. nil is a node of a cluster.
+	Standalone func() bool
 	// Exclusive takes the lock that keeps a second keeper of the node out,
 	// ProcessLock(DefaultProcessLock) on a node; it fails with ErrRunning
 	// while another one holds it. Run holds it as long as it runs.

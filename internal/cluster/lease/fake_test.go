@@ -226,7 +226,13 @@ func (p *pmxcfs) expired(path string, l *lockDir) bool {
 	}
 	s, ok := j.seen[path]
 	now := j.clocks.Now().Unix()
-	return ok && s.version == l.version && now > s.at && now-s.at > lockTimeout
+	if ok && now < s.at {
+		// The clock of the judge went back behind the change it saw:
+		// pmxcfs starts its count again, as the lab measured.
+		j.seen[path] = sighting{version: s.version, at: now}
+		return false
+	}
+	return ok && s.version == l.version && now-s.at > lockTimeout
 }
 
 // settle removes the locks unlock requests asked to remove, unless they
@@ -392,6 +398,21 @@ func (f nodeFS) UnlockRequest(path string) error {
 		p.removing[path] = l.version
 	}
 	return p.record(f.node, "unlock", 0, errno("utime", path, syscall.EACCES))
+}
+
+func (f nodeFS) Entries(path string) (int, error) {
+	if err := f.p.begin(f.node, "entries"); err != nil {
+		return 0, err
+	}
+	p := f.p
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.settle()
+	l, ok := p.locks[path]
+	if !ok {
+		return 0, errno("open", path, syscall.ENOENT)
+	}
+	return l.files, nil
 }
 
 func (f nodeFS) Rmdir(path string) error {

@@ -34,6 +34,11 @@ func (dirLock) UnlockRequest(path string) error {
 
 func (dirLock) Rmdir(path string) error { return os.Remove(path) }
 
+func (dirLock) Entries(path string) (int, error) {
+	entries, err := os.ReadDir(path)
+	return len(entries), err
+}
+
 // standaloneLease is what the daemon of a test keeps its lease with: the
 // cluster filesystem of a node that stands alone, below base.
 func standaloneLease(t *testing.T, base, node string) daemon.LeaseDeps {

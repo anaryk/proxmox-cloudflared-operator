@@ -86,8 +86,18 @@ func (k *Keeper) mkdir(ctx context.Context) error {
 // that is fresh. That is why a node sends one only while its agent hears no
 // live controller (mayTry).
 func (k *Keeper) contend(ctx context.Context, stored store.LeaderRecord, found bool) {
+	// pmxcfs never lets a lock with a file inside expire, and answers an
+	// unlock request on it as on a fresh one: it is listed first.
+	var files int
+	if err := k.bounded(ctx, func() (err error) { files, err = k.cfg.FS.Entries(k.cfg.Lock); return err }); err == nil && files > 0 {
+		k.waitAlarm(fmt.Sprintf("something put a file into the lock %s, so it never expires; pco never removes it", k.cfg.Lock))
+		return
+	}
 	var mine string
-	if found && stored.Node == k.cfg.Node && stored.Incarnation == k.cfg.Incarnation {
+	// A node that stands alone takes its own lock after a reboot too: no
+	// other node can have held it since. The claim draws a new epoch for the
+	// new boot.
+	if found && stored.Node == k.cfg.Node && (stored.Incarnation == k.cfg.Incarnation || k.standalone()) {
 		start := k.stamp()
 		k.mu.Lock()
 		mtime := k.nextMtime(start.wall)
@@ -101,7 +111,7 @@ func (k *Keeper) contend(ctx context.Context, stored store.LeaderRecord, found b
 			// pmxcfs refuses an mtime older than the lock's: a process of
 			// this boot set a later one, and the wall clock went back since.
 			mine = "pmxcfs refused the refresh of the lock this node and boot made, most likely because the wall " +
-				"clock stepped back behind the lock's mtime; the epoch is lost and the lock is taken again once it expired; "
+				"clock stepped back behind the lock's mtime; the epoch is lost and the lock is taken again once it expired, about two minutes later; "
 		}
 	}
 	err := k.bounded(ctx, func() error { return k.cfg.FS.UnlockRequest(k.cfg.Lock) })

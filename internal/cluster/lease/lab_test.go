@@ -38,6 +38,9 @@ type lab struct {
 	// locked are the nodes where a keeper holds the process lock.
 	lockMu sync.Mutex
 	locked map[string]bool
+	// alone says that the node stands alone: no cluster in the members
+	// file, no other node in the registry.
+	alone atomic.Bool
 }
 
 // member is one keeper and what its node tells it.
@@ -133,6 +136,7 @@ func (l *lab) build(node, incarnation string, exclusive func() (func(), error)) 
 		Remembered:  m.rememberedEpoch,
 		Eligible:    m.eligible,
 		Guard:       m.heardLive,
+		Standalone:  l.alone.Load,
 		Exclusive:   exclusive,
 		Clocks:      c,
 		Rand:        rand.Reader,

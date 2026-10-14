@@ -2,6 +2,7 @@ package lease
 
 import (
 	"io/fs"
+	"os"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -32,6 +33,11 @@ func (systemFS) Rmdir(path string) error {
 		return &fs.PathError{Op: "rmdir", Path: path, Err: err}
 	}
 	return nil
+}
+
+func (systemFS) Entries(path string) (int, error) {
+	entries, err := os.ReadDir(path)
+	return len(entries), err
 }
 
 // utimes sets the mtime of path and its atime to zero, as utime(path, 0,

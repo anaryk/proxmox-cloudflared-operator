@@ -342,6 +342,12 @@ func (k *Keeper) endTenure(why string) {
 	k.nextTry = k.mono()
 }
 
+// standalone says whether the node stands alone; it may read files, so the
+// caller holds no lock.
+func (k *Keeper) standalone() bool {
+	return k.cfg.Standalone != nil && k.cfg.Standalone()
+}
+
 // epochOf names the epoch of a writer in the logs.
 func epochOf(w planner.Writer) string { return fmt.Sprintf("%d.%s", w.Generation, w.Nonce) }
 

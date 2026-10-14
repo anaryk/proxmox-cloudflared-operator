@@ -48,6 +48,12 @@ func (f *dirFS) UnlockRequest(path string) error {
 	return os.Chtimes(path, time.Unix(0, 0), time.Unix(0, 0))
 }
 
+func (f *dirFS) Entries(path string) (int, error) {
+	f.count("entries")
+	entries, err := os.ReadDir(path)
+	return len(entries), err
+}
+
 func (f *dirFS) Rmdir(path string) error {
 	f.count("rmdir")
 	return os.Remove(path)

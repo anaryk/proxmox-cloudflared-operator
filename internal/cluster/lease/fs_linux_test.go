@@ -35,7 +35,13 @@ func TestSystemFSLinux(t *testing.T) {
 	require.Equal(t, unix.Timespec{}, mtime)
 
 	file := filepath.Join(lock, "file")
+	n, err := f.Entries(lock)
+	require.NoError(t, err)
+	require.Zero(t, n)
 	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	n, err = f.Entries(lock)
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "a file in the lock is seen")
 	require.ErrorIs(t, f.Rmdir(lock), syscall.ENOTEMPTY)
 	require.NoError(t, os.Remove(file))
 	require.NoError(t, f.Rmdir(lock))

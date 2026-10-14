@@ -18,3 +18,4 @@ func (unsupportedFS) Mkdir(string) error              { return errUnsupported }
 func (unsupportedFS) Refresh(string, time.Time) error { return errUnsupported }
 func (unsupportedFS) UnlockRequest(string) error      { return errUnsupported }
 func (unsupportedFS) Rmdir(string) error              { return errUnsupported }
+func (unsupportedFS) Entries(string) (int, error)     { return 0, errUnsupported }
