@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"maps"
 	"net/netip"
 	"slices"
@@ -98,18 +99,29 @@ func (e *Engine) sentTargets() map[egress.Target]bool {
 // configuration of a tunnel that is gone. Any other tunnel keeps what was last
 // verified of it.
 func (c *cycleRun) noteVerified(tunnels []reconcile.TunnelState) {
-	rules := make(map[string][]planner.IngressRule, len(c.plan.Tunnels))
+	rules := make(map[tunnelRef][]planner.IngressRule, len(c.plan.Tunnels))
 	for _, p := range c.plan.Tunnels {
-		rules[p.AccountID] = p.Rules
+		rules[tunnelRef{p.AccountID, p.Name}] = p.Rules
 	}
 	for _, t := range tunnels {
+		ref := tunnelRef{t.AccountID, t.Name}
 		switch {
 		case t.Verified:
-			c.e.verified[t.AccountID] = ruleTargets(rules[t.AccountID])
+			c.e.verified[ref] = ruleTargets(rules[ref])
 		case !t.Exists && !t.Unknown:
-			delete(c.e.verified, t.AccountID)
+			delete(c.e.verified, ref)
 		}
 	}
+}
+
+// tunnelRef names one tunnel of the install: the shared one of an account
+// and those pinned to nodes have names of their own.
+type tunnelRef struct {
+	account, name string
+}
+
+func compareTunnelRefs(a, b tunnelRef) int {
+	return cmp.Or(cmp.Compare(a.account, b.account), cmp.Compare(a.name, b.name))
 }
 
 // ruleTargets returns the origins rules send a connector to, sorted and once
@@ -135,17 +147,29 @@ func ruleTargets(rules []planner.IngressRule) []egress.Target {
 // earlier process. The set is the agent's, which keeps it itself.
 func (e *Engine) rememberEgress(m store.EngineMemory) {
 	for _, v := range m.Verified {
-		e.verified[v.AccountID] = fromAddrPorts(v.Targets)
+		// One saved before tunnels had names of their own is the shared
+		// tunnel's.
+		e.verified[tunnelRef{v.AccountID, cmp.Or(v.Name, e.sharedName(m.InstallID))}] = fromAddrPorts(v.Targets)
 	}
 }
 
 // egressMemory is the set and the verified configurations as the memory
-// keeps them.
+// keeps them; the shared tunnel goes without its name.
 func (e *Engine) egressMemory(m *store.EngineMemory) {
 	m.Egress = toAddrPorts(e.egress)
-	for _, account := range slices.Sorted(maps.Keys(e.verified)) {
-		m.Verified = append(m.Verified, store.VerifiedTargets{AccountID: account, Targets: toAddrPorts(e.verified[account])})
+	for _, ref := range slices.SortedFunc(maps.Keys(e.verified), compareTunnelRefs) {
+		v := store.VerifiedTargets{AccountID: ref.account, Targets: toAddrPorts(e.verified[ref])}
+		if ref.name != e.sharedName(m.InstallID) {
+			v.Name = ref.name
+		}
+		m.Verified = append(m.Verified, v)
 	}
+}
+
+// sharedName is the name of the shared tunnel of the install, of install
+// when the memory names one.
+func (e *Engine) sharedName(install string) string {
+	return planner.TunnelName(cmp.Or(install, e.memoryOf))
 }
 
 func fromAddrPorts(aps []netip.AddrPort) []egress.Target {

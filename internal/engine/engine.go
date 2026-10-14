@@ -246,11 +246,11 @@ type Engine struct {
 	fleet *LocalFleet
 	seqs  seqs
 	// egress is the set of targets the agent last gave the egress filter, and
-	// verified, by account, the targets of the tunnel configuration last
+	// verified, by tunnel, the targets of the tunnel configuration last
 	// verified at Cloudflare. Both are kept in the memory, the set for an
 	// earlier release, whose engine kept it.
 	egress   []egress.Target
-	verified map[string][]egress.Target
+	verified map[tunnelRef][]egress.Target
 	// moving are the verifications of addresses whose MAC moved that the
 	// agent runs, which Run waits for.
 	moving sync.WaitGroup
@@ -421,7 +421,7 @@ func New(d Deps) (*Engine, error) {
 		seen:      make(map[string]seenTunnel),
 		reports:   make(map[string]credentials.Report),
 		recheckAt: make(map[string]time.Time),
-		verified:  make(map[string][]egress.Target),
+		verified:  make(map[tunnelRef][]egress.Target),
 		fleet:     d.Fleet,
 		state:     first,
 

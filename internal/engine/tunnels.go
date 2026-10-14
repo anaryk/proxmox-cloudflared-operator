@@ -41,12 +41,7 @@ func (c *cycleRun) reconcileTunnels() bool {
 	c.noteVerified(res.Tunnels)
 	c.tunnelVerdict = res.Verdict
 	c.tunnels = nonNil(res.Tunnels)
-	c.unreported = nil
-	for _, v := range c.st.Tunnels {
-		if v.ID != "" && !slices.ContainsFunc(res.Tunnels, func(t reconcile.TunnelState) bool { return t.AccountID == v.AccountID }) {
-			c.unreported = append(c.unreported, v)
-		}
-	}
+	c.unreported = c.unreportedOf(res.Tunnels)
 	c.st.Tunnels = make([]TunnelView, 0, len(res.Tunnels))
 	for _, t := range res.Tunnels {
 		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t})
@@ -65,6 +60,20 @@ func (c *cycleRun) reconcileTunnels() bool {
 		return false
 	}
 	return c.writerStill("after the tunnel run")
+}
+
+// unreportedOf are the tunnels with an id the last state showed that the
+// run did not report on, told apart by account and name.
+func (c *cycleRun) unreportedOf(reported []reconcile.TunnelState) []TunnelView {
+	var out []TunnelView
+	for _, v := range c.st.Tunnels {
+		if v.ID != "" && !slices.ContainsFunc(reported, func(t reconcile.TunnelState) bool {
+			return t.AccountID == v.AccountID && t.Name == v.Name
+		}) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // behind says whether the run stopped on a sentinel of this install that an

@@ -156,35 +156,40 @@ func (c *cycleRun) snapshotGuests(targets []agentproto.Target) []model.Guest {
 	return out
 }
 
-// withVerified gives each tunnel the targets of its account's configuration
-// last verified at Cloudflare, and with others adds, for every other account
-// with one, a tunnel the node keeps as it is: the egress set keeps what they
-// send a connector to until a configuration without it is verified.
+// withVerified gives each tunnel the targets of its configuration last
+// verified at Cloudflare, and with others adds every other tunnel with one,
+// which the node keeps as it is: the egress set keeps what they send a
+// connector to until a configuration without it is verified.
 func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel, others bool) []agentproto.Tunnel {
 	out := make([]agentproto.Tunnel, 0, len(tunnels)+len(c.e.verified))
-	listed := map[string]bool{}
+	listed := map[tunnelRef]bool{}
 	for _, t := range tunnels {
-		t.Verified = toAddrPorts(c.e.verified[t.AccountID])
-		listed[t.AccountID] = true
+		ref := tunnelRef{t.AccountID, t.Name}
+		t.Verified = toAddrPorts(c.e.verified[ref])
+		listed[ref] = true
 		out = append(out, t)
 	}
-	for _, account := range slices.Sorted(maps.Keys(c.e.verified)) {
-		if listed[account] || !others {
+	for _, ref := range slices.SortedFunc(maps.Keys(c.e.verified), compareTunnelRefs) {
+		if listed[ref] || !others {
 			continue
 		}
-		out = append(out, agentproto.Tunnel{
-			AccountID: account, TunnelID: c.e.seenIn(account), Name: planner.TunnelName(c.install.ID),
-			Kind: agentproto.TunnelShared, Verified: toAddrPorts(c.e.verified[account]),
-		})
+		t := agentproto.Tunnel{
+			AccountID: ref.account, TunnelID: c.e.seenIn(ref), Name: ref.name,
+			Kind: agentproto.TunnelShared, Verified: toAddrPorts(c.e.verified[ref]),
+		}
+		if _, pinned := planner.PinnedTunnelNode(c.install.ID, ref.name); pinned {
+			t.Kind = agentproto.TunnelPinned
+		}
+		out = append(out, t)
 	}
 	return out
 }
 
-// seenIn is the id of the tunnel of this install seen in an account; empty
+// seenIn is the id of a tunnel of this install seen in its account; empty
 // when none was.
-func (e *Engine) seenIn(account string) string {
+func (e *Engine) seenIn(ref tunnelRef) string {
 	for _, id := range slices.Sorted(maps.Keys(e.seen)) {
-		if e.seen[id].account == account {
+		if t := e.seen[id]; t.account == ref.account && t.name == ref.name {
 			return id
 		}
 	}

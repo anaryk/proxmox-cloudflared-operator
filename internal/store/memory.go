@@ -51,10 +51,13 @@ type EngineMemory struct {
 	Verified []VerifiedTargets `json:"verified,omitempty"`
 }
 
-// VerifiedTargets are the targets of the tunnel configuration of an account
-// as it was last verified at Cloudflare.
+// VerifiedTargets are the targets of the configuration of a tunnel of an
+// account as it was last verified at Cloudflare. Name is that of a tunnel
+// pinned to a node; the shared tunnel goes without, as before tunnels were
+// told apart.
 type VerifiedTargets struct {
 	AccountID string           `json:"accountId"`
+	Name      string           `json:"name,omitempty"`
 	Targets   []netip.AddrPort `json:"targets"`
 }
 
@@ -142,7 +145,17 @@ func (m EngineMemory) sorted() EngineMemory {
 	for i := range m.Verified {
 		m.Verified[i].Targets = sortedTargets(m.Verified[i].Targets)
 	}
-	slices.SortFunc(m.Verified, func(a, b VerifiedTargets) int { return cmp.Compare(a.AccountID, b.AccountID) })
+	// The shared tunnel comes last of its account: an earlier release keeps
+	// the last entry of an account, and knows the shared tunnel alone.
+	shared := func(v VerifiedTargets) int {
+		if v.Name == "" {
+			return 1
+		}
+		return 0
+	}
+	slices.SortFunc(m.Verified, func(a, b VerifiedTargets) int {
+		return cmp.Or(cmp.Compare(a.AccountID, b.AccountID), cmp.Compare(shared(a), shared(b)), cmp.Compare(a.Name, b.Name))
+	})
 	if len(m.Served) == 0 {
 		m.Served = nil
 	}
