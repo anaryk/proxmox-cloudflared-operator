@@ -51,14 +51,22 @@ func blockID(addr netip.Addr) string {
 	return strings.ReplaceAll(addr.String(), ":", "-")
 }
 
-// Blocks returns the blocked addresses, by address.
+// Blocks returns the blocked addresses, by address. A block is read only
+// from the file of its address: one that names another is an error, since
+// DeleteBlock goes by the file name and would never reach it.
 func (s *Store) Blocks() (map[netip.Addr]Block, error) {
-	list, err := loadList[Block](s.cluster, kindBlocks)
+	byID, err := loadMap(s.cluster, kindBlocks, "address", func(b *Block) *string {
+		id := ""
+		if b.Addr.IsValid() {
+			id = blockID(b.Addr)
+		}
+		return &id
+	})
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[netip.Addr]Block, len(list))
-	for _, b := range list {
+	out := make(map[netip.Addr]Block, len(byID))
+	for _, b := range byID {
 		if err := b.check(); err != nil {
 			return nil, err
 		}

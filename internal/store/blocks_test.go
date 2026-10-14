@@ -1,7 +1,10 @@
 package store
 
 import (
+	"encoding/json"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -37,6 +40,30 @@ func TestBlocksRoundTrip(t *testing.T) {
 	got, err = s.Blocks()
 	require.NoError(t, err)
 	require.Equal(t, map[netip.Addr]Block{four.Addr: four}, got)
+}
+
+// A block is read only from the file of its address: one edited by hand to
+// name another address would be a second block of it that DeleteBlock,
+// which goes by the file name, never reaches. The error names the file.
+func TestBlocksRefuseAFileThatNamesAnotherAddress(t *testing.T) {
+	s, p := openStore(t)
+	four := Block{Addr: netip.MustParseAddr("10.0.0.22"), Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, MAC: "bc:24:11:00:02:01",
+		Node: "pve3", Port: "tap140i0", Why: "conflict", Since: t0, LastReport: t0}
+	require.NoError(t, s.SaveBlock(four))
+	raw, err := os.ReadFile(filepath.Join(p.Cluster, "blocks", "10.0.0.22.json"))
+	require.NoError(t, err)
+	var env envelope
+	require.NoError(t, json.Unmarshal(raw, &env))
+	env.ID = "10.0.0.23"
+	edited, err := json.Marshal(env)
+	require.NoError(t, err)
+	path := filepath.Join(p.Cluster, "blocks", "10.0.0.23.json")
+	require.NoError(t, os.WriteFile(path, edited, 0o600))
+
+	_, err = s.Blocks()
+
+	require.ErrorContains(t, err, path)
+	require.ErrorContains(t, err, `"10.0.0.22"`)
 }
 
 func TestSaveBlockRefusesWhatIsNoBlock(t *testing.T) {
