@@ -337,6 +337,7 @@ func (s *managedStep) run() ManagedView {
 	}
 	s.ipam = managednet.NewIPAM(c.e.d.Store, n.Prefix, func() time.Time { return c.now })
 	in := s.input()
+	s.legsMissing()
 	extra := s.impacts(&in)
 	decisions := managednet.Decide(in)
 	s.v.Waiting = append(s.v.Waiting, extra...)
@@ -367,6 +368,21 @@ func (s *managedStep) run() ManagedView {
 	s.events()
 	s.askAgain()
 	return s.v
+}
+
+// problemNoManagedLeg is the line of a node with an agent that has no leg
+// of the managed network, whose guests are not reached there.
+const problemNoManagedLeg = "the managed network has no leg on node %s; pco network managed enable gives it one once its agent finds pconet there"
+
+// legsMissing says of each node whose agent writes its guests' cards, and
+// that has no leg of the managed network, that it has none: a leg is made
+// only once that node's agent found pconet there, never by a cycle alone.
+func (s *managedStep) legsMissing() {
+	for _, node := range slices.Sorted(maps.Keys(s.agents)) {
+		if _, has := s.net.Legs[node]; !has && node != s.c.e.d.Node {
+			s.c.problem(problemNoManagedLeg, node)
+		}
+	}
 }
 
 // askAgain asks for the next cycle at once while guests are left to attach

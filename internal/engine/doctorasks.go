@@ -35,6 +35,11 @@ type doctorAsk struct {
 	action agentproto.Action
 	answer *agentproto.ActionResult
 	done   chan struct{} // closed once answered
+	// epoch is the epoch the action was first handed out under, once
+	// listed: it is handed out under that epoch alone, and a probe is
+	// answered only by a status of it.
+	epoch  agentproto.Epoch
+	listed bool
 }
 
 // AskDoctor hands the agent of each node a doctor action, has a cycle put
@@ -105,13 +110,22 @@ func (e *Engine) askAgents(ctx context.Context, kind string, args map[string]jso
 	return out, nil
 }
 
-// actionsFor are the actions asked of node it has not answered.
-func (d *doctorAsks) actionsFor(node string) []agentproto.Action {
+// actionsFor are the actions asked of node it has not answered, under
+// epoch: an action is bound to the epoch of the snapshot it was first
+// listed in, and a later epoch does not hand it out again.
+func (d *doctorAsks) actionsFor(node string, epoch agentproto.Epoch) []agentproto.Action {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var out []agentproto.Action
 	for _, id := range slices.Sorted(maps.Keys(d.acts)) {
-		if a := d.acts[id]; a.node == node && a.answer == nil {
+		a := d.acts[id]
+		if a.node != node || a.answer != nil {
+			continue
+		}
+		if !a.listed {
+			a.listed, a.epoch = true, epoch
+		}
+		if a.epoch == epoch {
 			out = append(out, a.action)
 		}
 	}
@@ -121,12 +135,19 @@ func (d *doctorAsks) actionsFor(node string) []agentproto.Action {
 // take keeps the answers to the actions asked that a status of node
 // carries. An answer of another node's action is not taken: an answer is
 // the word of the node whose agent sent the status, of that node alone.
-func (d *doctorAsks) take(node string, results []agentproto.ActionResult) {
+//
+// The answer to a probe is taken only from a status of the epoch the probe
+// was handed out under: what a node found under another controller's
+// snapshot, or before this one listed it, is not this probe's answer.
+func (d *doctorAsks) take(node string, st agentproto.Status) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, res := range results {
+	for _, res := range st.Actions {
 		a, ok := d.acts[res.ID]
 		if !ok || a.node != node || a.answer != nil {
+			continue
+		}
+		if a.action.Kind == agentproto.ActionProbe && (!a.listed || st.EpochSeen != a.epoch) {
 			continue
 		}
 		answer := res

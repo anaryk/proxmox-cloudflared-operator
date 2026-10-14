@@ -1245,14 +1245,18 @@ it takes is limited, so that neither a node nor a guest can steer it:
 Before a leg goes on another node, the agent of that node probes it and answers with the
 interfaces of its node and who answered for the address
 ([On a cluster](networking.md#on-a-cluster)). The controller reads an answer only from the node
-it asked, and only within its bounds: 512 interfaces of 32 addresses each, 64 MACs that
+it asked, in a status of the epoch it asked under, and only within its bounds: 512 interfaces of 32 addresses each, 64 MACs that
 answered, 128 KiB in all. An answer over them, one it cannot read, an error, or no answer within
 20 seconds makes no leg on that node. What an answer says can only take a leg away: a bridge is
 one to attach to only when Proxmox has it configured on that node, or it is a vnet, whatever the
 agent lists; the scope `cluster` stands on the configuration of each node and the type of the
 SDN zone alone; the node's own addresses and routes the agent lists add refusals. A lying agent
 can keep its own node from a leg, or have it given a leg on a bridge of its own node that is
-there; it cannot give another node a leg or widen what the network reaches.
+there; it cannot give another node a leg or widen what the network reaches. Every attach and
+every enable asks afresh, so an answer from before a bridge changed is never used again, and a
+node that gets no leg stays without one, with a problem line for the managed network, until an
+attach or an enable that asks it again. A reader of the web interface gets the legs without
+their MACs, also where a leg's problem names one.
 
 ### What a compromised part can do
 

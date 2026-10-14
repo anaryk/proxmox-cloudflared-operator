@@ -81,7 +81,7 @@ func TestTheDoctorStopsWaitingForAnAgent(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Empty(t, got)
-	require.Empty(t, e.eng.asks.actionsFor("pve2"))
+	require.Empty(t, e.eng.asks.actionsFor("pve2", agentproto.Epoch{}))
 }
 
 // One ask runs at a time: another that cannot start within its wait hands

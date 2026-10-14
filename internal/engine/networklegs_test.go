@@ -14,6 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -128,7 +129,8 @@ func (c *netCluster) probes(t *testing.T, answer func(node string, p agentproto.
 				}
 				res := answer(node, p)
 				res.ID = act.ID
-				c.eng.TakeAgentEvents(node, agentproto.Status{Node: node, AgentStartedAt: t0.Add(-time.Hour), Actions: []agentproto.ActionResult{res}}, s.Epoch)
+				c.eng.TakeAgentEvents(node, agentproto.Status{Node: node, AgentStartedAt: t0.Add(-time.Hour), EpochSeen: s.Epoch,
+					Actions: []agentproto.ActionResult{res}}, s.Epoch)
 			}
 		}
 	}
@@ -258,7 +260,7 @@ func TestAnAnswerOfAnotherNodeIsNotTaken(t *testing.T) {
 				}
 				res := probeAnswer("pve3", agentproto.Probe{})
 				res.ID = s.Actions[0].ID
-				c.eng.TakeAgentEvents("pve3", agentproto.Status{Node: "pve3", Actions: []agentproto.ActionResult{res}}, s.Epoch)
+				c.eng.TakeAgentEvents("pve3", agentproto.Status{Node: "pve3", EpochSeen: s.Epoch, Actions: []agentproto.ActionResult{res}}, s.Epoch)
 				return
 			}
 		}()
@@ -525,4 +527,66 @@ func TestTheManagedNetworkGetsALegOnEveryNodeWithAnAgent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, map[string]netip.Addr{testNode: first, "pve2": first, "pve3": first}, stored[gateway.ManagedBridge].Legs)
 	require.Contains(t, c.eventMessages(), "the managed network has a leg on node pve3 now: 10.203.118.1")
+}
+
+// An answer under another epoch than the one the probe was handed out
+// under is not taken: the node gets no leg, and nothing is saved.
+func TestAnAnswerOfAnotherEpochIsNotTaken(t *testing.T) {
+	c := newNetCluster(t)
+	c.eng.timeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		if d == probeWait {
+			d = 300 * time.Millisecond
+		}
+		return context.WithTimeout(ctx, d)
+	}
+	var err error
+	c.probes(t, nil, func() {
+		go func() {
+			for range 50 {
+				time.Sleep(5 * time.Millisecond)
+				s, ok := c.r.lastOf("pve2")
+				if !ok || len(s.Actions) == 0 {
+					continue
+				}
+				res := probeAnswer("pve2", agentproto.Probe{})
+				res.ID = s.Actions[0].ID
+				other := s.Epoch
+				other.Generation++
+				c.eng.TakeAgentEvents("pve2", agentproto.Status{Node: "pve2", EpochSeen: other, Actions: []agentproto.ActionResult{res}}, s.Epoch)
+				return
+			}
+		}()
+		_, err = c.eng.Attach(t.Context(), AttachRequest{Bridge: "vmbr1", Prefix: netip.MustParsePrefix("10.77.0.0/24"),
+			Address: netip.MustParseAddr("10.77.0.250"), Scope: store.ScopeNode, Node: "pve2"})
+	})
+
+	require.ErrorContains(t, err, "the agent of node pve2 did not answer the probe within")
+	stored, serr := c.store.Networks()
+	require.NoError(t, serr)
+	require.Empty(t, stored)
+}
+
+// A node with an agent and no leg of the managed network says so every
+// cycle, until an enable gives it one.
+func TestANodeWithoutAManagedLegIsAProblem(t *testing.T) {
+	c := newNetCluster(t)
+	facts := &managedFacts{
+		registered: []string{"cf-tunnel", managednet.Tag},
+		vnet:       ManagedVnet{Exists: true, ZoneType: "simple", IsolatePorts: true},
+		cluster:    pve.ClusterFirewallOptions{Enabled: true},
+		service:    "running",
+		guestFW:    map[string]bool{},
+		guestFWErr: map[string]error{},
+	}
+	c.managed = facts.deps
+	host := managednet.NewHostConfigurer(&hostRunner{answers: map[string]string{}}, testNode)
+	c.guests = host
+	saveManagedNetwork(t, c.store, 1)
+	c.eng = c.newEngine()
+	c.watchHere(t)
+
+	st := c.settle()
+
+	require.Contains(t, st.Problems, "the managed network has no leg on node pve2; pco network managed enable gives it one once its agent finds pconet there")
+	require.Contains(t, st.Problems, "the managed network has no leg on node pve3; pco network managed enable gives it one once its agent finds pconet there")
 }
