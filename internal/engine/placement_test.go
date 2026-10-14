@@ -367,7 +367,9 @@ func TestAReplicaIsShownAtItsOwnLevelAndARouteAtTheLowest(t *testing.T) {
 		w.acts["pve3"].kind = pki.KindAppliance
 		st := w.tick(time.Second)
 		require.True(t, replica(st, "www.example.com", "pve2").Attested)
+		require.Equal(t, "pve1", replica(st, "www.example.com", "pve2").AttestedBy, "the node that runs the guest vouches")
 		require.False(t, replica(st, "www.example.com", "pve3").Attested, "an appliance agent proves no port")
+		require.Empty(t, replica(st, "www.example.com", "pve3").AttestedBy)
 	})
 	t.Run("the lowest level over the replicas", func(t *testing.T) {
 		w := threeNodes(t)

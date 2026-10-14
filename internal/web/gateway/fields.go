@@ -193,7 +193,7 @@ var routeFields = map[string]decision{
 // replica, placement and move, filtered with the route.
 var (
 	replicaFields = map[string]decision{
-		"node": kept, "level": kept, "attested": kept, "ok": kept, "inSet": kept,
+		"node": kept, "level": kept, "attested": kept, "attestedBy": kept, "ok": kept, "inSet": kept,
 		"reason": filteredBy("routes"),
 	}
 	placementFields = map[string]decision{

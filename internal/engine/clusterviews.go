@@ -84,12 +84,14 @@ type JoinUseView struct {
 type ReplicaView struct {
 	Node string `json:"node"`
 	// Level is the level proven on that node; Attested says the port was
-	// proven by the hosting node's forwarding table, port (attested).
-	Level    string `json:"level,omitempty"`
-	Attested bool   `json:"attested,omitempty"`
-	OK       bool   `json:"ok"`
-	Reason   string `json:"reason,omitempty"`
-	InSet    bool   `json:"inSet"`
+	// proven by the hosting node's forwarding table, port (attested), and
+	// AttestedBy names that node, without which no page shows it.
+	Level      string `json:"level,omitempty"`
+	Attested   bool   `json:"attested,omitempty"`
+	AttestedBy string `json:"attestedBy,omitempty"`
+	OK         bool   `json:"ok"`
+	Reason     string `json:"reason,omitempty"`
+	InSet      bool   `json:"inSet"`
 }
 
 // The kinds of PlacementView and of a tunnel.

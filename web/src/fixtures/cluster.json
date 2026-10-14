@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "7fbfaa2d77195938",
+  "digest": "09a11443311a13e9",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -66,6 +66,7 @@
           "node": "pve2",
           "level": "port",
           "attested": true,
+          "attestedBy": "pve1",
           "ok": true,
           "inSet": true
         }
@@ -217,6 +218,7 @@
           "node": "pve1",
           "level": "port",
           "attested": true,
+          "attestedBy": "pve2",
           "ok": true,
           "inSet": true
         },
@@ -434,6 +436,7 @@
           "node": "pve2",
           "level": "port",
           "attested": true,
+          "attestedBy": "pve1",
           "ok": true,
           "inSet": true
         }
@@ -489,6 +492,7 @@
           "node": "pve2",
           "level": "port",
           "attested": true,
+          "attestedBy": "pve1",
           "ok": true,
           "inSet": true
         }
@@ -561,6 +565,7 @@
           "node": "pve2",
           "level": "port",
           "attested": true,
+          "attestedBy": "pve1",
           "ok": true,
           "inSet": true
         }
@@ -628,6 +633,7 @@
           "node": "pve2",
           "level": "port",
           "attested": true,
+          "attestedBy": "pve1",
           "ok": true,
           "inSet": true
         }
@@ -685,6 +691,7 @@
           "node": "pve2",
           "level": "port",
           "attested": true,
+          "attestedBy": "pve1",
           "ok": true,
           "inSet": true
         }

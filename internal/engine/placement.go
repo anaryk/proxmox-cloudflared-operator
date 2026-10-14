@@ -693,12 +693,28 @@ func (c *cycleRun) replicaViews(rt model.Route, record placed, replicas []string
 			// agent's word of an attested port is not shown as one.
 			tr := f.targets[rt.Hostname]
 			v.Level, v.Attested, v.OK, v.Reason, v.InSet = tr.Level, tr.Attested && f.host, tr.OK, tr.Reason, tr.InEgressSet
+			v.AttestedBy = c.attestingNode(rt, v.Attested)
+			v.Attested = v.AttestedBy != ""
 		} else {
 			v.Reason = "no report"
 		}
 		out = append(out, v)
 	}
 	return out
+}
+
+// attestingNode is the node whose forwarding table vouched for the port of
+// rt's guest, the one the inventory says runs it, when the replica's level
+// stands on an attestation; an attestation of a guest the inventory does not
+// place is shown as none.
+func (c *cycleRun) attestingNode(rt model.Route, attested bool) string {
+	if !attested || rt.Guest == nil {
+		return ""
+	}
+	if g, ok := c.snap.Guest(*rt.Guest); ok {
+		return g.Node
+	}
+	return ""
 }
 
 // savePlacements stores the placements of the routes, once the DNS run of

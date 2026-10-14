@@ -629,6 +629,7 @@ export interface ReplicaView {
   node: string
   level?: string
   attested?: boolean
+  attestedBy?: string
   ok: boolean
   reason?: string
   inSet: boolean

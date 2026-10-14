@@ -459,8 +459,8 @@ func clusterScenario(populated files) files {
 			Build: "1.4.0", Protocol: "1", StatusAge: 4 * time.Second, Covered: true, ClockSkew: 300 * time.Millisecond,
 			JoinUses: []engine.JoinUseView{{At: at.Add(-2 * time.Minute), Source: netip.MustParseAddr("10.0.0.93"), VMID: 9301, MACs: []string{"bc:24:11:00:93:01"}}}},
 	}
-	replica := func(node, level string, attested bool) engine.ReplicaView {
-		return engine.ReplicaView{Node: node, Level: level, Attested: attested, OK: true, InSet: true}
+	replica := func(node, level, attestedBy string) engine.ReplicaView {
+		return engine.ReplicaView{Node: node, Level: level, Attested: attestedBy != "", AttestedBy: attestedBy, OK: true, InSet: true}
 	}
 	for i := range st.Routes {
 		r := &st.Routes[i]
@@ -472,19 +472,19 @@ func clusterScenario(populated files) files {
 		if r.Path == nil {
 			// A manual route to an address: resolved by the controller, verified by the replica.
 			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared}
-			r.Replicas = []engine.ReplicaView{replica("pve1", "manual", false), replica("pve2", "manual", false)}
+			r.Replicas = []engine.ReplicaView{replica("pve1", "manual", ""), replica("pve2", "manual", "")}
 			continue
 		}
 		switch r.Hostname {
 		case "git.example.com":
 			r.Path.Node = "pve2"
 			r.Placement = &engine.PlacementView{Tunnel: pinned, Kind: engine.TunnelPinned, Node: "pve2", Why: "pve1 does not reach it while pve2 does"}
-			r.Replicas = []engine.ReplicaView{replica("pve2", "port", false)}
+			r.Replicas = []engine.ReplicaView{replica("pve2", "port", "")}
 		case "grafana.example.com":
 			r.Path.Node = "pve2"
 			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared,
 				Move: &engine.MoveView{From: pinned, To: shared, Step: store.MoveRolledOut, Since: at.Add(-2 * time.Minute)}}
-			r.Replicas = []engine.ReplicaView{replica("pve1", "port", true), replica("pve2", "port", false)}
+			r.Replicas = []engine.ReplicaView{replica("pve1", "port", "pve2"), replica("pve2", "port", "")}
 		case "monitor.example.com":
 			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared}
 			r.Replicas = []engine.ReplicaView{
@@ -492,7 +492,11 @@ func clusterScenario(populated files) files {
 			}
 		default:
 			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared}
-			r.Replicas = []engine.ReplicaView{replica("pve1", r.Level, false), replica("pve2", r.Level, r.Level == string(resolve.LevelPort))}
+			by := ""
+			if r.Level == string(resolve.LevelPort) {
+				by = r.Path.Node
+			}
+			r.Replicas = []engine.ReplicaView{replica("pve1", r.Level, ""), replica("pve2", r.Level, by)}
 		}
 	}
 	st.Tunnels = append(st.Tunnels, engine.TunnelView{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: pinned,
