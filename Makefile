@@ -29,9 +29,11 @@ test:
 
 # Measures cycles of the engine at 100 to 2000 routes and prints the tables, see
 # test/scale/README.md. It takes several minutes; SCALE_DIR keeps its store on
-# another disk.
+# another disk. It ends with half an hour of a five-node cluster held to its
+# Cloudflare budget.
 scale:
 	go test -tags nomsgpack,scale -run 'TestScale|TestDefaultLimiter|TestDiskCost' -count=1 -v -timeout 10m ./test/scale/
+	go test -tags nomsgpack,scale -run 'TestAFiveNodeClusterStaysWithinItsCloudflareBudget' -count=1 -v -timeout 10m ./internal/engine/
 
 # check-refs.sh fails on a citation of notes that are not in the repository.
 lint:
