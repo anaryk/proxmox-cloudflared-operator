@@ -66,10 +66,11 @@ const (
 // cycle lock.
 func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResult) (ForgetResult, error) {
 	under, found, err := e.d.Store.CARotation()
-	switch {
-	case err != nil:
+	if err != nil {
 		return res, fmt.Errorf("reading the rotation of the secrets: %w", err)
-	case found && under.FinishedAt.IsZero():
+	}
+	e.dropEveryJoinToken(&res)
+	if found && under.FinishedAt.IsZero() {
 		return e.joinRotation(ctx, name, under, res)
 	}
 	rec := store.CARotation{Node: name, StartedAt: e.d.Now(), Actor: ActorOf(ctx),
@@ -85,9 +86,27 @@ func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResul
 	e.events.add(Event{At: rec.StartedAt, Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx),
 		Message: fmt.Sprintf("node %s was forgotten as compromised: every secret of the install is rotated, step by step", name)})
 	res.Done = append(res.Done, "the rotation of every secret of the install began; pco cluster status follows it, and a controller that takes over finishes it")
-	res.Pending = slices.Clone(rotationSteps)
+	res.Pending = append(slices.Clone(rotationSteps), res.Pending...)
 	res.NotRotated = slices.Clone(notRotated)
 	return res, nil
+}
+
+// dropEveryJoinToken deletes every join token not used yet: the node may
+// have read what the store keeps of them.
+func (e *Engine) dropEveryJoinToken(res *ForgetResult) {
+	tokens, err := e.d.Store.JoinTokens()
+	if err != nil {
+		res.Pending = append(res.Pending, "the join tokens could not be read to delete them: "+err.Error())
+		return
+	}
+	for _, id := range slices.Sorted(maps.Keys(tokens)) {
+		if err := e.d.Store.DeleteJoinToken(id); err != nil {
+			res.Pending = append(res.Pending, fmt.Sprintf("join token %s could not be deleted: %v", id, err))
+		}
+	}
+	if len(tokens) > 0 {
+		res.Done = append(res.Done, "every join token is deleted: a node still to join needs a new one")
+	}
 }
 
 // redoneOnJoin are the steps a node that joins a rotation has done again
@@ -143,12 +162,14 @@ func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARota
 	e.events.add(Event{At: now, Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx), Message: msg})
 	res.Done = append(res.Done, fmt.Sprintf("the node joins the rotation of every secret under way since %s for node %s; "+
 		"what it ran while the node was a member is done again; pco cluster status follows it", rec.StartedAt.UTC().Format(time.RFC3339), rec.Node))
+	pending := res.Pending
 	res.Pending = []string{}
 	for _, step := range rotationSteps {
 		if !slices.Contains(rec.Done, step) {
 			res.Pending = append(res.Pending, step)
 		}
 	}
+	res.Pending = append(res.Pending, pending...)
 	res.NotRotated = slices.Clone(notRotated)
 	return res, nil
 }
@@ -173,6 +194,14 @@ func (c *cycleRun) rotationStep() {
 		return
 	case !found:
 		return
+	}
+	if rec.FinishedAt.IsZero() && staleSteps(&rec) {
+		// Steps that ran before the last node joined count for nothing,
+		// and are taken out of the record before it is checked.
+		if err := c.e.d.Store.SaveCARotation(rec); err != nil {
+			c.problem("recording the rotation of the secrets: %v", err)
+			return
+		}
 	}
 	// What the record says was done is checked against the CA the store
 	// holds and the one leader.json names, every cycle: a store restored
@@ -239,6 +268,29 @@ func (c *cycleRun) undone(rec *store.CARotation, step string) bool {
 		}
 	}
 	return false
+}
+
+// staleSteps takes out of a record the steps it holds done that ran before
+// the last node joined the rotation, and the secrets given before it, as a
+// record a join could not clear shows them: that node may hold what they
+// made. It says whether it took anything out.
+func staleSteps(rec *store.CARotation) bool {
+	from := rec.From()
+	stale := false
+	rec.Done = slices.DeleteFunc(rec.Done, func(step string) bool {
+		at, ok := rec.StepsAt[step]
+		if ok && at.Before(from) && slices.Contains(redoneOnJoin, step) {
+			delete(rec.StepsAt, step)
+			stale = true
+			return true
+		}
+		return false
+	})
+	if !rec.At.IsZero() && rec.At.Before(from) {
+		rec.Rotated, rec.TakenUp, rec.Cleaned, rec.At = nil, nil, nil, time.Time{}
+		stale = true
+	}
+	return stale
 }
 
 // rotatedThrough says whether the secret of a tunnel was rotated and the

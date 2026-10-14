@@ -1153,7 +1153,8 @@ A second node forgotten with `--compromised` while a rotation runs joins it. Eve
 ran while that node was still a member is done again, since it may hold what each step made:
 new API tokens and a new Proxmox secret are needed again, every tunnel gets another secret, and
 a CA rotated already is rotated a second time once the ten minutes of its previous one ended.
-`pco cluster status` names every node of the rotation.
+`pco cluster status` names every node of the rotation. Every join token not used yet is
+deleted as well, at the first forget and at each that joins: make new ones afterwards.
 
 The window of step 2 lasts as long as the rollout of the new run tokens, usually a minute
 per node. Keep it short: replace the API tokens and run `pco setup --repair` right after the

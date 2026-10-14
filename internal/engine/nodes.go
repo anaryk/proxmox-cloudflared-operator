@@ -414,6 +414,15 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 		// cannot, a controller that takes over included.
 		n.Rotation = &store.ForgetRotation{Since: e.d.Now(), TunnelsRotated: store.TunnelsRotated{Connectors: e.connectorIDsOf(name)}}
 	}
+	if compromised {
+		// The rotation is recorded before the node is removed: a crash in
+		// between leaves a rotation of a node that is still there, which a
+		// second forget joins, never a removed node no rotation is for.
+		var err error
+		if res, err = e.beginRotation(ctx, name, res); err != nil {
+			return res, err
+		}
+	}
 	if err := e.saveEntry(ctx, before, rev.Rev, n, fmt.Sprintf("node %s is forgotten%s", name, compromisedText(compromised))); err != nil {
 		return res, err
 	}
@@ -431,7 +440,7 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 	res.Done = append(res.Done, "its pinned tunnels are deleted in the next cycle")
 	defer e.Trigger()
 	if compromised {
-		return e.beginRotation(ctx, name, res)
+		return res, nil
 	}
 	switch {
 	case !rotates:
