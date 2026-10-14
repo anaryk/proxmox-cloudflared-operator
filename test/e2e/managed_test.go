@@ -27,7 +27,9 @@ const (
 	noHotplugVMID = 9366 // QEMU without network hotplug
 	optOutVMID    = 9368 // the marker from the start
 
-	markerLine = "\ncf-tunnel-managed=off"
+	// The marker counts in the route text only: on a cf-tunnel: line or in
+	// a block, never on a line of the Notes of its own.
+	markerLine = "\ncf-tunnel: cf-tunnel-managed=off"
 )
 
 func (s *suite) managedGuest() guest {
@@ -192,12 +194,17 @@ func testManagedNetwork(t *testing.T, s *suite) {
 		s.stop(t, g.vmid)
 		s.guests[cloneVMID] = true
 		s.pconetGuests[cloneVMID] = true
-		s.must(t, "pct", "clone", strconv.Itoa(g.vmid), strconv.Itoa(cloneVMID), "--hostname", "e2e-"+strconv.Itoa(cloneVMID))
-		s.start(t, g.vmid)
-		s.must(t, "pct", "set", strconv.Itoa(cloneVMID), "--net0", "name=eth0,bridge="+managedBridge+",ip=10.90.0.63/24")
+		// The daemon replaces the copied card within a cycle of the clone,
+		// so the card is read as the clone has it with the daemon stopped.
 		// Proxmox gives the copied card a MAC of its own and keeps the
 		// address of the original's lease: a card no attachment explains.
-		copied := s.managedCard(t, cloneVMID)
+		var copied string
+		s.whileStopped(t, func() {
+			s.must(t, "pct", "clone", strconv.Itoa(g.vmid), strconv.Itoa(cloneVMID), "--hostname", "e2e-"+strconv.Itoa(cloneVMID))
+			s.must(t, "pct", "set", strconv.Itoa(cloneVMID), "--net0", "name=eth0,bridge="+managedBridge+",ip=10.90.0.63/24")
+			copied = s.managedCard(t, cloneVMID)
+		})
+		s.start(t, g.vmid)
 		require.Equal(t, att.Addr.String()+"/24", cardValue(copied, "ip"), "the clone did not copy the card: %s", copied)
 		t.Logf("the copied card: %s", copied)
 		require.Contains(t, tagsOf(s.must(t, "pct", "config", strconv.Itoa(cloneVMID))), consentTag, "the clone did not inherit the tag")
@@ -223,9 +230,14 @@ func testManagedNetwork(t *testing.T, s *suite) {
 		s.stop(t, g.vmid)
 		s.guests[untaggedClone] = true
 		s.pconetGuests[untaggedClone] = true
-		s.must(t, "pct", "clone", strconv.Itoa(g.vmid), strconv.Itoa(untaggedClone), "--hostname", "e2e-"+strconv.Itoa(untaggedClone))
+		// The clone carries the tags of the original until they are taken
+		// away; the daemon must not see it before, or it gives the clone a
+		// card of its own.
+		s.whileStopped(t, func() {
+			s.must(t, "pct", "clone", strconv.Itoa(g.vmid), strconv.Itoa(untaggedClone), "--hostname", "e2e-"+strconv.Itoa(untaggedClone))
+			s.must(t, "pct", "set", strconv.Itoa(untaggedClone), "--net0", "name=eth0,bridge="+managedBridge+",ip=10.90.0.64/24", "--delete", "tags")
+		})
 		s.start(t, g.vmid)
-		s.must(t, "pct", "set", strconv.Itoa(untaggedClone), "--net0", "name=eth0,bridge="+managedBridge+",ip=10.90.0.64/24", "--delete", "tags")
 		copied := s.managedCard(t, untaggedClone)
 		nic, err := strconv.Atoi(strings.TrimPrefix(strings.SplitN(copied, ":", 2)[0], "net"))
 		require.NoError(t, err, copied)

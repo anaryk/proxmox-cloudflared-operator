@@ -58,6 +58,26 @@ func (s *suite) enableManaged(t testing.TB) {
 	})
 }
 
+// whileStopped runs f with the daemon stopped, so that it acts on nothing f
+// changes before f is done, and waits for its first cycle after.
+func (s *suite) whileStopped(t testing.TB, f func()) {
+	t.Helper()
+	s.must(t, "systemctl", "stop", "pco")
+	started := false
+	defer func() {
+		if !started {
+			_, _ = s.run("systemctl", "start", "pco")
+		}
+	}()
+	f()
+	restarted := time.Now()
+	s.must(t, "systemctl", "start", "pco")
+	started = true
+	s.waitState(t, "the first cycle of the started daemon", 3*time.Minute, func(st engine.State) bool {
+		return st.At.After(restarted) && st.Complete && !st.FinishedAt.IsZero()
+	})
+}
+
 // setConsent switches the consent mode of the managed network, as an admin
 // edits the settings.
 func (s *suite) setConsent(t testing.TB, mode string) {
