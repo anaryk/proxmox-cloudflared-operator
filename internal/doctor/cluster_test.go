@@ -415,6 +415,25 @@ func TestAnAgentNotAskedSaysWhy(t *testing.T) {
 		Fix: "run pco doctor --cluster again once the other run ended"}, got["answer on pve2"])
 }
 
+// An appliance agent's checks, those of its container among them, are all
+// ones an answer may carry.
+func TestTheChecksOfAnApplianceAgentAreTheOnesItMayAnswerWith(t *testing.T) {
+	_, cl := healthyCluster()
+	cl.agent.Remote, cl.agent.Kind = true, pki.KindAppliance
+	env := struct {
+		*applianceEnv
+		*fakeCluster
+	}{healthyApplianceEnv(), cl.fakeCluster}
+	names := agentCheckNames()
+
+	findings := AgentChecks(t.Context(), healthyApplianceState(), env)
+
+	require.Contains(t, clusterFindings(findings), "cmode")
+	for _, f := range findings {
+		require.True(t, names[f.Check], f.Check)
+	}
+}
+
 // Without a cluster the checks an agent answers with are still those an
 // answer may carry.
 func TestTheChecksOfANodeWithoutAClusterAreAnAgentsChecks(t *testing.T) {
