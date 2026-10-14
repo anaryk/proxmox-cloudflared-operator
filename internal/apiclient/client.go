@@ -30,7 +30,11 @@ const (
 	// reads takes the short time.
 	shortTimeout = 10 * time.Second
 	longTimeout  = 60 * time.Second
-	maxResponse  = 32 << 20
+	// agentsTimeout is the time of what asks the agents of the other nodes
+	// of a cluster first: a probe, an attach and the setup of the managed
+	// network wait for their answers, and then for the cycle lock.
+	agentsTimeout = 2 * time.Minute
+	maxResponse   = 32 << 20
 )
 
 var (
@@ -59,6 +63,7 @@ type Client struct {
 	http   *http.Client
 	short  time.Duration
 	long   time.Duration
+	agents time.Duration
 }
 
 // New returns a client for the daemon that listens on socketPath.
@@ -78,8 +83,9 @@ func New(socketPath string) *Client {
 			// The daemon does not redirect. An answer that does is not one of its.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		short: shortTimeout,
-		long:  longTimeout,
+		short:  shortTimeout,
+		long:   longTimeout,
+		agents: agentsTimeout,
 	}
 }
 
@@ -466,7 +472,7 @@ func (c *Client) CandidateNetworksRaw(ctx context.Context) (json.RawMessage, err
 // answer is as the daemon sent it beside its decoded form.
 func (c *Client) ProbeNetwork(ctx context.Context, r engine.ProbeRequest) (engine.ProbeResult, json.RawMessage, error) {
 	var raw json.RawMessage
-	if err := c.call(ctx, c.long, http.MethodPost, "/v1/networks/probe", r, &raw); err != nil {
+	if err := c.call(ctx, c.agents, http.MethodPost, "/v1/networks/probe", r, &raw); err != nil {
 		return engine.ProbeResult{}, nil, err
 	}
 	var res engine.ProbeResult
@@ -479,7 +485,7 @@ func (c *Client) ProbeNetwork(ctx context.Context, r engine.ProbeRequest) (engin
 // Attach attaches a network and returns it as attached.
 func (c *Client) Attach(ctx context.Context, r engine.AttachRequest) (engine.NetworkView, error) {
 	var v engine.NetworkView
-	err := c.call(ctx, c.long, http.MethodPost, "/v1/networks", r, &v)
+	err := c.call(ctx, c.agents, http.MethodPost, "/v1/networks", r, &v)
 	return v, err
 }
 
@@ -498,7 +504,7 @@ func (c *Client) Detach(ctx context.Context, id string, rev int64, served []stri
 // exists: on a host made by pco network managed enable as root, in the
 // appliance by pco appliance managed enable on the node.
 func (c *Client) EnableManaged(ctx context.Context) error {
-	return c.call(ctx, c.long, http.MethodPost, "/v1/managed/enable", nil, nil)
+	return c.call(ctx, c.agents, http.MethodPost, "/v1/managed/enable", nil, nil)
 }
 
 // Managed returns the managed network as the last cycle found it.
