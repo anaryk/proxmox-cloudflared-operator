@@ -53,6 +53,19 @@ func shorten(v string) string {
 	return v[:keep] + "..."
 }
 
+// snapshotMark starts the pre-release of a snapshot build, which names its
+// commit: 0.0.0-SNAPSHOT-3c3b62f.
+const snapshotMark = "-SNAPSHOT-"
+
+// sameSnapshot says whether two releases are different snapshots of one
+// version. dpkg orders their commits as it would any text, which says
+// nothing of which build is older.
+func sameSnapshot(a, b string) bool {
+	baseA, commitA, okA := strings.Cut(a, snapshotMark)
+	baseB, commitB, okB := strings.Cut(b, snapshotMark)
+	return okA && okB && baseA == baseB && commitA != commitB
+}
+
 // debVersion is the version the package of a release says it is: nfpm turns
 // the pre-release of 1.2.3-rc.1 into 1.2.3~rc.1, which dpkg sorts before
 // 1.2.3.

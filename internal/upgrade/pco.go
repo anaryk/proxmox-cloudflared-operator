@@ -76,6 +76,11 @@ func (u *Upgrader) pcoTarget(ctx context.Context, version, installedDeb string) 
 		if err != nil {
 			return "", err
 		}
+		if sameSnapshot(v, releaseVersion(installedDeb)) {
+			return "", fmt.Errorf("pco %s is installed, and %s is a snapshot of the same version, %w: "+
+				"which of two snapshots is older cannot be told from their names; build the next one with a higher version",
+				releaseVersion(installedDeb), v, ErrNotNewer)
+		}
 		if compareVersions(debVersion(v), installedDeb) <= 0 {
 			return "", fmt.Errorf("pco %s is installed, and %s is %w: --rollback goes back to the package the last upgrade kept",
 				releaseVersion(installedDeb), v, ErrNotNewer)

@@ -342,6 +342,30 @@ func TestAVersionBelowOrAtTheInstalledOneIsRefused(t *testing.T) {
 	}
 }
 
+// A snapshot is named after its commit, which says nothing of its age: of
+// two snapshots of one version, neither is taken for the newer.
+func TestASnapshotOfTheSameVersionIsNotTakenForANewerBuild(t *testing.T) {
+	for _, v := range []string{"0.0.0-SNAPSHOT-f9e8d7c", "0.0.0-SNAPSHOT-0000001"} {
+		t.Run(v, func(t *testing.T) {
+			r := newRig(t)
+			r.host.installed["pco"] = "0.0.0~SNAPSHOT-0a1b2c3"
+
+			_, err := r.u.Pco(t.Context(), Options{Version: v, Check: true})
+
+			require.ErrorIs(t, err, ErrNotNewer)
+			require.EqualError(t, err, "pco 0.0.0-SNAPSHOT-0a1b2c3 is installed, and "+v+" is a snapshot of the same version, "+
+				"not newer than the installed version: which of two snapshots is older cannot be told from their names; "+
+				"build the next one with a higher version")
+		})
+	}
+
+	r := newRig(t)
+	r.host.installed["pco"] = "0.0.0~SNAPSHOT-0a1b2c3"
+	res, err := r.u.Pco(t.Context(), Options{Version: "0.0.1-SNAPSHOT-0000001", Check: true})
+	require.NoError(t, err)
+	require.Equal(t, "0.0.1-SNAPSHOT-0000001", res.Target)
+}
+
 func TestAVersionAboveTheInstalledOneIsTakenAsItIs(t *testing.T) {
 	r := newRig(t)
 	r.fetch.latest = "1.3.0"
