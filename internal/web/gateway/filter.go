@@ -178,19 +178,28 @@ func managedLine(line string) bool {
 	return strings.HasPrefix(line, "foreign card ") || strings.HasPrefix(line, "managed card of ")
 }
 
-// withoutLegMACs is a copy of the networks without the MACs of the legs,
-// which an admin sees on the LANs of the bridges.
+// withoutLegMACs is a copy of the networks as a reader gets them, as
+// networkFields and legFields decide: without the MACs of the legs, which
+// an admin sees on the LANs of the bridges, also where the problem of a
+// leg names one.
 func withoutLegMACs(nets []engine.NetworkView) []engine.NetworkView {
 	out := only(nets, func(engine.NetworkView) bool { return true })
 	for i := range out {
-		out[i].LegMAC, out[i].LegMACs = "", nil
+		cleared(&out[i], networkFields)
 		legs := slices.Clone(out[i].Legs)
 		for j := range legs {
-			legs[j].MAC = ""
+			legs[j] = legForReader(legs[j])
 		}
 		out[i].Legs = legs
 	}
 	return out
+}
+
+// legForReader is the leg of a node as a reader gets it.
+func legForReader(l engine.LegView) engine.LegView {
+	cleared(&l, legFields)
+	l.Problem = redactMACs(l.Problem)
+	return l
 }
 
 // macPattern is a MAC address as the daemon writes one into free text.
@@ -242,8 +251,7 @@ func managedFor(m engine.ManagedView, visible auth.Visible) engine.ManagedView {
 	}
 	m.PoolGrant, m.Filtered = "", nil
 	if m.Leg != nil {
-		leg := *m.Leg
-		leg.MAC = ""
+		leg := legForReader(*m.Leg)
 		m.Leg = &leg
 	}
 	return m

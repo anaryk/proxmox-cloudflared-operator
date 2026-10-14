@@ -73,6 +73,8 @@ var fieldTables = []struct {
 	{reflect.TypeFor[engine.ReplicaView](), replicaFields},
 	{reflect.TypeFor[engine.PlacementView](), placementFields},
 	{reflect.TypeFor[engine.MoveView](), moveFields},
+	{reflect.TypeFor[engine.NetworkView](), networkFields},
+	{reflect.TypeFor[engine.LegView](), legFields},
 }
 
 func TestEveryFieldHasADecision(t *testing.T) {

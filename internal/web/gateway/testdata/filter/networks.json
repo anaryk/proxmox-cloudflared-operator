@@ -12,7 +12,7 @@
     "rev": 3,
     "legStates": [
       {"node": "pve1", "addr": "10.50.0.250", "up": true},
-      {"node": "pve2", "addr": "10.50.0.249", "up": false, "problem": "10.50.0.249 is answered by bc:24:11:00:00:09"}
+      {"node": "pve2", "addr": "10.50.0.249", "up": false, "problem": "10.50.0.249 is answered by a MAC"}
     ],
     "targets": 1,
     "routes": 1

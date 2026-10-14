@@ -180,7 +180,7 @@
       "createdAt": "2026-10-01T11:00:00Z",
       "rev": 1,
       "legStates": [
-        {"node": "pve1", "addr": "192.0.2.250", "up": false, "problem": "address in use by 52:54:00:12:34:56"}
+        {"node": "pve1", "addr": "192.0.2.250", "up": false, "problem": "address in use by a MAC"}
       ],
       "targets": 0,
       "routes": 0

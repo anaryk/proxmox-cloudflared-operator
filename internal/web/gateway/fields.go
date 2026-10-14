@@ -169,6 +169,27 @@ var (
 	}
 )
 
+// networkFields are the fields of a network: a bridge, a prefix and the
+// legs of pco in it, by node, with counts of what it serves, which is
+// cluster configuration. The MACs the legs show on their LANs are an
+// admin's.
+var networkFields = map[string]decision{
+	"id": kept, "kind": kept, "bridge": kept, "vlan": kept, "prefix": kept, "legs": kept, "mark": kept, "uplink": kept,
+	"overlapOK": kept, "createdAt": kept, "scope": kept, "rev": kept, "targets": kept, "routes": kept,
+	"legMAC":    removedBy("networks"),
+	"legMACs":   removedBy("networks"),
+	"legStates": filteredBy("networks"),
+}
+
+// legFields are the fields of the leg of a node: its address and whether it
+// is up are a reader's; its MAC is not, and its problem, as the gateway of
+// its node or that node's agent says it, loses the MACs it names.
+var legFields = map[string]decision{
+	"node": kept, "addr": kept, "up": kept,
+	"mac":     removedBy("networks"),
+	"problem": filteredBy("networks"),
+}
+
 // blockFields are the fields of a block: a reader gets one of a guest it
 // sees, without the MAC and without the port it was seen on, which is
 // another guest's.

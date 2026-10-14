@@ -417,3 +417,26 @@ func TestFilterEventsByGuestRouteAndSubject(t *testing.T) {
 	require.NotNil(t, FilterEvents(nil, sees(), nil))
 	require.Len(t, eventsAnswer, 10, "the input is as it was")
 }
+
+// A reader gets the legs of every node of a network without their MACs,
+// also where a node's agent reported a problem naming one, and the managed
+// leg without its MAC.
+func TestAReaderGetsTheLegsOfEveryNodeWithoutMACs(t *testing.T) {
+	raw, err := json.Marshal(networksAnswer)
+	require.NoError(t, err)
+
+	out, err := filterNetworks(raw, nil)
+
+	require.NoError(t, err)
+	require.NotContains(t, string(out), "02:50:43:4f")
+	require.NotContains(t, string(out), "bc:24:11")
+	var nets []engine.NetworkView
+	require.NoError(t, json.Unmarshal(out, &nets))
+	require.Len(t, nets[0].Legs, 2, "the leg of every node")
+	require.Equal(t, "10.50.0.249 is answered by a MAC", nets[0].Legs[1].Problem)
+	require.Empty(t, nets[0].LegMACs)
+
+	m := managedFor(managedAnswer, func(model.GuestRef) bool { return true })
+	require.Empty(t, m.Leg.MAC)
+	require.Equal(t, "10.203.118.1", m.Leg.Addr.String())
+}
