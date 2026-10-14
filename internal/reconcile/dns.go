@@ -138,6 +138,10 @@ type DNSResult struct {
 	Actions   []Action // by zone name, then record name
 	Conflicts []Conflict
 	Lost      []string // names that still point at our tunnel but lost the marker
+	// PointsAt is, by lower-case record name, the name of the tunnel of
+	// the input a CNAME of this install pointed at when the run listed its
+	// zone, before the run changed anything.
+	PointsAt map[string]string
 	// Unlisted names the zones whose records the run could not read in
 	// full, sorted: what it reports of conflicts and lost names there may
 	// lack some that are still there.
@@ -352,11 +356,11 @@ type dnsRun struct {
 	marker  string
 	us      planner.Writer // as the run started
 	tunnels map[tunnelRef]TunnelState
-	targets map[string]bool // lower-case CNAME targets of our tunnels
-	adopt   map[string]bool // lower-case names
-	keep    map[string]bool // lower-case names neither wanted nor unwanted
-	twice   map[string]bool // lower-case names planned more than once
-	stones  *tombstones     // nil in Observe mode
+	targets map[string]string // lower-case CNAME targets of our tunnels, each with the tunnel's name
+	adopt   map[string]bool   // lower-case names
+	keep    map[string]bool   // lower-case names neither wanted nor unwanted
+	twice   map[string]bool   // lower-case names planned more than once
+	stones  *tombstones       // nil in Observe mode
 
 	// noDeletes says why no record is deleted in this run, when the
 	// tombstones could not be saved before the deletes.
@@ -402,18 +406,19 @@ func (z *dnsZone) isWanted(name string) bool {
 // know indexes the tunnels of the input.
 func (run *dnsRun) know(tunnels []TunnelState) {
 	run.tunnels = make(map[tunnelRef]TunnelState, len(tunnels))
-	run.targets = make(map[string]bool, len(tunnels))
+	run.targets = make(map[string]string, len(tunnels))
 	for _, t := range tunnels {
 		run.tunnels[tunnelRef{t.AccountID, t.Name}] = t
 		if t.ID != "" {
-			run.targets[strings.ToLower(t.ID+tunnelDomain)] = true
+			run.targets[strings.ToLower(t.ID+tunnelDomain)] = t.Name
 		}
 	}
 }
 
 // pointsAtOurs reports whether a record is a CNAME to one of our tunnels.
 func (run *dnsRun) pointsAtOurs(rec cfapi.Record) bool {
-	return isType(rec, "CNAME") && run.targets[strings.ToLower(rec.Content)]
+	_, ok := run.targets[strings.ToLower(rec.Content)]
+	return isType(rec, "CNAME") && ok
 }
 
 // zones returns the zones of the run sorted by name: every zone of the input,
@@ -483,6 +488,9 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	z.listed = true
 	z.owned = make(map[string][]cfapi.Record)
 	z.others = make(map[string][]cfapi.Record)
+	if run.res.PointsAt == nil {
+		run.res.PointsAt = make(map[string]string)
+	}
 	for _, rec := range records {
 		name := strings.ToLower(rec.Name)
 		switch {
@@ -492,6 +500,9 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 			z.probes = append(z.probes, rec)
 		default:
 			z.owned[name] = append(z.owned[name], rec)
+			if _, seen := run.res.PointsAt[name]; !seen && run.pointsAtOurs(rec) {
+				run.res.PointsAt[name] = run.targets[strings.ToLower(rec.Content)]
+			}
 		}
 	}
 }

@@ -60,6 +60,9 @@ type placementMemory struct {
 	ids agentIDs
 	// decided is where the last placement put each owner's routes.
 	decided map[string]decidedPlace
+	// pointedAt is, by hostname, the tunnel its record pointed at when a
+	// DNS run of this process last listed its zone.
+	pointedAt map[string]string
 }
 
 // coverageView is coverage as one cycle judges it.

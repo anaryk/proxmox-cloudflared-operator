@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -10,9 +11,96 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
+
+// servedAlone is a node alone, as before a cluster, that serves the route
+// of a guest and a manual route to its own address through the shared
+// tunnel.
+func servedAlone(t *testing.T) *world {
+	t.Helper()
+	e, r, listed := clusterOf(t)
+	l := holding(testWriter)
+	e.lease = l
+	e.quorum = func() (bool, time.Time) { return true, e.clock.now() }
+	e.inv.set(inventory.Snapshot{
+		Guests:   []model.Guest{carded(guest(101, "web", "www.example.com -> :8080"), "pve1", webCard)},
+		Nodes:    []inventory.Node{{Name: "pve1", Addr: nodeAddr, Online: true, Local: true}},
+		Complete: true,
+	})
+	require.NoError(t, e.store.SaveManualRoute(model.Route{
+		Hostname: "pve.example.com", ManualID: "pve", Source: model.SourceManual,
+		Target:  model.Target{Scheme: model.SchemeHTTPS, Addr: nodeAddr, Port: 8006},
+		Options: model.RouteOptions{AllowNode: true, NoTLSVerify: true},
+	}))
+	e.eng = e.newEngine()
+	e.enforce()
+	w := &world{env: e, r: r, lease: l, listed: listed, acts: map[string]*agentAct{}}
+	w.watchHere(t)
+	for range 3 {
+		w.tick(time.Second)
+	}
+	for _, host := range []string{"pve.example.com", "www.example.com"} {
+		require.Equal(t, tunnelName, w.recordTunnel(t, host), host)
+		require.Equal(t, []string{tunnelName}, w.servedIn(t, host), host)
+	}
+	return w
+}
+
+// A route served through the shared tunnel before a second node registered
+// has no placement stored, and goes to the tunnel pinned to its node, as a
+// manual route to the node's own address must. It gets there by a move:
+// its rule is in the pinned tunnel before its record points there, and
+// nothing is withdrawn meanwhile, also when the controller started after
+// the route was served.
+func TestARouteServedBeforeTheClusterLeavesTheSharedTunnelByAMove(t *testing.T) {
+	pinned1, _ := planner.PinnedTunnelName(testInstall, "pve1")
+	for _, restart := range []bool{false, true} {
+		name := "the controller that served it"
+		if restart {
+			name = "a controller started since"
+		}
+		t.Run(name, func(t *testing.T) {
+			w := servedAlone(t)
+			one := 1
+			now := w.clock.now()
+			require.NoError(t, w.store.SaveNode(store.NodeEntry{Name: "pve2", Since: now, State: store.NodeActive, StateSince: now, Index: &one}))
+			*w.listed = append(*w.listed, members.Member{Name: "pve2", ID: 2, Online: true})
+			snap := w.inv.snapshot()
+			snap.Nodes = append(snap.Nodes, inventory.Node{Name: "pve2", Addr: netip.MustParseAddr("10.0.0.3"), Online: true})
+			w.inv.set(snap)
+			w.acts["pve2"] = &agentAct{kind: pki.KindHost, started: now.Add(-time.Hour)}
+			if restart {
+				w.eng = w.newEngine()
+				w.watchHere(t)
+			}
+
+			sawBoth := false
+			for range 40 {
+				w.tick(5 * time.Second)
+				w.requireNothingWithdrawn(t, "pve.example.com", "www.example.com")
+				rec := w.recordTunnel(t, "pve.example.com")
+				if rec == tunnelName && slices.Contains(w.servedIn(t, "pve.example.com"), pinned1) {
+					sawBoth = true
+				}
+				if rec == pinned1 {
+					require.True(t, sawBoth, "the rule was in the pinned tunnel before the record pointed there")
+					break
+				}
+			}
+			require.Equal(t, pinned1, w.recordTunnel(t, "pve.example.com"))
+			require.Equal(t, tunnelName, w.recordTunnel(t, "www.example.com"), "the guest's route stays shared")
+			require.True(t, slices.ContainsFunc(w.placementEvents(), func(ev string) bool {
+				return strings.HasPrefix(ev, model.ManualPrefix+"pve: ") && strings.Contains(ev, " moves from "+tunnelName+" to "+pinned1)
+			}), w.placementEvents())
+		})
+	}
+}
 
 var hosts3 = []string{"app.example.com", "db.example.com", "www.example.com"}
 

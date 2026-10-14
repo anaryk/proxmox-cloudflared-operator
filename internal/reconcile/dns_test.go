@@ -624,3 +624,22 @@ func TestDNSOutputOrder(t *testing.T) {
 	}, res.Conflicts)
 	require.Equal(t, []string{"l.shop.cz", "z.example.com"}, res.Lost)
 }
+
+// The run says which tunnel of the input the CNAME of each name of this
+// install pointed at when it listed the zone, before it changed anything.
+// A record of another writer, and one at a tunnel the input does not name,
+// say nothing.
+func TestDNSSaysWhereEachOwnedRecordPointed(t *testing.T) {
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, ourCNAME("App.example.com", "old"))
+	f.SeedRecord(zone1.ID, ourCNAME("db.example.com", "tid-pve2"))
+	f.SeedRecord(zone1.ID, ourCNAME("WWW.example.com", testTunnelID))
+	f.SeedRecord(zone1.ID, cfapi.Record{Type: "CNAME", Name: "other.example.com", Content: testTarget, Proxied: true, Comment: "theirs"})
+	in := dnsIn("app.example.com")
+	in.Tunnels = append(in.Tunnels, TunnelState{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel + "-pve2", ID: "tid-pve2", Exists: true, Verified: true})
+
+	res := newDNS(f, &memStore{}, t0).Run(context.Background(), in, Enforce)
+
+	require.Equal(t, map[string]string{"db.example.com": testTunnel + "-pve2", "www.example.com": testTunnel}, res.PointsAt)
+	require.Equal(t, testTarget, recordsIn(f, zone1.ID)[0].Content, "app was moved to our tunnel after the listing")
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ func (c *cycleRun) reconcileDNS() {
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
 	c.noteListed(res)
+	c.notePointed(res)
 	c.offerRemovals(res)
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
@@ -93,6 +95,24 @@ func (c *cycleRun) noteListed(res reconcile.DNSResult) {
 			c.e.zones.listed(zone)
 		}
 	}
+}
+
+// notePointed remembers, for the zones the run listed, which tunnel the
+// record of each hostname pointed at: what a zone the run could not list
+// showed before stands.
+func (c *cycleRun) notePointed(res reconcile.DNSResult) {
+	if !res.Looked {
+		return
+	}
+	mem := &c.e.place
+	if mem.pointedAt == nil {
+		mem.pointedAt = map[string]string{}
+	}
+	maps.DeleteFunc(mem.pointedAt, func(host, _ string) bool {
+		z, ok := c.zoneOf(host)
+		return !ok || !slices.Contains(res.Unlisted, z.Name)
+	})
+	maps.Copy(mem.pointedAt, res.PointsAt)
 }
 
 // offerRemovals offers the removals the mass delete guard counted, when it

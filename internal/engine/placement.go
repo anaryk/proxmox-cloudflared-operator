@@ -220,6 +220,9 @@ func (c *cycleRun) place() {
 	for _, owner := range slices.Sorted(maps.Keys(owners)) {
 		routes := owners[owner]
 		cur, stored := c.storedOf(routes)
+		if !stored && c.servedShared(routes) {
+			cur, stored = placed{kind: store.PlacementShared}, true
+		}
 		want, wait := c.decide(owner, routes, replicas, cur, stored)
 		if wait != "" {
 			for _, rt := range routes {
@@ -251,6 +254,27 @@ func (c *cycleRun) storedOf(routes []model.Route) (placed, bool) {
 		}
 	}
 	return placed{}, false
+}
+
+// servedShared says whether a route of an owner without a placement is
+// served through the shared tunnel already: its record pointed there when
+// a DNS run of this process last looked, or the tunnel's verified
+// configuration sends a connector to its target. Such a route was served
+// before a second node registered, or by a controller that stored no
+// placement; it counts as placed there, so that it leaves by a move, with
+// its rule in the tunnel it goes to before its record points there, and
+// is not held back while a replica has not reported it.
+func (c *cycleRun) servedShared(routes []model.Route) bool {
+	shared := placed{kind: store.PlacementShared}
+	for _, rt := range routes {
+		if c.e.place.pointedAt[strings.ToLower(rt.Hostname)] == planner.TunnelName(c.install.ID) {
+			return true
+		}
+		if dialed, ok := c.baseTarget(rt).Dialed(); ok && c.sendsTo(rt, shared, egress.Target{Addr: dialed, Port: rt.Target.Port}) {
+			return true
+		}
+	}
+	return false
 }
 
 // decide is where an owner's routes should go now; wait says why a route
