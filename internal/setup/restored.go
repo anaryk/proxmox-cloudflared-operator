@@ -12,6 +12,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -22,11 +23,18 @@ import (
 // which the store is this cluster's and they join it as usual. The store
 // keeps the identity of the cluster it was made in, so the daemon writes
 // nothing until pco promote draws a new epoch.
-func (r *run) restoredElsewhere(ctx context.Context, fingerprint string) error {
+func (r *run) restoredElsewhere(ctx context.Context, m members.Members, fingerprint string) error {
 	inst := r.install
-	by := inst.Restored.TakenOverBy
+	by, from := inst.Restored.TakenOverBy, ""
 	if by != "" && by != r.o.Node {
-		return errTakenBy(inst, by)
+		// A node that claimed the store and is no longer an online member
+		// of the cluster does not hold the restore up for good: its claim
+		// is taken over after the same checks. One that is online may be
+		// taking it over now.
+		if memberOnline(m, by) {
+			return errTakenBy(inst, by)
+		}
+		from = by
 	}
 	// Whether the take-over is done is read from the CA and the registry,
 	// not from the install alone: a run cut short at any step, or a record
@@ -35,7 +43,7 @@ func (r *run) restoredElsewhere(ctx context.Context, fingerprint string) error {
 	switch {
 	case err != nil:
 		return fmt.Errorf("reading how far this cluster took the store: %w", err)
-	case done:
+	case done && from == "":
 		r.ask.Info("cluster: the store of cluster %s was taken into this one by this node; pco promote here makes this cluster its writer",
 			clusterName(*inst.Cluster))
 		return nil
@@ -46,8 +54,12 @@ func (r *run) restoredElsewhere(ctx context.Context, fingerprint string) error {
 	if err := r.oldClusterStopped(ctx); err != nil {
 		return err
 	}
-	if err := r.claimRestored(); err != nil {
+	if err := r.claimRestored(from); err != nil {
 		return err
+	}
+	if from != "" {
+		r.ask.Warn("cluster: took the claim of node %s, which is not an online member of this cluster, on the restored store; "+
+			"pco promote records it as a security event", from)
 	}
 	if err := r.takeOver(); err != nil {
 		return err
@@ -69,7 +81,20 @@ func errRestoredWithoutCluster(inst store.Install) error {
 
 func errTakenBy(inst store.Install, by string) error {
 	return fmt.Errorf("install %s was restored from a bundle of cluster %s, and node %s took it into this cluster: "+
-		"run pco promote on %s first, then pco setup here; nothing was changed", inst.ID, clusterName(*inst.Cluster), by, by)
+		"run pco promote on %s first, then pco setup here; if node %s is gone for good, take it out of the cluster "+
+		"(pvecm delnode %s) and pco setup here takes its claim over; nothing was changed",
+		inst.ID, clusterName(*inst.Cluster), by, by, by, by)
+}
+
+// memberOnline says whether node is an online member of the cluster, as
+// pmxcfs lists it.
+func memberOnline(m members.Members, node string) bool {
+	for _, n := range m.Nodes {
+		if n.Name == node {
+			return n.Online
+		}
+	}
+	return false
 }
 
 func clusterName(id store.ClusterIdentity) string {
@@ -79,10 +104,12 @@ func clusterName(id store.ClusterIdentity) string {
 // claimRestored records this node as the one that takes the store, at the
 // revision of the install it reads, on every attempt, a redo of its own
 // included: of two nodes set up at once, one takes it and the other is
-// refused before it changes anything, and a claim of another node is never
-// taken over. The record of a take-over that was not done is cleared with
-// it.
-func (r *run) claimRestored() error {
+// refused before it changes anything. A claim of another node is taken over
+// only from the node from, which is no online member; it is recorded. The
+// record of a take-over that was not done is cleared with it, and the
+// revision is kept, so that the take-over is saved only while nobody
+// claimed the store since.
+func (r *run) claimRestored(from string) error {
 	const changed = "the install changed while setup ran; run pco setup again"
 	inst, rev, found, err := r.st.InstallRev()
 	switch {
@@ -90,13 +117,16 @@ func (r *run) claimRestored() error {
 		return fmt.Errorf("reading the install: %w", err)
 	case !found || inst.ID != r.install.ID || inst.Restored == nil:
 		return errors.New(changed)
-	case inst.Restored.TakenOverBy != "" && inst.Restored.TakenOverBy != r.o.Node:
+	case inst.Restored.TakenOverBy != "" && inst.Restored.TakenOverBy != r.o.Node && inst.Restored.TakenOverBy != from:
 		return errTakenBy(inst, inst.Restored.TakenOverBy)
 	}
 	restored := *inst.Restored
+	if by := restored.TakenOverBy; by != "" && by != r.o.Node {
+		restored.ClaimedFrom = by
+	}
 	restored.TakenOverBy, restored.CASHA256 = r.o.Node, ""
 	inst.Restored = &restored
-	_, err = r.st.SaveInstallIf(inst, rev)
+	rev, err = r.st.SaveInstallIf(inst, rev)
 	switch {
 	case errors.Is(err, store.ErrRevision):
 		if now, _, err := r.st.Install(); err == nil && now.Restored != nil && now.Restored.TakenOverBy != "" {
@@ -106,7 +136,7 @@ func (r *run) claimRestored() error {
 	case err != nil:
 		return fmt.Errorf("recording that this node takes the store: %w", err)
 	}
-	r.install = inst
+	r.install, r.claimRev = inst, rev
 	return nil
 }
 
@@ -166,7 +196,9 @@ func (r *run) takeOver() error {
 	restored := *inst.Restored
 	restored.CASHA256 = made.SHA256()
 	inst.Restored = &restored
-	if err := r.st.SaveInstall(inst); err != nil {
+	if _, err := r.st.SaveInstallIf(inst, r.claimRev); errors.Is(err, store.ErrRevision) {
+		return errors.New("the restored store was claimed again while this node took it over: run pco setup again")
+	} else if err != nil {
 		return fmt.Errorf("recording that this node took the store: %w", err)
 	}
 	r.install = inst

@@ -45,6 +45,10 @@ type Restored struct {
 	// TakenOverBy is the node that took the store into this cluster; empty
 	// until one did, and in the cluster the bundle was made in.
 	TakenOverBy string `json:"takenOverBy,omitempty"`
+	// ClaimedFrom is the node whose claim TakenOverBy took over, as that
+	// node was no longer an online member of the cluster; the promotion
+	// says so in a security event.
+	ClaimedFrom string `json:"claimedFrom,omitempty"`
 	// CASHA256 is the fingerprint of the CA that node made, once it made
 	// it and retired the nodes of the cluster that was lost: a take-over
 	// cut short before is done again.

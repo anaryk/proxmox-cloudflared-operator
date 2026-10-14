@@ -437,6 +437,28 @@ func TestPromoteOfARestoredInstallRefusesWhileTheOldClusterRunsIt(t *testing.T) 
 	require.NotEmpty(t, l.promoted)
 }
 
+// A store whose take-over was taken from another node, gone from the
+// cluster, is promoted with a security event that names both.
+func TestPromoteOfAStoreTakenFromAnotherNodeSaysSo(t *testing.T) {
+	e, _ := restoredElsewhere(t)
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	inst.Restored.ClaimedFrom = "pve9"
+	require.NoError(t, e.store.SaveInstall(inst))
+
+	_, err = confirmed(t, e, PromoteRequest{Confirm: true, Cluster: "old-lab"})
+
+	require.NoError(t, err)
+	var said []string
+	for _, ev := range e.eng.Events(time.Time{}) {
+		if ev.Security {
+			said = append(said, ev.Message)
+		}
+	}
+	require.Contains(t, said, "node "+testNode+" took the restored store into this cluster over the claim of node pve9, "+
+		"which was not an online member of it")
+}
+
 type connectorsUnread struct{ cfapi.API }
 
 func (connectorsUnread) Connectors(context.Context, string, string) ([]cfapi.Connector, error) {

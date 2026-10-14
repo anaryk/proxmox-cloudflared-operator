@@ -333,6 +333,9 @@ type run struct {
 	// What a recovery did with the daemon: looked at it, and stopped it as
 	// it was running.
 	looked, stopped bool
+	// claimRev is the revision of the install this node claimed a
+	// restored store at.
+	claimRev int64
 }
 
 type step struct {

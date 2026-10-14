@@ -120,7 +120,9 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	// admin adopts it as it is. The engine holds on its own until the new
 	// epoch is drawn.
 	e.d.Store.StartTenure()
+	claimedFrom := ""
 	if inst.Restored != nil {
+		claimedFrom = inst.Restored.ClaimedFrom
 		// Copies of the run tokens may be left on the disks of the install
 		// that was lost: every tunnel gets a new secret once pco may write.
 		// Asked for before the restore ends, so that a promotion cut short
@@ -155,6 +157,11 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	msg := fmt.Sprintf("promoted to generation %d; observe-only until pco apply", st.Writer.Generation)
 	e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: kindLease, Subject: e.d.Node, Message: msg, Actor: ActorOf(ctx)})
 	e.adminEvent(ctx, e.d.Node, msg)
+	if claimedFrom != "" {
+		e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: KindSecurity, Subject: e.d.Node, Node: e.d.Node, Security: true,
+			Actor: ActorOf(ctx), Message: fmt.Sprintf("node %s took the restored store into this cluster over the claim of node %s, "+
+				"which was not an online member of it", e.d.Node, claimedFrom)})
+	}
 	e.Trigger()
 	return res, nil
 }

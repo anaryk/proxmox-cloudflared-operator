@@ -440,6 +440,53 @@ func TestRecoverOnARestoredStoreTakesItOverAsSetupDoes(t *testing.T) {
 	require.Equal(t, 4, e.writer().Generation, "above the sentinel at Cloudflare")
 }
 
+// The claim of a node that is no longer an online member of the cluster is
+// taken over by the next node set up, after the same checks: a node that
+// claimed the store and died does not hold the restore up for good. The
+// node it was taken from is recorded, for the security event of the
+// promotion. A claim of an online node, a take-over under way, is not.
+func TestTheClaimOfANodeThatIsGoneIsTakenOver(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		members func(e *testEnv)
+	}{
+		{"not a member any more", func(e *testEnv) { e.clusterOf(firstNode) }},
+		{"offline", func(e *testEnv) {
+			e.writeFile(e.s.host.members, []byte(`{"nodename":"`+testNode+`","version":7,`+
+				`"cluster":{"name":"lab","version":3,"nodes":3,"quorate":1},"nodelist":{`+
+				`"`+firstNode+`":{"id":2,"online":1,"ip":"192.0.2.20"},"pve9":{"id":3,"online":0,"ip":"192.0.2.29"},`+
+				`"`+testNode+`":{"id":1,"online":1,"ip":"`+testAddr+`"}}}`+"\n"), 0o644)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit(serviceUnit)
+			e.restoredElsewhere()
+			tt.members(e)
+			inst := e.install()
+			inst.Restored.TakenOverBy = "pve9"
+			require.NoError(t, e.st.SaveInstall(inst))
+			e.cf.SetConnectors(testAccount, tunnelID, []cfapi.Connector{{ID: "conn-1", Connections: 2}})
+			e.script(preflight("9.0.10"))
+
+			err := e.setup(Options{Yes: true, Node: testNode})
+			require.ErrorContains(t, err, "still runs install "+testInstall, "the checks come first")
+			e.done()
+			require.Equal(t, "pve9", e.install().Restored.TakenOverBy)
+
+			e.cf.SetConnectors(testAccount, tunnelID, nil)
+			e.script(joined()...)
+			require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+			e.done()
+
+			r := e.install().Restored
+			require.Equal(t, testNode, r.TakenOverBy)
+			require.Equal(t, "pve9", r.ClaimedFrom)
+			e.requireShown("took the claim of node pve9")
+		})
+	}
+}
+
 // --new-install would start a second install beside the restored one and
 // leave the restore half done: it is refused.
 func TestANewInstallIsRefusedOnARestoredStore(t *testing.T) {

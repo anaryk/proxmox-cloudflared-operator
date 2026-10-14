@@ -85,7 +85,7 @@ func (r *run) ensureIdentity(ctx context.Context, m members.Members) error {
 	case inst.Cluster.CASHA256 != fingerprint && inst.Restored != nil:
 		// --recover too: what it adopts from Cloudflare is the writer, not
 		// the trust the store of the lost cluster holds.
-		return r.restoredElsewhere(ctx, fingerprint)
+		return r.restoredElsewhere(ctx, m, fingerprint)
 	case inst.Cluster.CASHA256 != fingerprint && !r.o.Recover && !r.o.NewInstall:
 		// A node set up into a store of another cluster would register,
 		// enrol and open the firewall for an install whose writer is
