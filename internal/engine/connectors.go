@@ -352,6 +352,9 @@ func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) bool
 		}
 	}
 	why = append(why, failed...)
+	if c.addOnly != "" {
+		why = append(why, "nothing is withdrawn in this cycle")
+	}
 
 	for _, t := range existing {
 		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name, credential: t.CredentialID}

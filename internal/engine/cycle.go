@@ -165,6 +165,10 @@ type cycleRun struct {
 	// by the cycle.
 	nodes   map[string]store.NodeRev
 	reports map[string]NodeReport
+	// addOnly says why nothing is withdrawn at Cloudflare in this cycle:
+	// no rule a tunnel serves is dropped or blocked, no record deleted, no
+	// connector pruned. Empty in a cycle that writes as it sees.
+	addOnly string
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {

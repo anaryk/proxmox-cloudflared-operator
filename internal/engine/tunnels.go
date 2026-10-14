@@ -30,9 +30,12 @@ func (c *cycleRun) reconcileTunnels() bool {
 	}
 	var res reconcile.TunnelResult
 	c.e.tunnels.SetRecoverHint(c.recoverHint())
-	if held := cmp.Or(c.egressHeld, c.gatewayHeld); held != "" {
+	switch held := cmp.Or(c.egressHeld, c.gatewayHeld); {
+	case held != "":
 		res = c.e.tunnels.RunHeld(c.ctx, plans, c.zones.known, held)
-	} else {
+	case c.addOnly != "":
+		res = c.e.tunnels.RunAddOnly(c.ctx, plans, c.zones.known, c.mode())
+	default:
 		res = c.e.tunnels.Run(c.ctx, plans, c.zones.known, c.mode())
 	}
 	defer func() { c.gateVerdict = c.st.WriterVerdict }()

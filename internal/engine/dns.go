@@ -36,6 +36,7 @@ func (c *cycleRun) reconcileDNS() {
 		InventoryOK:   c.snap.Complete && !c.col.PolicyInvalid,
 		StillUnwanted: c.stillUnwanted,
 		BeforeReplace: c.beforeReplace,
+		NoDeletes:     c.addOnly,
 	}
 	if mode == reconcile.Enforce {
 		in.ConfirmDeletes = c.e.confirm != nil

@@ -147,6 +147,9 @@ func (c *cycleRun) agentsReported() bool {
 			return false
 		}
 		c.e.d.Log.Warn().Strs("nodes", missing).Msg("the agents of these nodes did not report within the takeover hold; they are unknown")
+		// What they would have said is not known: the first cycle that
+		// writes adds and withdraws nothing.
+		c.addOnly = c.problem(problemAddOnly, strings.Join(missing, ", "))
 	}
 	c.e.tenureWrote = true
 	return true

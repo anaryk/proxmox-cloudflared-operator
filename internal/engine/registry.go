@@ -19,6 +19,9 @@ const (
 	// problemTakeoverHold names the nodes a new controller waits for before
 	// it writes, at most takeoverHold after its tenure began.
 	problemTakeoverHold = "waiting for the agents of %s to report to this controller; nothing is written at Cloudflare for up to %s"
+	// problemAddOnly is the first cycle that writes after a takeover hold
+	// that ended without a report of the nodes it names.
+	problemAddOnly = "the agents of %s did not report within the takeover hold; nothing is withdrawn at Cloudflare in this cycle"
 	// problemNoStatus counts the nodes the cluster lists online whose agent
 	// this controller never heard: the agent channel does not reach it.
 	problemNoStatus = ".members lists %d nodes online that have sent no status (%s): check cluster.agentNetwork and the 8644 rule"

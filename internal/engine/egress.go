@@ -107,7 +107,9 @@ func (c *cycleRun) noteVerified(tunnels []reconcile.TunnelState) {
 		ref := tunnelRef{t.AccountID, t.Name}
 		switch {
 		case t.Verified:
-			c.e.verified[ref] = ruleTargets(rules[ref])
+			// What a run that withdrew nothing kept is in the configuration
+			// as much as what the plan gave it.
+			c.e.verified[ref] = ruleTargets(slices.Concat(rules[ref], t.Kept))
 		case !t.Exists && !t.Unknown:
 			delete(c.e.verified, ref)
 		}
