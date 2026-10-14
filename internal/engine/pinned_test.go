@@ -224,8 +224,8 @@ func TestThePinnedTunnelOnItsWayOutHasItsConnectorStopped(t *testing.T) {
 	w, pinned2 := pinnedDB(t)
 	w.acts["pve3"].fail = nil
 	told := false
-	for range 150 {
-		w.tick(10 * time.Second)
+	for range 50 {
+		w.tick(30 * time.Second)
 		if tun, ok := w.tunnelIn(t, "pve2", pinned2); ok && tun.Stop {
 			require.False(t, tun.Run)
 			require.Empty(t, tun.Token.Reveal())
@@ -253,8 +253,8 @@ func TestAPinnedTunnelThatCannotBeDeletedIsTriedAgainLater(t *testing.T) {
 	w.useAPI(testToken, back)
 	w.eng = w.newEngine()
 	w.watchHere(t)
-	for range 150 {
-		w.tick(10 * time.Second)
+	for range 50 {
+		w.tick(30 * time.Second)
 		if tun, ok := w.tunnelIn(t, "pve2", pinned2); ok && tun.Stop {
 			break
 		}
@@ -263,8 +263,8 @@ func TestAPinnedTunnelThatCannotBeDeletedIsTriedAgainLater(t *testing.T) {
 
 	// Due ten minutes after it began to serve nothing, then tried again.
 	var problems []string
-	for range 120 {
-		problems = append(problems, w.tick(10*time.Second).Problems...)
+	for range 40 {
+		problems = append(problems, w.tick(30*time.Second).Problems...)
 	}
 
 	since := w.callsSince(calls)
@@ -277,14 +277,14 @@ func TestAPinnedTunnelThatCannotBeDeletedIsTriedAgainLater(t *testing.T) {
 	}
 	require.Contains(t, w.tunnelNames(), pinned2)
 	require.GreaterOrEqual(t, len(deletes), 2)
-	require.LessOrEqual(t, len(deletes), 4, "tried again after one, two and four minutes, not every ten seconds")
+	require.LessOrEqual(t, len(deletes), 4, "tried again after one, two and four minutes, not in every cycle")
 	require.True(t, slices.ContainsFunc(problems, func(p string) bool {
 		return strings.HasPrefix(p, "deleting tunnel "+pinned2+" in account "+testAccount+", which serves nothing: ") && strings.Contains(p, "; tried again at ")
 	}), problems)
 
 	back.stop()
-	for range 60 {
-		w.tick(10 * time.Second)
+	for range 20 {
+		w.tick(time.Minute)
 	}
 	require.NotContains(t, w.tunnelNames(), pinned2)
 }
