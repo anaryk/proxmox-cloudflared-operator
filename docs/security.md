@@ -407,6 +407,11 @@ not confined on the node:
   3. `pco setup --recover` on this node: it takes a writer generation above every one in
      the tunnels, and leaves pco in observe-only mode.
   4. `pco apply`. The next cycle writes the configuration again, with its own sentinel.
+- It can write a rule for any other name in `.invalid`, the domain where only the sentinels
+  live. pco takes such a rule for another writer as well, never for no sentinel, so that a
+  forged configuration cannot pass as one pco never wrote; the verdict is `foreign` and the
+  line names the rule as one to remove in the dashboard. That holds on a node alone as in a
+  cluster, also for a rule an admin added by hand.
 
 ### What a connector can reach
 

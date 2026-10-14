@@ -143,6 +143,23 @@ func TestAHealthyInstallation(t *testing.T) {
 	require.Equal(t, []string{"tcp region1.v2.argotunnel.com:7844"}, env.dialed)
 }
 
+// A rule for a name in the sentinels' domain that is no sentinel is judged
+// a foreign writer too, and put right by removing it, not by a recovery:
+// the finding says so, where the line of the cycle is the only way to tell
+// it from a sentinel written by someone else.
+func TestAStrayRuleInTheSentinelDomainIsPutRightByRemovingIt(t *testing.T) {
+	st, env := healthyState(), healthyEnv()
+	st.WriterVerdict = "foreign"
+	st.Problems = append(st.Problems, "pco-abc in account acct1: the configuration holds a rule for a name in .invalid that is no sentinel of pco; "+
+		"remove that rule in the Cloudflare dashboard, pco never writes over it; writing stops")
+
+	findings := Run(t.Context(), st, env)
+
+	require.Contains(t, findings, Finding{Check: "writer", Level: LevelFail,
+		Detail: "a rule of the tunnel configuration names a host in .invalid that is no sentinel of pco; pco does not write over it",
+		Fix:    "remove that rule from the configuration of the tunnel in the Cloudflare dashboard, then run pco apply"})
+}
+
 func TestWhatTheDoctorFinds(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

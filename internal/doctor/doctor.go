@@ -274,6 +274,10 @@ func checkInventory(st engine.State) Finding {
 	return ok("inventory", "every guest is listed")
 }
 
+// strayRuleProblem is the part of the problem line of a tunnel run that
+// found a rule for a name in the domain of the sentinels that is none.
+const strayRuleProblem = "holds a rule for a name in .invalid that is no sentinel of pco"
+
 // checkWriter fails when the writer of the tunnel configuration is not this
 // daemon. What puts it right differs by profile: an appliance recovers its
 // own state, and a host is recovered from the node. In an appliance,
@@ -308,6 +312,10 @@ func checkWriter(st engine.State, app ApplianceEnv) Finding {
 		return fail("writer", "the state of this appliance is older than its last write at Cloudflare (rollback or restore)",
 			"pct exec "+vmid+" -- pco appliance recover")
 	case engine.VerdictForeign:
+		if slices.ContainsFunc(st.Problems, func(p string) bool { return strings.Contains(p, strayRuleProblem) }) {
+			return fail("writer", "a rule of the tunnel configuration names a host in .invalid that is no sentinel of pco; pco does not write over it",
+				"remove that rule from the configuration of the tunnel in the Cloudflare dashboard, then run pco apply")
+		}
 		return fail("writer", "a writer of this install that leader.json does not know wrote the tunnel configuration: "+
 			"another installation with this install's id, or a sentinel written with a stolen Cloudflare token", foreign)
 	case engine.VerdictUnknown:

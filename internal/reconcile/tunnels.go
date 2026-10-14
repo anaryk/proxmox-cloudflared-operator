@@ -669,7 +669,10 @@ func foreignWhy(us, by planner.Writer, hint string) string {
 	}
 	switch {
 	case by == planner.Writer{}:
-		return "the configuration holds a sentinel pco cannot read: " + hint
+		// No recovery puts this right: the rule stays whatever generation
+		// the writer takes.
+		return "the configuration holds a rule for a name in .invalid that is no sentinel of pco; " +
+			"remove that rule in the Cloudflare dashboard, pco never writes over it"
 	case by.InstallID != us.InstallID:
 		return fmt.Sprintf("the configuration was written by install %s, generation %d, not by this install: %s",
 			by.InstallID, by.Generation, hint)

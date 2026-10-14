@@ -33,6 +33,28 @@ var (
 	catchAll = planner.IngressRule{Service: "http_status:404"}
 )
 
+// A rule for a name in the domain of the sentinels that reads as none is
+// another writer, on a node alone as in a cluster. The line says what puts
+// it right, which is not a recovery: the rule has to go, as pco never
+// writes over it.
+func TestTunnelARuleInTheSentinelDomainThatIsNoSentinelSaysToRemoveIt(t *testing.T) {
+	f := newFake("acct1")
+	rules := rulesOf(ours, app)
+	rules = slices.Insert(rules, 1, planner.IngressRule{Hostname: "anything.invalid", Service: "http_status:404"})
+	tun := f.SeedTunnel("acct1", testTunnel, rules)
+	writer, _ := scripted(answer{us: ours, stored: ours})
+	r := reconcilerWith(Clients{"cred1": f}, writer)
+	r.SetRecoverHint("run pco appliance recover")
+
+	res := r.Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+
+	require.Equal(t, WriterForeign, res.Verdict)
+	require.Contains(t, res.Problems, "pco-abc in account acct1: the configuration holds a rule for a name in .invalid that is no sentinel of pco; "+
+		"remove that rule in the Cloudflare dashboard, pco never writes over it; writing stops")
+	require.Equal(t, planner.Writer{}, res.Sentinel)
+	require.Equal(t, rules, configOf(t, f, tun).Ingress, "nothing was written")
+}
+
 func writerAt(generation int, nonce string) planner.Writer {
 	return planner.Writer{InstallID: testInstall, Generation: generation, Nonce: nonce}
 }

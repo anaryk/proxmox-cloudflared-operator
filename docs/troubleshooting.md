@@ -649,6 +649,11 @@ writes only while the configuration carries its own mark or an older one.
   no other node runs pco with this install and the store was not restored, follow the order in
   [Security](security.md): replace the token, `pco tunnel rotate`, `pco setup --recover` on this
   node, then `pco apply`. Otherwise stop the other one.
+  A fourth cause is a rule for a name in `.invalid` that is no sentinel of pco, added by hand
+  to the tunnel's configuration: `pco doctor` says so, `pco status` shows the line
+  `the configuration holds a rule for a name in .invalid that is no sentinel of pco`, and pco
+  does not write over it, on a node alone as in a cluster. Remove the rule in the Cloudflare
+  dashboard, then `pco apply`; a recovery would leave it where it is.
 - **unknown**: `leader.json could not be used`. The file is missing or invalid; `pco setup`
   writes one for a store that has none, and `pco setup --recover` takes a generation above the
   one in use. In the appliance, `pco status` lists the problem that says why: after a start of
