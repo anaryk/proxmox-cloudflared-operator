@@ -102,6 +102,8 @@ func (c *clusterRun) startAppliance(t *testing.T) {
 		if c.fake != nil {
 			c.fake.srv.stop()
 		}
+		// Empty once every record of the run is gone.
+		_ = os.Remove(markerDir)
 	})
 	t.Cleanup(func() { c.destroyClusterGuests(t) })
 	t.Cleanup(func() { c.uninstallControllerContainer(t) })
@@ -151,6 +153,27 @@ func (c *clusterRun) agentVMID(node string) int {
 	c.agents.mu.Lock()
 	defer c.agents.mu.Unlock()
 	return c.agents.vmid[node]
+}
+
+// waitAgent waits until the agent container of a node runs commands and its
+// pco answers, asked on that node.
+func (c *clusterRun) waitAgent(t testing.TB, node string) {
+	t.Helper()
+	id := strconv.Itoa(c.agentVMID(node))
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		_, err := c.on(node).here("pct", "exec", id, "--", "true")
+		if err == nil {
+			_, err = c.inAgent(node).pcoOut("agent", "status", "--json")
+			if err == nil || exitCode(err) == 1 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the agent container %s on %s does not answer: %v", id, node, err)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // enforceAppliance leaves observe-only mode in the controller container.
@@ -344,7 +367,7 @@ func testAgentsJoin(t *testing.T, c *clusterRun) {
 		c.agents.mu.Unlock()
 		_, err := c.installAgent(t, node, token)
 		require.NoError(t, err)
-		c.waitAppliance(t, c.agentVMID(node))
+		c.waitAgent(t, node)
 		st := c.waitState(t, node+" joining", 3*time.Minute, func(st engine.State) bool {
 			n, ok := nodeView(st, node)
 			return ok && n.State == store.NodeJoining
@@ -500,7 +523,7 @@ func testJoinTokenReused(t *testing.T, c *clusterRun) {
 	token := c.joinToken(t, second)
 	_, err = c.installAgent(t, second, token)
 	require.NoError(t, err)
-	c.waitAppliance(t, c.agentVMID(second))
+	c.waitAgent(t, second)
 	v := c.agentView(t, second)
 	c.pcoMust(t, "node", "admit", second, "--fingerprint", strings.ToLower(v.CertFingerprint)[:12])
 	c.waitState(t, second+" active again", 3*time.Minute, func(st engine.State) bool {

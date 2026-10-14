@@ -552,16 +552,8 @@ func testMACCloneBlocked(t *testing.T, c *clusterRun) {
 	port := fmt.Sprintf("veth%di0", cloneID)
 	seen := c.lineSeen(t, cloner, func(l string) bool { return strings.Contains(l, mac) && strings.Contains(l, port) },
 		"timeout", "600", "bridge", "monitor", "fdb")
-	clone := c.createOn(t, cloner, 5, guest{mac: mac, tags: "e2e", notes: "a clone of the MAC of " + victim.g.owner()})
-	var at time.Time
-	select {
-	case at = <-seen:
-	case <-time.After(2 * time.Minute):
-		t.Fatalf("%s never learnt %s on %s", cloner, mac, port)
-	}
-
-	// Every node's egress set, asked side by side, until none has the
-	// target.
+	// Every node's egress set, asked side by side from before the clone
+	// starts, until none has the target.
 	var wg sync.WaitGroup
 	left := make(map[string]time.Time)
 	var mu sync.Mutex
@@ -569,7 +561,7 @@ func testMACCloneBlocked(t *testing.T, c *clusterRun) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			deadline := time.Now().Add(time.Minute)
+			deadline := time.Now().Add(4 * time.Minute)
 			for time.Now().Before(deadline) {
 				if targets := c.targetsOn(n); targets != nil && !slices.Contains(targets, target) {
 					mu.Lock()
@@ -581,10 +573,17 @@ func testMACCloneBlocked(t *testing.T, c *clusterRun) {
 			}
 		}()
 	}
+	clone := c.createOn(t, cloner, 5, guest{mac: mac, tags: "e2e", notes: "a clone of the MAC of " + victim.g.owner()})
+	var at time.Time
+	select {
+	case at = <-seen:
+	case <-time.After(2 * time.Minute):
+		t.Fatalf("%s never learnt %s on %s", cloner, mac, port)
+	}
 	wg.Wait()
 	for _, n := range c.names() {
 		when, ok := left[n]
-		require.True(t, ok, "%s is still in the egress set of %s a minute after the clone", target, n)
+		require.True(t, ok, "%s is still in the egress set of %s minutes after the clone", target, n)
 		c.logf(t, "%s left the egress set of %s %s after the watch event", target, n, when.Sub(at))
 		require.LessOrEqual(t, when.Sub(at), 2*time.Second+500*time.Millisecond, "%s left the egress set of %s too late", target, n)
 	}
@@ -1128,6 +1127,14 @@ func testForgetCompromised(t *testing.T, c *clusterRun) {
 	c.mu.Lock()
 	c.gone[victim] = true
 	delete(c.down, victim)
+	// The guests of the node went with it: no route of theirs comes back.
+	c.homes = slices.DeleteFunc(c.homes, func(h homed) bool {
+		if h.node == victim {
+			delete(c.cguests, h.g.vmid)
+			return true
+		}
+		return false
+	})
 	c.mu.Unlock()
 	ctl := c.ctl(t)
 	out, err = ctl.pcoCombined("node", "forget", victim, "--compromised", "--yes")
@@ -1276,6 +1283,9 @@ func testUninstallCluster(t *testing.T, c *clusterRun) {
 
 	t.Log("the whole install goes")
 	holder := c.holder(t)
+	// The registered tags as they were before the run changed them, before
+	// the uninstall takes away the tag setup registered.
+	c.restoreRegisteredTags(t)
 	out, err = c.pcoWithin(holder, uninstallTimeout, "uninstall", "--cluster", "--yes", "--purge-cloudflare", "--detach-managed")
 	c.logf(t, "pco uninstall --cluster on %s:\n%s", holder, out)
 	require.NoError(t, err)

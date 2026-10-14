@@ -43,6 +43,19 @@ const (
 	expiry = 180 * time.Second
 )
 
+// startHomesOn starts the guests of the homes on a node that came back:
+// the run makes them without starting at boot.
+func (c *clusterRun) startHomesOn(t testing.TB, node string) {
+	t.Helper()
+	for _, h := range c.homes {
+		if h.node == node {
+			if out, _ := c.on(node).here("pct", "status", strconv.Itoa(h.g.vmid)); !strings.Contains(out, "running") {
+				c.on(node).hereMust(t, "pct", "start", strconv.Itoa(h.g.vmid))
+			}
+		}
+	}
+}
+
 // leaseOf is the lease the controller's state shows.
 func (c *clusterRun) leaseOf(t testing.TB) engine.LeaseView {
 	t.Helper()
@@ -176,6 +189,7 @@ func testControllerRebooted(t *testing.T, c *clusterRun) {
 	c.logf(t, "%s finished its first enforcing cycle %s after the reboot of %s", next, took, holder)
 	require.LessOrEqual(t, took, rebootBound)
 	c.waitBack(t, holder)
+	c.startHomesOn(t, holder)
 	c.waitActive(t, c.names()...)
 	c.allShared(t, 14*time.Minute)
 	v.requireNoFailure(t, "the reboot of "+holder)

@@ -266,7 +266,7 @@ func (c *clusterRun) clusterPreflight(t *testing.T, profile string) {
 	if _, found, err := installed(); err != nil || found {
 		t.Fatalf("pco is set up in this cluster (or its store cannot be read: %v): the cluster profiles need a cluster without it", err)
 	}
-	if entries, _ := os.ReadDir(markerDir); len(entries) > 0 {
+	if entries, _ := os.ReadDir(markerDir); slices.ContainsFunc(entries, func(e os.DirEntry) bool { return e.Name() != filepath.Base(ownedFile) }) {
 		t.Fatalf("a run of the suite left %s on this node: %s", markerDir, "run test/e2e/cleanup-cluster.sh, which removes what a run of the cluster profiles left")
 	}
 	c.refuseClusterGateTag(t)
@@ -280,7 +280,8 @@ func (c *clusterRun) clusterPreflight(t *testing.T, profile string) {
 		if _, err := on.here("test", "-x", c.pco); err != nil && profile == profileCluster {
 			t.Fatalf("node %s has no %s: install the package on every node first", n.name, c.pco)
 		}
-		if _, err := on.here("test", "-e", markerDir); err == nil {
+		// The record of an install the host profile keeps is no leftover.
+		if left, _ := on.here("sh", "-c", "ls -A "+markerDir+" 2>/dev/null | grep -vx owned"); strings.TrimSpace(left) != "" {
 			t.Fatalf("node %s has %s from a run of the suite: run test/e2e/cleanup-cluster.sh", n.name, markerDir)
 		}
 		addrs := on.hereMust(t, "ip", "-4", "-o", "addr", "show", "dev", c.bridge)
@@ -418,6 +419,13 @@ func (c *clusterRun) start(t *testing.T) {
 	c.setup(t, token)
 	c.markCluster(t)
 	c.enforce(t)
+	if c.fake != nil {
+		// The scenarios tell the nodes' writes apart by the address the
+		// fake sees them from: the driver's first writes must come from its
+		// address in the cluster, or those checks would see nothing.
+		c.ctl(t).tunnel(t)
+		require.NotEmpty(t, c.writesFrom(0, c.self), "the fake saw no write from the address of %s in the cluster", c.self)
+	}
 	for _, n := range c.others(c.self) {
 		c.join(t, n)
 	}
@@ -484,6 +492,7 @@ func (c *clusterRun) removeRelays(t *testing.T) {
 	}
 	if !t.Failed() {
 		unmark(t, clusterFile)
+		unmark(t, ownedFile)
 		_ = os.Remove(markerDir)
 	}
 }

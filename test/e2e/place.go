@@ -63,7 +63,7 @@ func (p place) local() bool { return p.vmid == 0 && p.remote == "" }
 // address the node is reached at.
 func sshArgv(node, addr string) []string {
 	return []string{"ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
-		"-o", "ServerAliveCountMax=4", "-o", "HostKeyAlias=" + node, "-o", "LogLevel=ERROR", "root@" + addr, "--"}
+		"-o", "ServerAliveCountMax=4", "-o", "HostKeyAlias=" + node, "-o", "LogLevel=ERROR", "--", "root@" + addr}
 }
 
 // shellLine is a command line as the remote shell reads it back into the

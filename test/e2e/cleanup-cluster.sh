@@ -49,7 +49,7 @@ on() {
 	if [ "$node" = "$self" ]; then
 		sh -c "$*" </dev/null
 	else
-		ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o HostKeyAlias="$node" -o LogLevel=ERROR "root@$addr" -- "$*"
+		ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o HostKeyAlias="$node" -o LogLevel=ERROR -- "root@$addr" "$*"
 	fi
 }
 
