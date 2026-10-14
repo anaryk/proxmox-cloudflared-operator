@@ -160,14 +160,14 @@ has the rest.
 | `GET /v1/cluster` | the lease, the cluster and its nodes | `pco cluster status` | admin |
 | `POST /v1/cluster/handoff` | the hand-off: from which node, to which, and until when the others hold back | `pco cluster handoff` | admin |
 | `POST /v1/cluster/join-tokens` | the join token, 201 | `pco cluster join-token` | admin |
-| `POST /v1/cluster/finish-upgrade` | the release it came from, the schema now and where the backup went | `pco cluster finish-upgrade` | admin |
+| `POST /v1/cluster/finish-upgrade` | the release it came from, the schema now and where the backup went | `pco cluster finish-upgrade` | not passed on |
 | `POST /v1/cluster/unblock` | 200 | `pco cluster unblock` | admin |
 | `POST /v1/cluster/uninstall` | the nodes left and the line to run on each | `pco uninstall --cluster` | not passed on |
 | `GET /v1/nodes` | the nodes of the registry | `pco node list` | admin |
 | `POST /v1/nodes/:name/admit` | the node | `pco node admit` | admin |
 | `POST /v1/nodes/:name/drain` | the node | `pco node drain` | admin |
 | `POST /v1/nodes/:name/undrain` | the node | `pco node undrain` | admin |
-| `POST /v1/nodes/:name/forget` | what was done, what is left and what pco cannot rotate | `pco node forget` | admin |
+| `POST /v1/nodes/:name/forget` | what was done, what is left and what pco cannot rotate | `pco node forget` | admin; with `compromised`, root on the socket |
 | `PUT /v1/nodes/:name` | the node | `pco node set` | admin |
 | `GET /v1/local/agent` | the agent of this node, as it sees itself | `pco agent status` | admin |
 | `POST /v1/local/agent/reset-epoch` | 200 | `pco agent reset-epoch` | not passed on |
@@ -707,7 +707,7 @@ nodes alone. On a node alone the list is empty.
 for the node named, which alone may take it for 30 seconds, or for whichever node comes first
 when none is named; the answer is `{"from", "to", "until"}`. `POST /v1/cluster/join-tokens
 {"node"}` answers `{"id", "node", "expires", "token"}`: the token is the one copy there is, and
-the daemon keeps its hash alone. `POST /v1/cluster/finish-upgrade {}` ends an upgrade from an
+the daemon keeps its hash alone. `POST /v1/cluster/finish-upgrade {}`, root's alone, ends an upgrade from an
 earlier release once every registered node that is not removed runs a build that reads this
 release's store, a node that is down counted; it copies the store below `/var/lib/pco/backup`
 first and answers `{"from", "schema", "backup"}`. `POST /v1/cluster/unblock {"address"}` ends the
@@ -725,8 +725,8 @@ ends an admin's drain, not one Proxmox's maintenance mode made. `POST /v1/nodes/
 {"compromised"}` removes a node that is gone, closes its connections and rotates the shared
 tunnel's secret (`cluster.rotateOnForget`), dropping the node's connector alone at Cloudflare:
 the remaining replicas keep their connections until each restarts with the new token. What the
-call cannot finish, the cycles do; the node's entry keeps the progress. With `compromised`,
-refused in observe-only mode and while the node is still
+call cannot finish, the cycles do; the node's entry keeps the progress. With `compromised`, root's
+alone, refused in observe-only mode and while the node is still
 in the Proxmox cluster, every secret of the install is rotated step by step afterwards, and the
 answer `{"node", "compromised", "done", "pending", "notRotated"}` says what was done, what is
 left and what the node's disk holds that pco cannot rotate. `PUT /v1/nodes/:name
@@ -797,7 +797,7 @@ stream pco web holds, handed out to every browser filtered for its session.
 | `DELETE /api/v1/credentials/:id`, `/routes/manual/:id` | the same | admin | none; 60 s |
 | `DELETE /api/v1/networks/:id` | the same, with `rev` and `confirm` | admin | none; 60 s |
 | `GET /api/v1/cluster`, `/nodes`, `/local/agent` | the same | admin | none; 10 s |
-| `POST /api/v1/cluster/handoff`, `/cluster/join-tokens`, `/cluster/finish-upgrade`, `/cluster/unblock`, `/nodes/:name/admit`, `/nodes/:name/drain`, `/nodes/:name/undrain`, `/nodes/:name/forget` | the same | admin | 64 KiB; 60 s |
+| `POST /api/v1/cluster/handoff`, `/cluster/join-tokens`, `/cluster/unblock`, `/nodes/:name/admit`, `/nodes/:name/drain`, `/nodes/:name/undrain`, `/nodes/:name/forget` | the same | admin | 64 KiB; 60 s |
 | `PUT /api/v1/nodes/:name` | the same | admin | 64 KiB; 60 s |
 
 A reader gets the networks without the MACs of the legs, and of the managed network the cards,

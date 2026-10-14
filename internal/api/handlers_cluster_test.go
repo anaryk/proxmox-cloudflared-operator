@@ -185,6 +185,31 @@ func TestTheClusterRoutesPassRefusalsOn(t *testing.T) {
 	require.Empty(t, f.called(), "the engine was asked nothing")
 }
 
+// Forgetting a node as compromised and finishing an upgrade are root's
+// alone, as rotating a tunnel's secret is; a plain forget is any admin's.
+func TestForgetAsCompromisedAndFinishUpgradeAreRootsAlone(t *testing.T) {
+	f := &fakeEngine{}
+	s := New(f, "1.2.3", []uint32{0, testUID}, zerolog.Nop())
+	s.checkPeers = true
+	for _, tt := range []struct{ target, body string }{
+		{"/v1/nodes/pve3/forget", `{"compromised":true}`},
+		{"/v1/cluster/finish-upgrade", `{}`},
+	} {
+		rec := do(s, http.MethodPost, tt.target, tt.body)
+		require.Equal(t, http.StatusForbidden, rec.Code, tt.target)
+		require.Equal(t, "forbidden", parseError(t, rec).Code)
+	}
+	require.Empty(t, f.called())
+
+	rec := do(s, http.MethodPost, "/v1/nodes/pve3/forget", `{"compromised":false}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	rec = send(s, requestFrom(0, http.MethodPost, "/v1/nodes/pve3/forget", `{"compromised":true}`))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	rec = send(s, requestFrom(0, http.MethodPost, "/v1/cluster/finish-upgrade", `{}`))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Len(t, f.called(), 3)
+}
+
 // Uninstalling the cluster and resetting the agent's epoch are root's alone.
 func TestUninstallClusterAndResetEpochAreRootsAlone(t *testing.T) {
 	f := &fakeEngine{}

@@ -244,8 +244,8 @@ func (a *app) nodeForgetCmd() *cobra.Command {
 			"token a new secret (pco setup --repair); the daemon then rotates every tunnel's secret, waits\n" +
 			"for the connectors, rotates the CA of the install and, ten minutes later, stops taking the\n" +
 			"old one. pco cluster status follows it; a controller that takes over in the middle finishes\n" +
-			"it. What the disk holds that pco cannot rotate is listed. The question needs a terminal; a\n" +
-			"script passes --yes.\n\n" + askHelp,
+			"it. What the disk holds that pco cannot rotate is listed. With --compromised it runs as root\n" +
+			"on the controller. The question needs a terminal; a script passes --yes.\n\n" + askHelp,
 		Example: "  # A node that was destroyed\n" +
 			"  pco node forget pve3\n\n" +
 			"  # A node whose disk was stolen, once pvecm delnode ran\n" +

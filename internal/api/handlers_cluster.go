@@ -13,6 +13,8 @@ var (
 	errBadBlockAddr = &httpError{http.StatusBadRequest, codeInvalid, "address must be an IP address", false}
 	errUninstallBy  = &httpError{http.StatusForbidden, codeForbidden, "only root may uninstall the cluster", false}
 	errResetEpochBy = &httpError{http.StatusForbidden, codeForbidden, "only root may reset the epoch of the agent", false}
+	errCompromised  = &httpError{http.StatusForbidden, codeForbidden, "only root may forget a node as compromised", false}
+	errFinishBy     = &httpError{http.StatusForbidden, codeForbidden, "only root may finish an upgrade", false}
 )
 
 // clusterRoutes adds the routes of a cluster: its status and its nodes,
@@ -78,7 +80,13 @@ func (s *Server) postJoinToken(c *gin.Context) {
 	c.JSON(http.StatusCreated, res)
 }
 
+// postFinishUpgrade raises what the install keeps to this release. Only
+// root may ask, where the peer can be told.
 func (s *Server) postFinishUpgrade(c *gin.Context) {
+	if !s.byRoot(c) {
+		s.fail(c, errFinishBy)
+		return
+	}
 	if err := decode(c, &struct{}{}, true); err != nil {
 		s.fail(c, err)
 		return
@@ -191,6 +199,11 @@ func (s *Server) postForgetNode(c *gin.Context) {
 		s.fail(c, err)
 		return
 	}
+	if req.Compromised && !s.byRoot(c) {
+		// It rotates every secret of the install, as root alone may.
+		s.fail(c, errCompromised)
+		return
+	}
 	res, err := s.engine.ForgetNode(c.Request.Context(), c.Param("name"), req.Compromised)
 	if err != nil {
 		s.fail(c, err)
@@ -246,4 +259,10 @@ func (s *Server) postResetEpoch(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, struct{}{})
+}
+
+// byRoot says whether root asks, where the peer can be told.
+func (s *Server) byRoot(c *gin.Context) bool {
+	uid, ok := peerUID(c.Request.Context())
+	return !s.checkPeers || ok && uid == 0
 }

@@ -204,7 +204,6 @@ var noAction = []call{
 	{http.MethodGet, "/cluster"},
 	{http.MethodPost, "/cluster/handoff"},
 	{http.MethodPost, "/cluster/join-tokens"},
-	{http.MethodPost, "/cluster/finish-upgrade"},
 	{http.MethodPost, "/cluster/unblock"},
 	{http.MethodGet, "/nodes"},
 	{http.MethodPost, "/nodes/:name/admit"},

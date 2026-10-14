@@ -85,7 +85,6 @@ var tableRows = map[string]tableRow{
 	"GET /cluster":                       {},
 	"POST /cluster/handoff":              {body: `{"to":"pve2"}`},
 	"POST /cluster/join-tokens":          {body: `{"node":"app1"}`},
-	"POST /cluster/finish-upgrade":       {body: `{}`},
 	"POST /cluster/unblock":              {body: `{"address":"10.0.0.7"}`},
 	"GET /nodes":                         {},
 	"POST /nodes/:name/admit":            {path: "/nodes/app1/admit", body: `{"fingerprint":"9f86d081"}`},
@@ -267,7 +266,7 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 			require.Zero(t, r.Body, key)
 		}
 	}
-	require.Len(t, Table, len(readers)+34)
+	require.Len(t, Table, len(readers)+33)
 }
 
 func TestReadersAreRefusedEveryAdminRule(t *testing.T) {
@@ -359,6 +358,7 @@ func TestWhatIsNotInTheTableReachesNoSocket(t *testing.T) {
 		code         string
 	}{
 		{http.MethodPost, "/api/v1/tunnels/rotate", http.StatusNotFound, "no_route"},
+		{http.MethodPost, "/api/v1/cluster/finish-upgrade", http.StatusNotFound, "no_route"},
 		{http.MethodGet, "/api/v1/segments", http.StatusNotFound, "no_route"},
 		{http.MethodGet, "/api/v1/nothing", http.StatusNotFound, "no_route"},
 		{http.MethodGet, "/api/elsewhere", http.StatusNotFound, "no_route"},

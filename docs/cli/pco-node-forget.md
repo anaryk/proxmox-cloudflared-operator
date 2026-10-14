@@ -17,8 +17,8 @@ credential add, then remove the old ones and revoke them at Cloudflare) and give
 token a new secret (pco setup `--repair`); the daemon then rotates every tunnel's secret, waits
 for the connectors, rotates the CA of the install and, ten minutes later, stops taking the
 old one. pco cluster status follows it; a controller that takes over in the middle finishes
-it. What the disk holds that pco cannot rotate is listed. The question needs a terminal; a
-script passes `--yes`.
+it. What the disk holds that pco cannot rotate is listed. With `--compromised` it runs as root
+on the controller. The question needs a terminal; a script passes `--yes`.
 
 It asks the daemon through its socket, which answers only root and pco-web, the user of the
 web interface; the exit status is 2 when the daemon could not be asked.

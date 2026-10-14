@@ -6,7 +6,7 @@ cannot be set. It is refused while a registered node that was not forgotten runs
 does not read this release's store; a node that is down counts, so a dead node is forgotten
 first with pco node forget. The store is copied below `/var/lib/pco/backup` on the controller's
 node before anything changes; pco export is the backup to keep. The question needs a
-terminal; a script passes `--yes`.
+terminal; a script passes `--yes`. It runs as root on the controller.
 
 It asks the daemon through its socket, which answers only root and pco-web, the user of the
 web interface; the exit status is 2 when the daemon could not be asked.

@@ -137,12 +137,12 @@ var Table = []Rule{
 	// The cluster and its nodes are an admin's: the status names the
 	// agent addresses and the lease, a join token is a secret, and every
 	// action on a node changes what the install serves. Uninstalling the
-	// cluster and resetting the agent's epoch are root's alone, on the
-	// socket, and are not passed on.
+	// cluster, finishing an upgrade and resetting the agent's epoch are
+	// root's alone, on the socket, and are not passed on; so is a forget
+	// as compromised, which the socket refuses to the gateway.
 	{Method: http.MethodGet, Path: "/cluster", Min: auth.RoleAdmin, Timeout: readTimeout},
 	{Method: http.MethodPost, Path: "/cluster/handoff", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPost, Path: "/cluster/join-tokens", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
-	{Method: http.MethodPost, Path: "/cluster/finish-upgrade", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPost, Path: "/cluster/unblock", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodGet, Path: "/nodes", Min: auth.RoleAdmin, Timeout: readTimeout},
 	{Method: http.MethodPost, Path: "/nodes/:name/admit", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},

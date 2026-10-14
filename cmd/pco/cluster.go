@@ -328,7 +328,7 @@ func (a *app) clusterFinishUpgradeCmd() *cobra.Command {
 			"does not read this release's store; a node that is down counts, so a dead node is forgotten\n" +
 			"first with pco node forget. The store is copied below /var/lib/pco/backup on the controller's\n" +
 			"node before anything changes; pco export is the backup to keep. The question needs a\n" +
-			"terminal; a script passes --yes.\n\n" + askHelp,
+			"terminal; a script passes --yes. It runs as root on the controller.\n\n" + askHelp,
 		Example: "  # Once every node runs this release\n" +
 			"  pco cluster finish-upgrade\n\n" +
 			"  # From a script\n" +
