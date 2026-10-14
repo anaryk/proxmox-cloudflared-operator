@@ -404,6 +404,10 @@ type Engine struct {
 	ruleLimit int
 	// audit writes the audit trail of this node to the cluster root.
 	audit *auditTrail
+	// leftOut are the files of the audit trail a query left out, by why,
+	// each said once in the log.
+	leftOutMu sync.Mutex
+	leftOut   map[string]bool
 	// facts are what the last cycle knew of the cluster beyond the state.
 	facts clusterFacts
 }

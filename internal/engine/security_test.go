@@ -92,6 +92,44 @@ func TestTheEventsOfAnotherNodeAreNotWrittenByTheController(t *testing.T) {
 }
 
 // The trail is written as the events come, until the engine stops.
+// An event the file would refuse does not hold up the others queued with it.
+func TestAnEventTheFileRefusesIsNotQueued(t *testing.T) {
+	e := newEnv(t)
+
+	e.eng.audit.add([]Event{{Kind: kindAdmin, Message: "no time"}, {At: t0, Kind: kindAdmin, Message: "fine"}})
+	e.eng.audit.flush()
+
+	got, err := e.store.SecurityEvents()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "fine", got[0].Message)
+}
+
+// The last write when the engine stops says nothing in the trail of what
+// was lost: no later write would carry it. The log says so.
+func TestTheLastWriteSaysNoLossInTheTrail(t *testing.T) {
+	lost := 0
+	a := newAuditTrail(testNode, func(string, []store.SecurityEvent) error { return nil }, zerolog.Nop())
+	a.lost = func(n int) { lost += n }
+	a.dropped = 3
+	a.add([]Event{{At: t0, Kind: kindAdmin, Message: "one"}})
+
+	a.write1(false)
+
+	require.Zero(t, lost)
+	require.Equal(t, 3, a.dropped, "left for the line of the log")
+}
+
+// A damaged file of the trail is named in the log once, not at every query.
+func TestADamagedFileOfTheTrailIsSaidOnce(t *testing.T) {
+	e := newEnv(t)
+	lines := logged(e, zerolog.WarnLevel)
+	e.eng.sayLeftOut([]string{"pve4: damaged"})
+	e.eng.sayLeftOut([]string{"pve4: damaged", "pve5: damaged"})
+
+	require.Len(t, withMessage(lines(), "a file of the audit trail is left out"), 2)
+}
+
 func TestTheAuditTrailIsWrittenAsEventsCome(t *testing.T) {
 	written := make(chan string, 4)
 	a := newAuditTrail(testNode, func(_ string, events []store.SecurityEvent) error {

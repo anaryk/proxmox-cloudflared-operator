@@ -66,7 +66,8 @@ func (q EventQuery) Match(ev Event) bool {
 // limit, oldest first. They come from the ring, and with History also from
 // the newest 10 MiB of events.log.1 and events.log, where a line that is not
 // an event is skipped. A query of the kind KindSecurity alone gets the audit
-// trail of every node from the cluster root instead, whatever After says.
+// trail of every node from the cluster root instead, by time; with After or
+// Boot it is refused, as the trail has no position to read on from.
 func (e *Engine) QueryEvents(q EventQuery) ([]Event, error) {
 	limit := q.Limit
 	switch {

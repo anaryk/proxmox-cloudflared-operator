@@ -55,13 +55,20 @@ func newAuditTrail(node string, write func(string, []store.SecurityEvent) error,
 	return &auditTrail{node: node, write: write, log: log, wake: make(chan struct{}, 1)}
 }
 
-// add queues the events of the audit trail among events.
+// add queues the events of the audit trail among events. One the file
+// would refuse, without a kind or a time, is left out with a line in the
+// log: it would hold up every event queued with it.
 func (a *auditTrail) add(events []Event) {
 	var mine []store.SecurityEvent
 	for _, ev := range events {
-		if audited(ev) {
-			mine = append(mine, store.SecurityEvent{At: ev.At, Level: ev.Level, Kind: ev.Kind, Subject: ev.Subject, Message: ev.Message, Actor: ev.Actor})
+		if !audited(ev) {
+			continue
 		}
+		if ev.Kind == "" || ev.At.IsZero() {
+			a.log.Warn().Str("event", ev.Kind).Str("message", ev.Message).Msg("an event of the audit trail without a kind or a time is not written to the cluster root")
+			continue
+		}
+		mine = append(mine, store.SecurityEvent{At: ev.At, Level: ev.Level, Kind: ev.Kind, Subject: ev.Subject, Message: ev.Message, Actor: ev.Actor})
 	}
 	if len(mine) == 0 {
 		return
@@ -88,7 +95,11 @@ func (a *auditTrail) trim() {
 // flush writes what waits in one write, and keeps it for the next try when
 // the write fails. Once one works after events were dropped, that is said
 // in the log and, through lost, in the trail.
-func (a *auditTrail) flush() {
+func (a *auditTrail) flush() { a.write1(true) }
+
+// write1 is flush; sayLost false says nothing of what was dropped, for the
+// last write when the engine stops, whose event no later write would carry.
+func (a *auditTrail) write1(sayLost bool) {
 	a.mu.Lock()
 	pending := a.pending
 	a.pending = nil
@@ -110,8 +121,10 @@ func (a *auditTrail) flush() {
 	}
 	a.mu.Lock()
 	a.failing = false
-	dropped := a.dropped
-	a.dropped = 0
+	dropped := 0
+	if sayLost {
+		dropped, a.dropped = a.dropped, 0
+	}
 	a.mu.Unlock()
 	if dropped > 0 {
 		a.log.Warn().Int("lost", dropped).Msg("events of the audit trail were lost while the cluster root could not be written")
@@ -126,7 +139,7 @@ func (a *auditTrail) flush() {
 // in the log how many events that could not be written are lost.
 func (a *auditTrail) run(ctx context.Context, after func(time.Duration) (<-chan time.Time, func() bool)) {
 	defer func() {
-		a.flush()
+		a.write1(false)
 		a.mu.Lock()
 		left := len(a.pending) + a.dropped
 		a.mu.Unlock()
@@ -168,9 +181,7 @@ func (e *Engine) auditEvents(q EventQuery, limit int) ([]Event, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading the audit trail: %w", err)
 	}
-	for _, why := range skipped {
-		e.d.Log.Warn().Str("why", why).Msg("a file of the audit trail is left out")
-	}
+	e.sayLeftOut(skipped)
 	q.Kind = nil
 	var out []Event
 	for _, s := range trail {
@@ -206,4 +217,20 @@ func agentKind(kind string) string {
 		return "agent:" + kind
 	}
 	return kind
+}
+
+// sayLeftOut logs, once each, why files of the audit trail were left out.
+func (e *Engine) sayLeftOut(skipped []string) {
+	e.leftOutMu.Lock()
+	defer e.leftOutMu.Unlock()
+	for _, why := range skipped {
+		if e.leftOut[why] {
+			continue
+		}
+		if e.leftOut == nil {
+			e.leftOut = map[string]bool{}
+		}
+		e.leftOut[why] = true
+		e.d.Log.Warn().Str("why", why).Msg("a file of the audit trail is left out")
+	}
 }
