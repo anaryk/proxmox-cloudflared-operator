@@ -175,6 +175,14 @@ func (c *cycleRun) retirePinned() {
 		if api == nil {
 			continue
 		}
+		if removed {
+			// The node may still run its connector: Cloudflare deletes no
+			// tunnel with connections, and the node must keep none.
+			if err := api.CleanUpConnections(c.ctx, t.AccountID, t.ID); err != nil {
+				c.problem("ending the connections of tunnel %s in account %s, which node %s ran: %v", t.Name, t.AccountID, node, err)
+				continue
+			}
+		}
 		if err := api.DeleteTunnel(c.ctx, t.AccountID, t.ID); err != nil {
 			c.problem("deleting tunnel %s in account %s, which serves nothing: %v", t.Name, t.AccountID, err)
 			continue

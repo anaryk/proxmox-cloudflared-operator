@@ -16,10 +16,17 @@ import (
 )
 
 // connectorDropFailing fails the end of one connector's connections while
-// armed.
+// armed, and with all also the end of every connection of a tunnel.
 type connectorDropFailing struct {
 	cfapi.API
-	armed *atomic.Bool
+	armed, all *atomic.Bool
+}
+
+func (c connectorDropFailing) CleanUpConnections(ctx context.Context, account, tunnel string) error {
+	if c.armed.Load() && c.all.Load() {
+		return errors.New("cloudflare api: HTTP 500: internal")
+	}
+	return c.API.CleanUpConnections(ctx, account, tunnel)
 }
 
 func (c connectorDropFailing) CleanUpConnector(ctx context.Context, account, tunnel, id string) error {
@@ -116,8 +123,9 @@ func TestARotationTheForgetCouldNotDoIsFinishedByTheCycles(t *testing.T) {
 // only that is tried again, and the tunnel gets no further secret.
 func TestASecretIsGivenOnceAndOnlyWhatFollowsIsTriedAgain(t *testing.T) {
 	w := threeNodes(t)
-	armed := &atomic.Bool{}
-	w.useAPI(testToken, connectorDropFailing{API: w.cf, armed: armed})
+	armed, all := &atomic.Bool{}, &atomic.Bool{}
+	all.Store(true)
+	w.useAPI(testToken, connectorDropFailing{API: w.cf, armed: armed, all: all})
 	w.settle()
 	id := w.tunnelID(t, tunnelName)
 	w.listAt(t, tunnelName, "pve2-"+id, "pve3-"+id)
@@ -127,7 +135,7 @@ func TestASecretIsGivenOnceAndOnlyWhatFollowsIsTriedAgain(t *testing.T) {
 	res, err := w.eng.ForgetNode(t.Context(), "pve3", false)
 
 	require.NoError(t, err)
-	require.Contains(t, strings.Join(res.Pending, "\n"), "its connector pve3-"+id+" could not be dropped")
+	require.Contains(t, strings.Join(res.Pending, "\n"), "connector pve3-"+id)
 	rot := entryOf(t, w.env, "pve3").Rotation
 	require.Equal(t, []string{id}, rot.Rotated)
 	require.Empty(t, rot.TakenUp)
@@ -141,4 +149,67 @@ func TestASecretIsGivenOnceAndOnlyWhatFollowsIsTriedAgain(t *testing.T) {
 	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id))
 	require.Equal(t, []string{"pve2-" + id}, w.listedIDs(t, id))
 	require.Nil(t, entryOf(t, w.env, "pve3").Rotation)
+}
+
+// The connector of the forgotten node is dropped however little is known of
+// it: one no node still in the install owns goes when its id is not known,
+// and when no connector can be dropped alone every connection of the tunnel
+// is ended. The rotation is finished only then.
+func TestTheForgottenNodeKeepsNoConnection(t *testing.T) {
+	t.Run("its connector id not known", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		id := w.tunnelID(t, tunnelName)
+		w.conn.setConnectorID(id, "c-pve1")
+		w.listAt(t, tunnelName, "c-pve1", "pve2-"+id, "pve3-"+id)
+		w.tick(time.Second)
+		// As after a takeover the agent of pve3 never reported to.
+		delete(w.eng.place.ids, "pve3")
+		n := len(w.cf.Calls())
+
+		res, err := w.eng.ForgetNode(t.Context(), "pve3", false)
+
+		require.NoError(t, err)
+		require.Empty(t, res.Pending)
+		require.Contains(t, w.callsSince(n), "CleanUpConnector acc1 "+id+" pve3-"+id)
+		require.NotContains(t, w.callsSince(n), "CleanUpConnections acc1 "+id)
+		require.Equal(t, []string{"c-pve1", "pve2-" + id}, w.listedIDs(t, id))
+	})
+	t.Run("a connector that cannot be dropped alone", func(t *testing.T) {
+		w := threeNodes(t)
+		armed, all := &atomic.Bool{}, &atomic.Bool{}
+		w.useAPI(testToken, connectorDropFailing{API: w.cf, armed: armed, all: all})
+		w.settle()
+		id := w.tunnelID(t, tunnelName)
+		w.listAt(t, tunnelName, "pve2-"+id, "pve3-"+id)
+		w.tick(time.Second)
+		armed.Store(true)
+		n := len(w.cf.Calls())
+
+		res, err := w.eng.ForgetNode(t.Context(), "pve3", false)
+
+		require.NoError(t, err)
+		require.Empty(t, res.Pending)
+		require.Contains(t, w.callsSince(n), "CleanUpConnections acc1 "+id, "every connection ends instead")
+		require.Empty(t, w.listedIDs(t, id))
+		w.tick(time.Second)
+		require.Nil(t, entryOf(t, w.env, "pve3").Rotation)
+	})
+	t.Run("kept pending while nothing could be dropped", func(t *testing.T) {
+		w := threeNodes(t)
+		armed, all := &atomic.Bool{}, &atomic.Bool{}
+		all.Store(true)
+		w.useAPI(testToken, connectorDropFailing{API: w.cf, armed: armed, all: all})
+		w.settle()
+		armed.Store(true)
+		_, err := w.eng.ForgetNode(t.Context(), "pve3", false)
+		require.NoError(t, err)
+		for range 2 {
+			w.restart(t)
+			w.tick(time.Second)
+			rot := entryOf(t, w.env, "pve3").Rotation
+			require.NotNil(t, rot, "a crash or a failure keeps it pending")
+			require.Empty(t, rot.TakenUp)
+		}
+	})
 }

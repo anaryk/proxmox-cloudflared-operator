@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -162,6 +163,27 @@ func TestARevokedNodesPinnedTunnelGoesAtOnce(t *testing.T) {
 			require.Empty(t, moves)
 		})
 	}
+}
+
+// The connector a removed node still runs of its pinned tunnel loses its
+// connections before the tunnel is deleted: Cloudflare deletes no tunnel
+// that has connections, and the node keeps none.
+func TestARemovedNodesPinnedConnectorIsDroppedBeforeItsTunnelGoes(t *testing.T) {
+	w, pinned2 := pinnedDB(t)
+	id := w.tunnelID(t, pinned2)
+	w.cf.SetConnectors(testAccount, id, []cfapi.Connector{{ID: "pve2-" + id, Connections: 4}})
+	n := entryOf(t, w.env, "pve2")
+	n.State = store.NodeRemoved
+	require.NoError(t, w.store.SaveNode(n))
+	calls := len(w.cf.Calls())
+
+	w.tick(time.Second)
+
+	since := w.callsSince(calls)
+	cleaned, deleted := slices.Index(since, "CleanUpConnections acc1 "+id), slices.Index(since, "DeleteTunnel acc1 "+id)
+	require.NotEqual(t, -1, cleaned, since)
+	require.Less(t, cleaned, deleted, since)
+	require.NotContains(t, w.tunnelNames(), pinned2)
 }
 
 // A node whose pinned routes moved away is no longer handed the token of
