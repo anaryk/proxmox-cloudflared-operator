@@ -1133,6 +1133,29 @@ Appliance agents are on the other side of that line. They never hold the CA's ke
 appliance agent pins the CA it got with its first certificate and the controller's server
 name, so it only follows a controller of its own install.
 
+### What a new controller takes from the nodes
+
+A controller that takes over checks its store against what the nodes hold before it gives out
+a service address or a managed card, since a store that lags behind could give one twice. What
+it takes is limited, so that neither a node nor a guest can steer it:
+
+- The pool of service addresses moves past an address a configuration verified at Cloudflare
+  sends a connector to at any time. An address only an agent reports moves it once in a
+  tenure, once every node has reported, and no further than the store has mappings; nothing
+  moves it more than 1024 addresses in a tenure. A lying agent can make the pool skip that
+  many addresses, and no more. A report it does not take is a problem line and holds nothing.
+  The pool never moves back, so an address below it is never given out again.
+- Allocation waits for a silent node for 5 minutes at most if it reported to this controller
+  before, or was never admitted; what its last report maps stays taken. A node that was
+  admitted and never reported to this controller holds allocation until it reports or is
+  forgotten, as what its gateway maps is not known.
+- A managed card whose lease the store lost gets it again, from its MAC, only for a guest that
+  carries the tag `cf-tunnel-managed` or whose attachment the store holds. A Proxmox user with
+  `VM.Config.Network` on a guest can add a card with a MAC of pco's form that encodes any
+  address of the managed network; were its lease saved again for any guest, that user could
+  take an address whose lease the store lost from the guest that holds it. Such a card is
+  reported, and it gets nothing.
+
 ## What Cloudflare sees
 
 - The hostnames you publish, and the addresses and ports of the guests behind them. They are

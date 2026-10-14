@@ -10,6 +10,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -56,13 +57,15 @@ func TestAStoreBehindAnAgentsGatewayNeverGivesItsAddressAgain(t *testing.T) {
 // A controller that takes over checks the leases against the managed cards
 // the guests have: a card whose lease is missing gets it again, from its MAC,
 // so that its address is never given to another card; a lease whose card is
-// gone is kept, and said, never given out again.
+// gone is kept, and said, never given out again. Only a guest that consents
+// by its tag, or whose attachment the store holds, gets its lease again.
 func TestATakeoverGivesAManagedCardItsMissingLease(t *testing.T) {
 	w, _ := legWorld(t)
 	lost := netip.MustParseAddr("10.203.118.30")
 	orphan := netip.MustParseAddr("10.203.118.31")
 	snap := w.inv.snapshot()
 	g := carded(guest(105, "lost"), "pve3", "bc:24:11:00:05:01")
+	g.Tags = []string{managednet.Tag}
 	g.NICs = append(g.NICs, model.NIC{Index: 2, MAC: store.ManagedMAC(lost), Bridge: gateway.ManagedBridge})
 	snap.Guests = append(snap.Guests, g)
 	w.inv.set(snap)
@@ -82,6 +85,42 @@ func TestATakeoverGivesAManagedCardItsMissingLease(t *testing.T) {
 	require.Contains(t, w.eventMessages(), "the lease of 10.203.118.30 for net2 of qemu/105 was missing from the store and is saved again")
 	require.Contains(t, w.eventMessages(), "the lease of 10.203.118.31 of qemu/106 has no card in any guest; "+
 		"its address is kept and not given again until the lease is released")
+
+	t.Run("a guest that neither consents by its tag nor has an attachment", func(t *testing.T) {
+		w, _ := legWorld(t)
+		taken := netip.MustParseAddr("10.203.118.32")
+		snap := w.inv.snapshot()
+		g := carded(guest(107, "stray"), "pve3", "bc:24:11:00:07:01")
+		g.NICs = append(g.NICs, model.NIC{Index: 1, MAC: store.ManagedMAC(taken), Bridge: gateway.ManagedBridge})
+		snap.Guests = append(snap.Guests, g)
+		w.inv.set(snap)
+
+		w.tick(time.Second)
+
+		leases, err := w.store.Leases()
+		require.NoError(t, err)
+		require.NotContains(t, leases, store.ManagedMAC(taken), "a card anyone may add claims no address")
+		require.Contains(t, w.eventMessages(), "the managed card 06:50:43:4f:76:20 of qemu/107 has no lease, and qemu/107 neither carries the tag "+
+			managednet.Tag+" nor has an attachment of it; its lease is not saved again")
+	})
+
+	t.Run("a guest whose attachment the store holds", func(t *testing.T) {
+		w, _ := legWorld(t)
+		addr := netip.MustParseAddr("10.203.118.33")
+		snap := w.inv.snapshot()
+		g := carded(guest(108, "kept"), "pve3", "bc:24:11:00:08:01")
+		g.NICs = append(g.NICs, model.NIC{Index: 1, MAC: store.ManagedMAC(addr), Bridge: gateway.ManagedBridge})
+		snap.Guests = append(snap.Guests, g)
+		w.inv.set(snap)
+		require.NoError(t, w.store.SaveAttachment(store.Attachment{Owner: "qemu/108", Identity: "uuid:108", NIC: 1,
+			MAC: store.ManagedMAC(addr), Addr: addr, Consent: "approval", Since: t0}))
+
+		w.tick(time.Second)
+
+		leases, err := w.store.Leases()
+		require.NoError(t, err)
+		require.Contains(t, leases, store.ManagedMAC(addr))
+	})
 }
 
 // mappings gives the store n mappings of service addresses, from the start

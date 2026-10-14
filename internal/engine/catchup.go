@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -148,10 +149,12 @@ func (c *cycleRun) keepCardLeases() bool {
 		c.problem("reading the attachments: %v", err)
 		return false
 	}
+	attached := map[string]string{} // by MAC, the owner of its attachment
 	for _, a := range atts {
 		// The managed step keeps the lease of an attachment, and gives it
 		// back once its card is gone.
 		carded[strings.ToLower(a.MAC)] = true
+		attached[strings.ToLower(a.MAC)] = a.Owner
 	}
 	owners := cardOwners(c.snap.Guests)
 	saved := 0
@@ -171,6 +174,15 @@ func (c *cycleRun) keepCardLeases() bool {
 				c.saidOnce("two cards "+text, Event{At: c.now, Level: levelWarn, Kind: kindManaged, Subject: g.Ref.String(), Guest: guestOf(g.Ref.String()),
 					Message: fmt.Sprintf("the managed card %s is a card of %s; its lease, missing from the store, is not saved again for any of them",
 						text, strings.Join(others, " and "))})
+				continue
+			}
+			if owner := g.Ref.String(); !g.HasTag(managednet.Tag) && attached[text] != owner {
+				// Whoever may change a guest's cards can add one with
+				// pco's MAC of any address: only a guest pco gave a card,
+				// or that asks for one, gets a lease from it.
+				c.saidOnce("stray card "+text, Event{At: c.now, Level: levelWarn, Kind: kindManaged, Subject: owner, Guest: guestOf(owner),
+					Message: fmt.Sprintf("the managed card %s of %s has no lease, and %s neither carries the tag %s nor has an attachment of it; its lease is not saved again",
+						text, owner, owner, managednet.Tag)})
 				continue
 			}
 			addr, ok := cardAddr(n.Prefix, mac)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -42,10 +43,12 @@ func TestATakeoverSavesALimitedNumberOfLeasesPerCycle(t *testing.T) {
 	for i := range maxLeasesAgain + 6 {
 		addr := netip.AddrFrom4([4]byte{10, 203, 118, byte(30 + i)})
 		g := carded(guest(200+i, fmt.Sprintf("g%d", i)), "pve3", fmt.Sprintf("bc:24:11:00:09:%02x", i))
+		g.Tags = []string{managednet.Tag}
 		g.NICs = append(g.NICs, model.NIC{Index: 1, MAC: store.ManagedMAC(addr), Bridge: gateway.ManagedBridge})
 		snap.Guests = append(snap.Guests, g)
 	}
 	leg := carded(guest(400, "leg"), "pve3", "bc:24:11:00:0a:01")
+	leg.Tags = []string{managednet.Tag}
 	leg.NICs = append(leg.NICs, model.NIC{Index: 1, MAC: store.ManagedMAC(netip.MustParseAddr("10.203.118.1")), Bridge: gateway.ManagedBridge})
 	snap.Guests = append(snap.Guests, leg)
 	w.inv.set(snap)
