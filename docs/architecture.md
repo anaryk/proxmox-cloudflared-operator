@@ -536,6 +536,8 @@ take that as the truth:
 - **The store knows its cluster.** The install records the fingerprint of the CA of the cluster
   it was made in, `/etc/pve/pve-root-ca.pem`. A store restored into another cluster, or the image
   of a node copied elsewhere, writes nothing until `pco promote` makes this cluster its writer.
+  A bundle restored into a new cluster is taken into it by the first node set up, under a new CA,
+  so that nothing the nodes of the lost cluster hold is accepted; they enrol again.
 
 The sentinel catches what these cannot see. A copy that draws an epoch of its own beside the
 original finds a sentinel of a writer it does not know, `foreign`, or of a newer generation,

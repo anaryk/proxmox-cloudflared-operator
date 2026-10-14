@@ -235,7 +235,8 @@ func TestWhatWasExportedIsRestoredAsItWas(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, store.Install{
 		ID: installID, CreatedAt: t0.Add(-72 * time.Hour), Profile: store.ProfileHost,
-		Cluster: &store.ClusterIdentity{CASHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "lab"},
+		Cluster:  &store.ClusterIdentity{CASHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "lab"},
+		Restored: &store.Restored{BundleMadeAt: t0},
 	}, inst, "with the cluster it was made in: a store in another cluster writes nothing before an admin says so")
 	same(t, "networks", from, to, (*store.Store).Networks)
 	same(t, "service addresses", from, to, (*store.Store).ServiceAddrs)

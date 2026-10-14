@@ -26,7 +26,7 @@ func (r *run) ensureCluster(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reading who is in the cluster: %w", err)
 	}
-	if err := r.ensureIdentity(m); err != nil {
+	if err := r.ensureIdentity(ctx, m); err != nil {
 		return err
 	}
 	if err := r.chooseAgentAddress(ctx, m); err != nil {
@@ -58,17 +58,20 @@ func (r *run) readOthers() error {
 
 // ensureIdentity records the cluster the store was made in, by the
 // fingerprint of the cluster CA of Proxmox VE, which is made once and never
-// rotated. A store that names another cluster was copied here, and is left
-// as it is: the daemon writes nothing of it until an admin promotes this
-// cluster. A record made on a node that stood alone gets the name of the
-// cluster the node is now in.
-func (r *run) ensureIdentity(m members.Members) error {
+// rotated. A store that names another cluster is left as it is: the daemon
+// writes nothing of it until an admin promotes this cluster. One that pco
+// import restored from a bundle is taken into this cluster by the first node
+// set up; any other was copied here, and is refused. A record made on a node
+// that stood alone gets the name of the cluster the node is now in.
+func (r *run) ensureIdentity(ctx context.Context, m members.Members) error {
 	fingerprint, err := members.CAFingerprint(r.host.pveRootCA)
 	if err != nil {
 		return fmt.Errorf("reading the cluster CA of Proxmox VE, which identifies the cluster: %w", err)
 	}
 	inst := r.install
 	switch {
+	case inst.Cluster == nil && inst.Restored != nil && !r.o.Recover && !r.o.NewInstall:
+		return errRestoredWithoutCluster(inst)
 	case inst.Cluster == nil:
 		inst.Cluster = &store.ClusterIdentity{CASHA256: fingerprint, Name: m.Cluster}
 		if err := r.st.SaveInstall(inst); err != nil {
@@ -79,6 +82,8 @@ func (r *run) ensureIdentity(m members.Members) error {
 		} else {
 			r.ask.Info("cluster: recorded the identity of cluster %s (%s)", m.Cluster, fingerprint)
 		}
+	case inst.Cluster.CASHA256 != fingerprint && !r.o.Recover && !r.o.NewInstall && inst.Restored != nil:
+		return r.restoredElsewhere(ctx, fingerprint)
 	case inst.Cluster.CASHA256 != fingerprint && !r.o.Recover && !r.o.NewInstall:
 		// A node set up into a store of another cluster would register,
 		// enrol and open the firewall for an install whose writer is

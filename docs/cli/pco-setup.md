@@ -24,9 +24,13 @@ install that other nodes run, setup joins it: the node gets its key and certific
 install's CA, which the first node makes, and an entry of the node registry as joining, which
 the controller admits; nothing changes at Cloudflare. Every node runs the same release of pco
 before a further node joins. A new install records the identity of the cluster and makes the
-CA. A store that records another cluster, as one restored from elsewhere, is refused before
-anything is changed: pco promote makes this cluster its writer, and `--recover` adopts the
-install from Cloudflare instead.
+CA. A store that pco import restored from a bundle of another cluster is taken into this
+one by the first node set up: refused while a connector of the install is connected at
+Cloudflare, which says that the old cluster still runs it, it gets a new CA and the nodes of
+the old cluster are removed, to enrol again; the daemon writes nothing until pco promote on
+that node, and the other nodes are set up after it. Any other store that records another
+cluster, as a disk copied from elsewhere, is refused before anything is changed: pco promote
+makes this cluster its writer, and `--recover` adopts the install from Cloudflare instead.
 
 Once pco runs on more than one node, setup offers the datacenter firewall rule that admits
 the agent channel of the controller, TCP port 8644, from the nodes; a node alone needs none,

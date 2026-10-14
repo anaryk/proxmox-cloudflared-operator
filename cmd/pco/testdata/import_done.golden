@@ -8,4 +8,5 @@ CA and its key          yes
 controller objects      none
 Cloudflare credentials  1
 pco only observes until pco apply.
-Next: run pco setup if this node has none, then run pco promote.
+Next: run pco setup if this node has none, then run pco promote here; in a new cluster,
+set the other nodes up only after the promotion.

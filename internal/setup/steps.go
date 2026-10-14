@@ -89,6 +89,10 @@ func (r *run) prepareStore(ctx context.Context) error {
 			"Cloudflare before, run pco setup --recover to take a generation above the one in use", inst.ID)
 	case w.InstallID != inst.ID:
 		return fmt.Errorf("leader.json names install %s, but this is install %s; run pco setup --recover", w.InstallID, inst.ID)
+	case inst.Restored != nil && inst.Restored.TakenOverBy == "":
+		// Whether it joins the nodes of the bundle or takes the store into
+		// another cluster, the cluster step says.
+		r.ask.Info("store: install %s kept, restored from a bundle made on %s", inst.ID, dateOf(inst.Restored.BundleMadeAt))
 	case len(r.others) > 0:
 		r.ask.Info("store: install %s kept; joining the nodes %s", inst.ID, strings.Join(r.others, ", "))
 	default:

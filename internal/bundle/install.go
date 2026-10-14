@@ -535,7 +535,8 @@ func Restore(ctx context.Context, st *store.Store, c Contents) error {
 			return fmt.Errorf("restoring leader.json: %w", err)
 		}
 	}
-	if err := st.SaveInstall(store.Install{ID: c.InstallID, CreatedAt: r.created, Profile: store.ProfileHost, Cluster: r.cluster}); err != nil {
+	if err := st.SaveInstall(store.Install{ID: c.InstallID, CreatedAt: r.created, Profile: store.ProfileHost, Cluster: r.cluster,
+		Restored: &store.Restored{BundleMadeAt: c.MadeAt}}); err != nil {
 		return fmt.Errorf("restoring the install: %w", err)
 	}
 	return nil

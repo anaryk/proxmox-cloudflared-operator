@@ -99,6 +99,7 @@ func TestPromoteMakesThisClusterTheStoresWithItsName(t *testing.T) {
 	inst, _, err := e.store.Install()
 	require.NoError(t, err)
 	inst.Cluster = &store.ClusterIdentity{CASHA256: caOld, Name: "old-lab"}
+	inst.Restored = &store.Restored{BundleMadeAt: time.Unix(1700000000, 0).UTC(), TakenOverBy: testNode}
 	require.NoError(t, e.store.SaveInstall(inst))
 	e.eng.d.Cluster = func() (store.ClusterIdentity, error) { return store.ClusterIdentity{CASHA256: caNew, Name: "lab"}, nil }
 	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
@@ -123,7 +124,27 @@ func TestPromoteMakesThisClusterTheStoresWithItsName(t *testing.T) {
 	inst, _, err = e.store.Install()
 	require.NoError(t, err)
 	require.Equal(t, &store.ClusterIdentity{CASHA256: caNew, Name: "lab"}, inst.Cluster)
+	require.Nil(t, inst.Restored, "the restore is over: the other nodes of this cluster join it as usual")
 	require.True(t, res.Drawn)
+}
+
+// A store restored in the cluster it was made in is no longer one once it
+// is promoted.
+func TestPromoteEndsTheRestoreOfAStoreOfThisCluster(t *testing.T) {
+	e, l := behindHost(t)
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	inst.Restored = &store.Restored{BundleMadeAt: time.Unix(1700000000, 0).UTC()}
+	require.NoError(t, e.store.SaveInstall(inst))
+
+	res, err := confirmed(t, e, PromoteRequest{Confirm: true})
+
+	require.NoError(t, err)
+	require.True(t, res.Drawn)
+	require.NotEmpty(t, l.promoted)
+	inst, _, err = e.store.Install()
+	require.NoError(t, err)
+	require.Nil(t, inst.Restored)
 }
 
 // A store whose cluster had no name is promoted with its fingerprint; and

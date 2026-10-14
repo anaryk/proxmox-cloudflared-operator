@@ -30,6 +30,25 @@ type Install struct {
 	// Cluster is the Proxmox cluster the store was made in, on a host. An
 	// install made before it was recorded has none.
 	Cluster *ClusterIdentity `json:"cluster,omitempty"`
+	// Restored is set by pco import and cleared by the promotion that
+	// follows it; nil for an install that was not restored from a bundle.
+	Restored *Restored `json:"restored,omitempty"`
+}
+
+// Restored says that an install came back from a bundle and has not been
+// promoted since. A bundle restored into another cluster is taken into it by
+// one node, the one pco setup runs on first: it makes a new CA, and the nodes
+// of the cluster that was lost enrol again.
+type Restored struct {
+	// BundleMadeAt is when the bundle was written.
+	BundleMadeAt time.Time `json:"bundleMadeAt,omitzero"`
+	// TakenOverBy is the node that took the store into this cluster; empty
+	// until one did, and in the cluster the bundle was made in.
+	TakenOverBy string `json:"takenOverBy,omitempty"`
+	// CASHA256 is the fingerprint of the CA that node made, once it made
+	// it and retired the nodes of the cluster that was lost: a take-over
+	// cut short before is done again.
+	CASHA256 string `json:"caSHA256,omitempty"`
 }
 
 // ClusterIdentity is the Proxmox cluster a store belongs to: a store restored

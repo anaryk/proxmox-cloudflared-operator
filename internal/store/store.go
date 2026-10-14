@@ -214,23 +214,55 @@ func (s *Store) Install() (Install, bool, error) {
 // appliance carries a complete appliance block, with its MACs stored sorted;
 // any other install carries none.
 func (s *Store) SaveInstall(i Install) error {
+	i, err := checkInstall(i)
+	if err != nil {
+		return err
+	}
+	return s.cluster.put(kindMeta, idInstall, i, true)
+}
+
+// InstallRev is Install with the revision of its file, which SaveInstallIf
+// takes.
+func (s *Store) InstallRev() (i Install, rev int64, found bool, err error) {
+	rev, found, err = s.cluster.getRev(kindMeta, idInstall, &i, false)
+	if err != nil || !found {
+		return Install{}, 0, false, err
+	}
+	return i, rev, true, nil
+}
+
+// SaveInstallIf is SaveInstall for an install read at revision rev: it is
+// stored only while the stored one still has that revision, else the error
+// is ErrRevision. Two nodes that take a restored store at once cannot both
+// have it.
+func (s *Store) SaveInstallIf(i Install, rev int64) (int64, error) {
+	i, err := checkInstall(i)
+	if err != nil {
+		return 0, err
+	}
+	return s.cluster.putIf(kindMeta, idInstall, i, rev)
+}
+
+// checkInstall refuses an install that cannot be stored, and returns it with
+// its appliance block in the form it is stored in.
+func checkInstall(i Install) (Install, error) {
 	if i.ID == "" {
-		return errors.New("install id is empty")
+		return Install{}, errors.New("install id is empty")
 	}
 	switch i.Profile {
 	case "", ProfileHost, ProfileAppliance:
 	default:
-		return fmt.Errorf("install profile %q: want %q or %q", i.Profile, ProfileHost, ProfileAppliance)
+		return Install{}, fmt.Errorf("install profile %q: want %q or %q", i.Profile, ProfileHost, ProfileAppliance)
 	}
 	a, err := checkAppliance(i)
 	if err != nil {
-		return err
+		return Install{}, err
 	}
 	i.Appliance = a
 	if c := i.Cluster; c != nil && !isSHA256(c.CASHA256) {
-		return fmt.Errorf("install cluster caSHA256 %q: want 64 lower-case hex digits", c.CASHA256)
+		return Install{}, fmt.Errorf("install cluster caSHA256 %q: want 64 lower-case hex digits", c.CASHA256)
 	}
-	return s.cluster.put(kindMeta, idInstall, i, true)
+	return i, nil
 }
 
 // Settings returns the settings, or the defaults when none were saved. Settings

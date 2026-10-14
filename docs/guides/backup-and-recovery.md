@@ -205,7 +205,8 @@ and every epoch an agent remembers.
    controller objects      12
    Cloudflare credentials  1
    pco only observes until pco apply.
-   Next: run pco setup if this node has none, then run pco promote.
+   Next: run pco setup if this node has none, then run pco promote here; in a new cluster,
+   set the other nodes up only after the promotion.
    ```
 
 3. Start pco on every node again, `systemctl start pco`, and on the node that takes the lease,
@@ -219,16 +220,73 @@ and every epoch an agent remembers.
 4. `pco credential add` for each token the bundle did not carry, then read `pco plan`, and
    `pco apply`.
 
-**A node alone, reinstalled**: install the package without the setup (`PCO_SKIP_SETUP=1`),
-`pco import /root/pco.bundle`, then `pco setup`, which keeps the install, and `pco promote`.
-
 **A cluster lost whole, built again.** The bundle records the cluster it was made in, by the
-fingerprint of the cluster CA of Proxmox VE, and a new cluster has another. In this release
-`pco setup` refuses such a store before it sets anything up (`the store was made in cluster
-<name> (<fingerprint>), not in this one ...`), and `pco promote` needs a node that runs pco, so a
-bundle does not restore into a new cluster. Adopt the install from Cloudflare there instead, as
-in [Recover after a lost store](#recover-after-a-lost-store), with the files of step 2 of
-[Back up](#back-up), and set the other nodes up as further nodes.
+fingerprint of the cluster CA of Proxmox VE, and a new cluster has another. The first node that
+`pco setup` runs on takes the store into the new cluster; nothing the nodes of the lost cluster
+hold is trusted after that, and every other node enrols again.
+
+1. Make sure nothing of the lost cluster runs the install any more. Setup looks at Cloudflare and
+   refuses while a connector of the install is connected there:
+
+   ```text
+   setup step cluster: the cluster the bundle was made in still runs install 7f3a9c0d41b2, or a copy of it does: at Cloudflare tunnel pco-7f3a9c0d41b2 has connector 5d1c... connected from 203.0.113.7. ...
+   ```
+
+   If a node of the old cluster is still up, stop pco and its connectors there,
+   `systemctl stop pco 'pco-cloudflared@*'`, and wait until Cloudflare shows no connection.
+
+2. On the node that is to run the controller, install the package without the setup
+   (`PCO_SKIP_SETUP=1`), and restore the install:
+
+   ```sh
+   pco import /root/pco.bundle
+   ```
+
+3. Set the node up. A bundle written without `--credentials` has no Cloudflare token to look with:
+   give one, which setup also stores.
+
+   ```sh
+   pco setup --cf-token-file /root/cf-token
+   ```
+
+   Among its lines:
+
+   ```text
+   store: install 7f3a9c0d41b2 kept, restored from a bundle made on 2026-10-01
+   cloudflare: no connector of install 7f3a9c0d41b2 is connected
+   cluster: took the store of cluster lab into this one (4be1...) under a new CA; the daemon writes nothing until pco promote here makes this cluster its writer, and the other nodes are set up after it
+   ```
+
+   Setup makes a new CA, so that no certificate of the old nodes is accepted, and marks every
+   node of the lost cluster `removed`; this node, and later each node of the old name, keeps the
+   index the name had, so the MACs of its legs stay. The daemon starts and writes nothing:
+   `pco status` says `this store was made in cluster lab (<fingerprint>); pco promote here makes
+   this cluster its writer`.
+
+4. Promote the node. pco asks you to type the name of the cluster the bundle was made in, or its
+   fingerprint when it has none, as the differences show it:
+
+   ```sh
+   pco promote
+   ```
+
+   The promotion makes the new cluster the store's and draws an epoch above every sentinel at
+   Cloudflare, in observe-only mode.
+
+5. Set the other nodes up, each with `pco setup`. They join as `joining`, with certificates of the
+   new CA, and the controller admits them. A node set up before the promotion is refused, and
+   nothing is changed on it: `... and node pve1 took it into this cluster: run pco promote on pve1
+   first, then pco setup here`.
+
+6. `pco credential add` for each token the bundle did not carry, then read `pco plan`, and
+   `pco apply`. If the disks of the lost cluster may come back, end the run tokens they hold once
+   pco applies: `pco tunnel rotate`.
+
+**A node alone, reinstalled**: a reinstalled node has a new cluster CA of Proxmox VE, so the
+store counts as one of another cluster, and the steps are those of a cluster lost whole, with one
+node: install the package without the setup (`PCO_SKIP_SETUP=1`), `pco import /root/pco.bundle`,
+`pco setup`, which takes the store under a new CA, and `pco promote`, which asks for the fingerprint
+of the node's old CA, as the differences show it.
 
 **The appliance**: `pco import` restores the install of a host only. An appliance's controller
 whose state volume is lost is adopted from Cloudflare with `pco appliance repair --recover`, as
@@ -286,7 +344,8 @@ There is no pco to move between the nodes of a cluster: it runs on every node, a
 moves by itself. A node that is lost for good is forgotten, `pco node forget <node>`, and the
 store stays on the cluster filesystem of the others ([Remove a node](remove-a-node.md)). A
 standalone node that runs pco and is to join a cluster loses its `/etc/pve` with `pvecm add`:
-write a bundle first, and import it into the cluster, as above.
+write a bundle first, stop pco and its connectors there (`systemctl stop pco 'pco-cloudflared@*'`),
+and import the bundle into the cluster as for [a cluster lost whole](#restore-from-a-bundle).
 
 ## Check
 

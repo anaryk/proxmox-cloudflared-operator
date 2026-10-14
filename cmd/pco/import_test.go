@@ -55,6 +55,8 @@ func TestImportRestoresTheInstallIntoAStoreThatHasNone(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, bundleInstall, inst.ID)
+	require.NotNil(t, inst.Restored, "pco setup takes a restored store into a new cluster, and pco promote ends the restore")
+	require.Empty(t, inst.Restored.TakenOverBy)
 	routes, err := w.st.ManualRoutes()
 	require.NoError(t, err)
 	require.Len(t, routes, 1)
@@ -260,6 +262,7 @@ func TestTheHelpOfImportSaysWhereItRunsAndWhatComesNext(t *testing.T) {
 	for _, want := range []string{
 		"pco promote", "observe-only", "holds an install", "as root", "pco setup", "--passphrase-file",
 		"remembers the cluster", "previous CA", "networks", "tombstones",
+		"a new CA", "connected at Cloudflare", "enrols again", "after the promotion",
 	} {
 		require.Contains(t, long, want)
 	}

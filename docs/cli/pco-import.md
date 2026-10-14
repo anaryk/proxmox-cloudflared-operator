@@ -23,12 +23,19 @@ address that had been released may be given out again.
 
 leader.json comes back as it was, so the controller writes nothing until pco promote
 draws an epoch above the one of the install that was lost. The install remembers the cluster
-it was made in: restored in another, the daemon writes nothing until pco promote makes that
-cluster its writer, and the nodes of the lost cluster are admitted again after it.
+it was made in. Restored in that cluster, the nodes that run pco take it up as it is.
+Restored in another, as after the whole cluster was lost, the first node pco setup runs on
+takes it into the new cluster: setup refuses while a connector of the install is still
+connected at Cloudflare, which says that the old cluster runs it, then makes a new CA, so
+that nothing the nodes of the old cluster hold is trusted, and removes those nodes from the
+registry. The daemon writes nothing until pco promote on that node makes the new cluster
+the writer; every other node enrols again with pco setup after the promotion, a node of the
+old name under its old index.
 
 Run it before pco setup on the node that is to run the controller, which keeps the install it
-finds, and then run pco promote. It restores the install of a host: the install of an
-appliance records the container it runs in, which a bundle does not carry.
+finds and starts the daemon, and then run pco promote there. It restores the install of a
+host: the install of an appliance records the container it runs in, which a bundle does not
+carry.
 
 ## Usage
 

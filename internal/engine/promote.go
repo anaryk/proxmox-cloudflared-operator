@@ -101,8 +101,13 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	// admin adopts it as it is. The engine holds on its own until the new
 	// epoch is drawn.
 	e.d.Store.StartTenure()
-	if other != nil {
-		inst.Cluster = other
+	if other != nil || inst.Restored != nil {
+		// A store restored from a bundle is this cluster's from now on: the
+		// other nodes join it as they join any install.
+		if other != nil {
+			inst.Cluster = other
+		}
+		inst.Restored = nil
 		if err := e.d.Store.SaveInstall(inst); err != nil {
 			return res, fmt.Errorf("making this cluster the store's: %w", err)
 		}
