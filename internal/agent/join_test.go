@@ -105,7 +105,7 @@ func (e *joinEnv) serve(ca pki.CA) netip.AddrPort {
 		return p
 	}
 	srv := clusterapi.New(e.ctrl, &authFake{}, pki.TLSCertificate(key, cert, ca.Cert), pool, zerolog.Nop())
-	srv.AcceptJoins(clusterapi.Joins{InstallID: pkiInstall, CASHA256: func() string { return ca.SHA256() }, Tokens: e.st})
+	srv.AcceptJoins(clusterapi.Joins{InstallID: pkiInstall, CASHA256: ca.SHA256, Tokens: e.st})
 	listening := make(chan netip.AddrPort, 1)
 	srv.OnListening(func(ap netip.AddrPort) { listening <- ap })
 	ctx, cancel := context.WithCancel(context.Background())

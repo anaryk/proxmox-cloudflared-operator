@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"slices"
@@ -149,10 +148,4 @@ func (agentContainerCluster) Facts() engine.ClusterFacts { return engine.Cluster
 
 func (agentContainerCluster) Ask(context.Context, []string, time.Duration) map[string]doctor.AgentAnswer {
 	return map[string]doctor.AgentAnswer{}
-}
-
-// doctorHook makes the checks of an agent container for a doctor action of
-// its controller.
-func doctorHook(r *doctor.Runner) func(context.Context) (json.RawMessage, error) {
-	return func(ctx context.Context) (json.RawMessage, error) { return json.Marshal(r.AgentChecks(ctx)) }
 }

@@ -16,7 +16,9 @@ type fakeApplianceCluster struct {
 	err   error
 }
 
-func (f fakeApplianceCluster) ApplianceFacts(context.Context) (ApplianceFacts, error) { return f.facts, f.err }
+func (f fakeApplianceCluster) ApplianceFacts(context.Context) (ApplianceFacts, error) {
+	return f.facts, f.err
+}
 
 func TestTheControllerOfAnApplianceInstallChecksItsContainers(t *testing.T) {
 	home := AgentContainer{Node: "pve2", VMID: 9301, Found: true, RunsOn: "pve2", Cmode: "tty"}

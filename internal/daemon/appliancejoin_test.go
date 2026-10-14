@@ -100,32 +100,33 @@ func (jt *joinTest) use(src netip.Addr) store.JoinRecord {
 	return rec
 }
 
-func (jt *joinTest) csr(vmid int) []byte {
+func (jt *joinTest) csr() []byte {
 	jt.t.Helper()
 	key, err := pki.NewKey(rand.Reader)
 	require.NoError(jt.t, err)
-	csr, err := pki.NewCSR(key, pki.Identity{Kind: pki.KindAppliance, InstallID: joinInstall, Node: "pve2", VMID: vmid}, rand.Reader)
+	csr, err := pki.NewCSR(key, pki.Identity{Kind: pki.KindAppliance, InstallID: joinInstall, Node: "pve2", VMID: agentVMID}, rand.Reader)
 	require.NoError(jt.t, err)
 	return csr
 }
 
 func (jt *joinTest) join(src netip.Addr) ([]byte, error) {
 	jt.use(src)
-	return jt.j.Join(context.Background(), jt.tok, jt.csr(agentVMID), src, clusterapi.JoinFacts{
+	return jt.j.Join(context.Background(), jt.tok, jt.csr(), src, clusterapi.JoinFacts{
 		Node: "pve2", VMID: agentVMID, MACs: []string{agentMAC}, Build: "1.2.3", Protocol: agentproto.Range{Min: 1, Max: 1},
 	})
 }
 
-func (jt *joinTest) entry(node string) store.NodeEntry {
+// agentEntry is the registry entry of pve2, the node that joins.
+func (jt *joinTest) agentEntry() store.NodeEntry {
 	jt.t.Helper()
 	nodes, err := jt.st.Nodes()
 	require.NoError(jt.t, err)
 	for _, n := range nodes {
-		if n.Name == node {
+		if n.Name == "pve2" {
 			return n
 		}
 	}
-	jt.t.Fatalf("node %s is not in the registry", node)
+	jt.t.Fatal("node pve2 is not in the registry")
 	return store.NodeEntry{}
 }
 
@@ -154,7 +155,7 @@ func TestAContainerThatHoldsTogetherJoinsAsJoining(t *testing.T) {
 		Protocol:   store.ProtocolRange{Min: 1, Max: 1},
 		CertSerial: cert.SerialNumber.Text(16), CertSHA256: pki.Fingerprint(cert),
 		State: store.NodeJoining, StateSince: jt.now,
-	}, jt.entry("pve2"))
+	}, jt.agentEntry())
 	require.Len(t, jt.notes, 1)
 	require.Contains(t, jt.notes[0], "pco node admit pve2 --fingerprint")
 	require.Contains(t, jt.notes[0], pki.Fingerprint(cert))
@@ -180,7 +181,7 @@ func TestAContainerThatDoesNotMatchItsJoinIsContested(t *testing.T) {
 			_, err := jt.join(tt.src)
 
 			require.ErrorContains(t, err, tt.want)
-			n := jt.entry("pve2")
+			n := jt.agentEntry()
 			require.Equal(t, store.NodeContested, n.State)
 			require.Len(t, n.ContestedUses, 1, "every use of the token is shown")
 			require.Equal(t, tt.src, n.ContestedUses[0].Source)
@@ -226,8 +227,8 @@ func TestANodeServedAlreadyTakesNoSecondAgent(t *testing.T) {
 	_, err := jt.join(agentAddr)
 
 	require.ErrorContains(t, err, "node pve2 is active in the install already")
-	require.Equal(t, 9300, jt.entry("pve2").VMID)
-	require.Equal(t, store.NodeActive, jt.entry("pve2").State)
+	require.Equal(t, 9300, jt.agentEntry().VMID)
+	require.Equal(t, store.NodeActive, jt.agentEntry().State)
 }
 
 func TestATokenUsedTwiceHoldsItsNodeContested(t *testing.T) {
@@ -238,7 +239,7 @@ func TestATokenUsedTwiceHoldsItsNodeContested(t *testing.T) {
 	rec := jt.use(netip.MustParseAddr("10.92.0.66"))
 	jt.j.misused(context.Background(), rec)
 
-	n := jt.entry("pve2")
+	n := jt.agentEntry()
 	require.Equal(t, store.NodeContested, n.State)
 	require.Len(t, n.ContestedUses, 2)
 	require.Equal(t, agentVMID, n.VMID)
@@ -253,18 +254,18 @@ func TestAnEnrolledAgentRenewsAndTheOldCertificateIsNoLongerNamed(t *testing.T) 
 	first, err := jt.join(agentAddr)
 	require.NoError(t, err)
 
-	next, err := jt.j.Renew(context.Background(), "pve2", jt.csr(agentVMID))
+	next, err := jt.j.Renew(context.Background(), "pve2", jt.csr())
 
 	require.NoError(t, err)
 	cert := parseCertPEM(t, next)
-	require.Equal(t, pki.Fingerprint(cert), jt.entry("pve2").CertSHA256)
-	require.NotEqual(t, pki.Fingerprint(parseCertPEM(t, first)), jt.entry("pve2").CertSHA256)
+	require.Equal(t, pki.Fingerprint(cert), jt.agentEntry().CertSHA256)
+	require.NotEqual(t, pki.Fingerprint(parseCertPEM(t, first)), jt.agentEntry().CertSHA256)
 
-	_, err = jt.j.Renew(context.Background(), "pve1", jt.csr(agentVMID))
+	_, err = jt.j.Renew(context.Background(), "pve1", jt.csr())
 	require.ErrorContains(t, err, "node pve1 is no appliance agent")
-	n := jt.entry("pve2")
+	n := jt.agentEntry()
 	n.State = store.NodeRemoved
 	require.NoError(t, jt.st.SaveNode(n))
-	_, err = jt.j.Renew(context.Background(), "pve2", jt.csr(agentVMID))
+	_, err = jt.j.Renew(context.Background(), "pve2", jt.csr())
 	require.ErrorContains(t, err, "node pve2 is removed")
 }
