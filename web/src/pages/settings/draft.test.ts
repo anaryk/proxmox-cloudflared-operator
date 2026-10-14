@@ -78,6 +78,11 @@ test('the managed network goes back as it was read, a key written zero too, for 
   expect(settingsOf(draftOf(base), base).managed).toEqual({ consent: 'auto', detachGrace: '0s' })
 })
 
+test('the settings of a cluster go back as they were read', () => {
+  const base: Settings = { ...stored, cluster: { replicas: [], admissionMaxMoves: 0 } }
+  expect(settingsOf(draftOf(base), base).cluster).toEqual({ replicas: [], admissionMaxMoves: 0 })
+})
+
 test('a field the page does not know is kept from the settings it was read in', () => {
   const base = { ...full, somethingNew: 3 } as unknown as Settings
   expect((settingsOf(draftOf(base), base) as unknown as Record<string, unknown>).somethingNew).toBe(3)

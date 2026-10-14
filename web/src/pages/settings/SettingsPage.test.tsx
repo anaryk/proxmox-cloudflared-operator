@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { ApiError } from '../../api/client'
@@ -194,6 +194,34 @@ describe('what is typed', () => {
     expect(screen.getByText('No changes to save')).toBeTruthy()
     save()
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+describe('the settings of a cluster', () => {
+  const cluster = { agentNetwork: '10.10.0.0/24', replicas: ['pve1', 'pve2'], followMaintenance: false, admissionMaxMoves: 20 }
+  const clustered: SettingsView = { ...view, settings: { ...view.settings, cluster } }
+
+  test('are shown key by key as the file has them, and a save keeps them as they were read', async () => {
+    const { daemon } = await mount({ view: clustered, handlers: { 'PUT /api/v1/settings': saved() } })
+    const section = screen.getByRole('region', { name: 'Cluster' })
+    const rows = [...section.querySelectorAll('dt')].map((dt) => `${dt.textContent}=${dt.nextElementSibling?.textContent}`)
+    expect(rows).toEqual(['agentNetwork=10.10.0.0/24', 'replicas=pve1, pve2', 'followMaintenance=false', 'admissionMaxMoves=20'])
+    expect(section.textContent).toContain('pco settings apply')
+
+    type('Poll interval', '30s')
+    save()
+    const dialog = await screen.findByRole('dialog', { name: 'Save these changes?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save settings' }))
+    await screen.findByText('The settings are saved; they are at revision 8.')
+    expect(put(daemon)?.settings.cluster).toEqual(cluster)
+  })
+
+  test('replicas written empty are every active node, and a node alone has no section', async () => {
+    await mount({ view: { ...view, settings: { ...view.settings, cluster: { replicas: [] } } } })
+    expect(screen.getByRole('region', { name: 'Cluster' }).textContent).toContain('every active node')
+    cleanup()
+    await mount()
+    expect(screen.queryByRole('region', { name: 'Cluster' })).toBeNull()
   })
 })
 

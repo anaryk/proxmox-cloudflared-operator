@@ -1,11 +1,11 @@
 import './settings.css'
 
-import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { type ChangeEvent, type FormEvent, Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import { ApiError } from '../../api/client'
 import { explain } from '../../api/errors'
 import { useApp } from '../../api/store'
-import type { Limit, SettingsView } from '../../api/types.gen'
+import type { ClusterSettings, Limit, SettingsView } from '../../api/types.gen'
 import { Link } from '../../app/Link'
 import { Badge } from '../../components/Badge'
 import { Button } from '../../components/Button'
@@ -112,6 +112,18 @@ function Check({ label, hint, checked, onChange }: { label: string; hint: ReactN
       </p>
     </div>
   )
+}
+
+// clusterRows are the settings of a cluster as the file has them, each key
+// with its value in words, in the order of the documentation.
+export function clusterRows(c: ClusterSettings): [string, string][] {
+  const rows: [string, string][] = []
+  if (c.agentNetwork !== undefined) rows.push(['agentNetwork', c.agentNetwork])
+  if (c.replicas !== undefined) rows.push(['replicas', c.replicas.length > 0 ? c.replicas.join(', ') : 'every active node'])
+  if (c.followMaintenance !== undefined) rows.push(['followMaintenance', c.followMaintenance ? 'true' : 'false'])
+  if (c.rotateOnForget !== undefined) rows.push(['rotateOnForget', c.rotateOnForget ? 'true' : 'false'])
+  if (c.admissionMaxMoves !== undefined) rows.push(['admissionMaxMoves', String(c.admissionMaxMoves)])
+  return rows
 }
 
 function ErrorLine({ children }: { children: ReactNode }) {
@@ -488,6 +500,25 @@ export function SettingsForm({ view, canWrite, allow, onSaved, onDirty }: Settin
             </Field>
           </Section>
         </fieldset>
+
+        {base.settings.cluster && (
+          <Section id={`${id}cluster`} title="Cluster">
+            <p className="field-hint">
+              The settings of the cluster, set in the file with <code className="mono">pco settings apply</code>; a save here keeps them as they are. A key the file
+              leaves out has its default.
+            </p>
+            <dl className="details details-inner mono">
+              {clusterRows(base.settings.cluster).map(([k, v]) => (
+                <Fragment key={k}>
+                  <dt>{k}</dt>
+                  <dd>
+                    <Untrusted text={v} />
+                  </dd>
+                </Fragment>
+              ))}
+            </dl>
+          </Section>
+        )}
 
         {canWrite ? (
           <div className="settings-actions">
