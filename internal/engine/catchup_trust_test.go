@@ -2,6 +2,8 @@ package engine
 
 import (
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,9 +15,12 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-// What an agent reports moves the pool only as far as its word is worth: a
-// node that is not admitted moves it not at all, and an address far past the
-// pool's next is not taken, so that no node can give the pool away.
+// What an agent reports moves the pool only as far as its word is worth: an
+// address of a node that is not admitted, of a report that names another
+// node, or far past the pool's next, moves it not at all, so that no node can
+// give the pool away. As long as such a report names an address the pool
+// would give, nothing is allocated: no address any node reports in use is
+// given out.
 func TestAnAgentsReportMovesThePoolOnlyAsFarAsItIsTaken(t *testing.T) {
 	poolNext := func(t *testing.T, w *world) netip.Addr {
 		t.Helper()
@@ -23,6 +28,7 @@ func TestAnAgentsReportMovesThePoolOnlyAsFarAsItIsTaken(t *testing.T) {
 		require.NoError(t, err)
 		return next
 	}
+	held := "no service address and no managed card is made until the store is checked against every node: "
 
 	t.Run("a node that is not admitted", func(t *testing.T) {
 		w := threeNodes(t)
@@ -31,9 +37,10 @@ func TestAnAgentsReportMovesThePoolOnlyAsFarAsItIsTaken(t *testing.T) {
 		require.NoError(t, w.store.SaveNode(n))
 		w.acts["pve2"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.5")} }
 
-		w.tick(time.Second)
+		st := w.tick(time.Second)
 
 		require.Equal(t, netip.MustParseAddr("198.18.1.0"), poolNext(t, w))
+		require.Contains(t, st.Problems, held+"node pve2 reports that its gateway maps 198.18.1.5, which is not taken from it: the node is not admitted")
 	})
 
 	t.Run("an address far past the pool", func(t *testing.T) {
@@ -42,11 +49,11 @@ func TestAnAgentsReportMovesThePoolOnlyAsFarAsItIsTaken(t *testing.T) {
 			st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.255.254"), netip.MustParseAddr("198.18.1.3")}
 		}
 
-		w.tick(time.Second)
+		st := w.tick(time.Second)
 
 		require.Equal(t, netip.MustParseAddr("198.18.1.4"), poolNext(t, w), "the near one is taken, the far one not")
-		require.Contains(t, w.eventMessages(), "node pve2 reports that its gateway maps 198.18.255.254, more than 1024 past 198.18.1.0, "+
-			"the next address of the pool; it is not taken")
+		require.Contains(t, st.Problems, held+"node pve2 reports that its gateway maps 198.18.255.254, which is not taken from it: "+
+			"more than 1024 past 198.18.1.0, the next address of the pool")
 	})
 
 	t.Run("a report that names another node", func(t *testing.T) {
@@ -56,9 +63,73 @@ func TestAnAgentsReportMovesThePoolOnlyAsFarAsItIsTaken(t *testing.T) {
 			st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.5")}
 		}
 
-		w.tick(time.Second)
+		st := w.tick(time.Second)
 
 		require.Equal(t, netip.MustParseAddr("198.18.1.0"), poolNext(t, w))
+		require.Contains(t, st.Problems, held+"node pve2 reports that its gateway maps 198.18.1.5, which is not taken from it: its report names node pve3")
+	})
+
+	t.Run("an address below the pool holds nothing", func(t *testing.T) {
+		w := threeNodes(t)
+		require.NoError(t, w.store.SaveServicePool(netip.MustParseAddr("198.18.1.10")))
+		n := entryOf(t, w.env, "pve2")
+		n.State, n.StateSince = store.NodeContested, w.clock.now()
+		require.NoError(t, w.store.SaveNode(n))
+		w.acts["pve2"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.5")} }
+
+		st := w.tick(time.Second)
+
+		require.False(t, hasProblem(st, held), st.Problems)
+	})
+}
+
+// A controller that takes over allocates nothing until every node the
+// registry serves has reported: a silent node may map an address the store
+// lost. Nor while the pool cannot be moved past what the nodes hold.
+func TestNothingIsAllocatedUntilTheStoreIsCheckedAgainstEveryNode(t *testing.T) {
+	held := "no service address and no managed card is made until the store is checked against every node: "
+
+	t.Run("a silent node", func(t *testing.T) {
+		w, _ := legsWorld(t, func(w *world) {
+			w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve1": "10.0.0.250", "pve2": "10.0.0.251", "pve3": "10.0.0.252"})
+			w.cardOn(102, "vmbr1")
+			w.res.goVia("db.example.com", "vmbr1")
+			w.acts["pve2"].legs = map[string]string{"db.example.com": "vmbr1"}
+			w.acts["pve3"].silent = true
+		})
+
+		var st State
+		for range 14 {
+			st = w.tick(5 * time.Second)
+		}
+
+		require.Contains(t, st.Problems, held+"node pve3 has not reported to this controller yet")
+		all, err := w.store.ServiceAddrs()
+		require.NoError(t, err)
+		require.Empty(t, all, "no service address is made while pve3 is silent")
+
+		w.acts["pve3"].silent = false
+		w.acts["pve3"].legs = map[string]string{"db.example.com": "vmbr1"}
+		for range 4 {
+			st = w.tick(5 * time.Second)
+		}
+		require.False(t, hasProblem(st, held), st.Problems)
+		all, err = w.store.ServiceAddrs()
+		require.NoError(t, err)
+		require.Len(t, all, 1, "made once every node reported")
+	})
+
+	t.Run("a pool that cannot be moved", func(t *testing.T) {
+		w := threeNodes(t)
+		w.acts["pve2"].edit = func(st *agentproto.Status) { st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.5")} }
+		meta := filepath.Join(w.paths.Cluster, "meta")
+		require.NoError(t, os.MkdirAll(meta, 0o700))
+		require.NoError(t, os.Chmod(meta, 0o500))
+		t.Cleanup(func() { _ = os.Chmod(meta, 0o700) })
+
+		st := w.tick(time.Second)
+
+		require.True(t, hasProblem(st, held+"moving the pool of service addresses on to 198.18.1.6: "), st.Problems)
 	})
 }
 

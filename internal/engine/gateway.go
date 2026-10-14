@@ -79,6 +79,7 @@ const (
 	gateNoGateway  = "no gateway runs on this node"
 	gateNoLeg      = "network %s has no leg on this node"
 	gateFrozen     = "service address %s of this address waits for the route that left it"
+	gateCatchUp    = "the store is not yet checked against every node: %s"
 
 	verdictNoRun = "no run"
 )
@@ -104,6 +105,9 @@ func (c *cycleRun) gateOpen(what string) (ok bool, reason string) {
 }
 
 func (c *cycleRun) gateClosed() string {
+	if c.catchUpWhy != "" {
+		return fmt.Sprintf(gateCatchUp, c.catchUpWhy)
+	}
 	if c.e.d.Identity != nil {
 		if id := c.st.Identity; id == nil || !id.OK {
 			return gateNotProven

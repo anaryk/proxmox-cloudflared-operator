@@ -202,6 +202,9 @@ type cycleRun struct {
 	nets       map[string]store.Network
 	scoped     map[string]bool
 	remoteLegs map[string]*remoteLeg
+	// catchUpWhy says why the store may not hold all the nodes hold: no
+	// expanding write is made while it stands.
+	catchUpWhy string
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
