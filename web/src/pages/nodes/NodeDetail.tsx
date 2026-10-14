@@ -53,7 +53,7 @@ function Routes({ st, name, routes, label }: { st: State; name: string; routes: 
                 <>
                   <StatusBadge tone={replicaTone(mine)}>{mine.ok ? (mine.inSet ? 'reached, in its set' : 'reached, not in its set yet') : 'not reached'}</StatusBadge>
                   <Badge outline>
-                    <Untrusted text={replicaLevelText(mine)} />
+                    <Untrusted text={replicaLevelText(mine, r.guestNode)} />
                   </Badge>
                   {mine.reason && (
                     <span className="muted">

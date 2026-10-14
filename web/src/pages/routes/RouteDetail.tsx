@@ -47,12 +47,12 @@ function ownerLink(owner: string): string | undefined {
 
 // elsewhere is the node that runs the guest of a route when the path was
 // proven on another one: the port of that path is where the proving node
-// sees the guest, its uplink, and never the guest's own port. Only a node
-// that vouched for the guest's port is known to run it.
+// sees the guest, its uplink, and never the guest's own port. The node is
+// the inventory's, or else one that vouched for the guest's port.
 function elsewhere(route: RouteView): string | undefined {
   const path = route.path
   if (!path?.port) return undefined
-  const host = (route.replicas ?? []).find((r) => r.attested && r.attestedBy)?.attestedBy
+  const host = route.guestNode ?? (route.replicas ?? []).find((r) => r.attested && r.attestedBy)?.attestedBy
   return host && host !== path.node ? host : undefined
 }
 
@@ -167,7 +167,7 @@ function ClusterLines({ route, nodeZone }: { route: RouteView; nodeZone?: string
                     <Untrusted text={r.node} />
                   </Link>
                   <Badge outline>
-                    <Untrusted text={replicaLevelText(r)} />
+                    <Untrusted text={replicaLevelText(r, route.guestNode)} />
                   </Badge>
                   <StatusBadge tone={replicaTone(r)}>{r.ok ? (r.inSet ? 'reached, in its set' : 'reached, not in its set yet') : 'not reached'}</StatusBadge>
                   {r.reason && (

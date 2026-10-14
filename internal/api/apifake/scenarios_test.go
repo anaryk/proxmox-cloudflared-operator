@@ -484,7 +484,8 @@ func clusterScenario(populated files) files {
 			r.Path.Node = "pve2"
 			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared,
 				Move: &engine.MoveView{From: pinned, To: shared, Step: store.MoveRolledOut, Since: at.Add(-2 * time.Minute)}}
-			r.Replicas = []engine.ReplicaView{replica("pve1", "port", "pve2"), replica("pve2", "port", "")}
+			// The controller proves the port of a guest of pve2 behind its uplink, with no attestation.
+			r.Replicas = []engine.ReplicaView{replica("pve1", "port", ""), replica("pve2", "port", "")}
 		case "monitor.example.com":
 			r.Placement = &engine.PlacementView{Tunnel: shared, Kind: engine.TunnelShared}
 			r.Replicas = []engine.ReplicaView{
@@ -497,6 +498,9 @@ func clusterScenario(populated files) files {
 				by = r.Path.Node
 			}
 			r.Replicas = []engine.ReplicaView{replica("pve1", r.Level, ""), replica("pve2", r.Level, by)}
+		}
+		if r.Guest != nil {
+			r.GuestNode = r.Path.Node
 		}
 	}
 	st.Tunnels = append(st.Tunnels, engine.TunnelView{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: pinned,

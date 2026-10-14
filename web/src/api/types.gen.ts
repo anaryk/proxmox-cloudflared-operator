@@ -716,6 +716,7 @@ export interface RouteView {
   path?: PathView
   replicas: ReplicaView[]
   placement?: PlacementView
+  guestNode?: string
 }
 
 // engine.SegmentView

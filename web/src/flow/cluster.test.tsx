@@ -140,6 +140,7 @@ describe('the chains of a cluster', () => {
     expect(steps('grafana.example.com', 'lxc/205')[2]).toBe(
       'Placement warn: shared tunnel pco-abc123 · moving from pco-abc123-pve2 to pco-abc123: its connectors run the configuration with them',
     )
+    expect(steps('grafana.example.com', 'lxc/205')[3]).toBe('Replicas ok: pve1: port (uplink) · pve2: port')
     expect(steps('monitor.example.com', 'qemu/105')[3]).toBe('Replicas fail: pve1: not reached (target is not answering) · pve2: not reached (no answer on port 8443 from 10.10.0.2)')
   })
 })

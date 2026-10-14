@@ -56,6 +56,11 @@ type RouteView struct {
 	// route is placed on in a cluster; nil on a single node.
 	Replicas  []ReplicaView  `json:"replicas"`
 	Placement *PlacementView `json:"placement,omitempty"`
+	// GuestNode is, in a cluster, the node the inventory says runs the
+	// route's guest: a replica on another node that proved a port without
+	// an attestation saw the guest behind its uplink. Empty on a single node
+	// and for a guest the inventory does not place.
+	GuestNode string `json:"guestNode,omitempty"`
 }
 
 // TunnelView is a tunnel of the install as the last cycle found it, or, when
@@ -431,6 +436,11 @@ func (c *cycleRun) routeViews() []RouteView {
 		}
 		if p := c.placing; p != nil && winner[st.Hostname] == st.Owner {
 			v.Placement, v.Replicas = p.views[st.Hostname], p.replicas[st.Hostname]
+			if v.Guest != nil {
+				if g, ok := c.snap.Guest(v.Guest.GuestRef); ok {
+					v.GuestNode = g.Node
+				}
+			}
 			if m, ok := c.moves[st.Owner]; ok && v.Placement != nil {
 				v.Placement.Move = moveView(m)
 			}

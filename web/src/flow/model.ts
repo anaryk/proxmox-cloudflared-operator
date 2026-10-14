@@ -630,7 +630,7 @@ function routeChain(ix: Index, r: RouteView): Chain {
       const p = r.placement
       steps.push({ key: 'placement', name: 'Placement', level: p.kind === 'pinned' || p.move ? 'warn' : 'ok', text: `${placementText(p)}${p.move ? ` · ${moveText(p.move)}` : ''}` })
     }
-    steps.push(replicasStep(r.replicas))
+    steps.push(replicasStep(r.replicas, r.guestNode))
   } else {
     const c = ix.connectors.get(t.accountId)
     if (!c) {
@@ -665,11 +665,12 @@ function routeChain(ix: Index, r: RouteView): Chain {
 
 // replicasStep says how the route fares on each replica of its tunnel: the
 // level each proved, port (attested by pve1) where the node that runs the
-// guest vouched, and what fails where.
-function replicasStep(replicas: readonly ReplicaView[]): ChainStep {
+// guest vouched, port (uplink) where a node saw a guest of another behind
+// its uplink, and what fails where.
+function replicasStep(replicas: readonly ReplicaView[], guestNode?: string): ChainStep {
   const words = replicas.map((rv) => {
     if (!rv.ok) return `${rv.node}: not reached${rv.reason ? ` (${rv.reason})` : ''}`
-    return `${rv.node}: ${replicaLevelText(rv)}${rv.inSet ? '' : ', not in its set yet'}`
+    return `${rv.node}: ${replicaLevelText(rv, guestNode)}${rv.inSet ? '' : ', not in its set yet'}`
   })
   const ok = replicas.filter((rv) => rv.ok && rv.inSet).length
   const level = replicas.length === 0 ? 'fail' : ok === replicas.length ? 'ok' : replicas.some((rv) => rv.ok) ? 'warn' : 'fail'

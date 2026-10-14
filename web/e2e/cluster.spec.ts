@@ -77,7 +77,7 @@ test('a route says where it is placed, a move under way, and how each replica re
   await expect(detail('Placement')).toHaveText('shared tunnel pco-abc123')
   await expect(detail('Move')).toContainText('moving from pco-abc123-pve2 to pco-abc123')
   const replicas = page.getByRole('list', { name: 'Replicas' })
-  await expect(replicas.getByRole('listitem')).toHaveText([/^pve1port \(attested by pve2\)reached, in its set$/, /^pve2portreached, in its set$/])
+  await expect(replicas.getByRole('listitem')).toHaveText([/^pve1port \(uplink\)reached, in its set$/, /^pve2portreached, in its set$/])
 
   await page.goto('/routes/git.example.com?owner=qemu%2F110')
   await expect(detail('Placement')).toContainText('pinned to pve2 (tunnel pco-abc123-pve2)')

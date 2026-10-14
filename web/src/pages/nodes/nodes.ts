@@ -119,10 +119,14 @@ export function nodeNameIssue(text: string): string | undefined {
 // replicaLevelText is the level a replica proved: port (attested by pve1)
 // when the forwarding table of pve1, the node that runs the guest, vouched
 // for the port. An attestation is never shown without its node, so a port
-// another node saw is not read as one this replica proved.
-export function replicaLevelText(r: Pick<ReplicaView, 'level' | 'attested' | 'attestedBy'>): string {
+// another node saw is not read as one this replica proved. A replica on
+// another node than guestNode, the guest's, that proved a port without an
+// attestation found the guest behind its own uplink: port (uplink).
+export function replicaLevelText(r: Pick<ReplicaView, 'level' | 'attested' | 'attestedBy'> & { node?: string }, guestNode?: string): string {
   if (!r.level) return '-'
-  return r.attested && r.attestedBy ? `${r.level} (attested by ${r.attestedBy})` : r.level
+  if (r.attested && r.attestedBy) return `${r.level} (attested by ${r.attestedBy})`
+  if (r.level === 'port' && guestNode && r.node !== guestNode) return 'port (uplink)'
+  return r.level
 }
 
 // replicaTone is the colour of a replica: reaching the target and holding

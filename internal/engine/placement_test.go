@@ -370,6 +370,9 @@ func TestAReplicaIsShownAtItsOwnLevelAndARouteAtTheLowest(t *testing.T) {
 		require.Equal(t, "pve1", replica(st, "www.example.com", "pve2").AttestedBy, "the node that runs the guest vouches")
 		require.False(t, replica(st, "www.example.com", "pve3").Attested, "an appliance agent proves no port")
 		require.Empty(t, replica(st, "www.example.com", "pve3").AttestedBy)
+		require.Equal(t, "pve1", route(st, "www.example.com").GuestNode, "where the inventory runs the guest")
+		require.Equal(t, "pve2", route(st, "db.example.com").GuestNode)
+		require.False(t, replica(st, "db.example.com", "pve1").Attested, "the controller's own replica stands on no attestation")
 	})
 	t.Run("an attesting node the inventory does not run the guest on", func(t *testing.T) {
 		w := threeNodes(t)
@@ -404,6 +407,7 @@ func TestAReplicaIsShownAtItsOwnLevelAndARouteAtTheLowest(t *testing.T) {
 		v := replica(st, "www.example.com", "pve2")
 		require.False(t, v.Attested, "the attestation was of where the guest ran before it moved")
 		require.Empty(t, v.AttestedBy)
+		require.Equal(t, "pve3", route(st, "www.example.com").GuestNode)
 	})
 	t.Run("an attestation that names no node", func(t *testing.T) {
 		w := threeNodes(t)

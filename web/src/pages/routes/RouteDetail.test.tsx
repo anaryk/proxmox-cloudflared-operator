@@ -174,14 +174,25 @@ describe('a route on a cluster', () => {
     expect(detail('Move')?.querySelector('time')?.getAttribute('datetime')).toBe('2026-10-01T11:58:00Z')
   })
 
+  test('the controller that proves the port of a guest of another node says it saw it behind its uplink', async () => {
+    stubFetch()
+    const { store } = await fakeStore({ state: clustered })
+    show(store, 'grafana.example.com', 'lxc/205')
+    const items = within(screen.getByRole('list', { name: 'Replicas' }))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent)
+    expect(items).toEqual(['pve1port (uplink)reached, in its set', 'pve2portreached, in its set'])
+  })
+
   test('a failing replica says why, and a route seen through an uplink is not shown as the guest’s own port', async () => {
     stubFetch()
     const st = structuredClone(clustered)
     const www = st.routes.find((r) => r.hostname === 'www.example.com' && r.owner === 'qemu/101')
     if (!www?.path) throw new Error('no route')
     www.path.port = 'enp3s0'
+    www.guestNode = 'pve2'
     www.replicas = [
-      { node: 'pve1', level: 'port', attested: true, attestedBy: 'pve2', ok: true, inSet: true },
+      { node: 'pve1', level: 'port', ok: true, inSet: true },
       { node: 'pve2', ok: false, inSet: false, reason: 'no answer on port 8080' },
     ]
     const { store } = await fakeStore({ state: st })
@@ -190,7 +201,7 @@ describe('a route on a cluster', () => {
     const items = within(screen.getByRole('list', { name: 'Replicas' }))
       .getAllByRole('listitem')
       .map((li) => li.textContent)
-    expect(items).toEqual(['pve1port (attested by pve2)reached, in its set', 'pve2-not reachedno answer on port 8080'])
+    expect(items).toEqual(['pve1port (uplink)reached, in its set', 'pve2-not reachedno answer on port 8080'])
   })
 
   test('a route of a node alone shows no placement and no replicas', async () => {

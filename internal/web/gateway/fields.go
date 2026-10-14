@@ -186,7 +186,7 @@ var blockFields = map[string]decision{
 var routeFields = map[string]decision{
 	"hostname": kept, "owner": kept, "state": kept, "level": kept, "reason": kept, "service": kept,
 	"zone": kept, "warnings": kept, "guest": kept, "candidates": kept, "accountId": kept, "rule": kept, "path": kept,
-	"replicas": filteredBy("routes"), "placement": filteredBy("routes"),
+	"replicas": filteredBy("routes"), "placement": filteredBy("routes"), "guestNode": kept,
 }
 
 // replicaFields, placementFields and moveFields are the fields of a route's

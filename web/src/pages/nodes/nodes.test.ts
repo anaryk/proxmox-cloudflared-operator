@@ -122,6 +122,12 @@ describe('the words of a replica, a placement and a move', () => {
     expect(replicaLevelText({ level: 'port', attested: true })).toBe('port')
     expect(replicaLevelText({ level: 'port' })).toBe('port')
     expect(replicaLevelText({})).toBe('-')
+    // A replica on another node than the guest's proves its port behind its own uplink.
+    expect(replicaLevelText({ node: 'pve1', level: 'port' }, 'pve2')).toBe('port (uplink)')
+    expect(replicaLevelText({ node: 'pve2', level: 'port' }, 'pve2')).toBe('port')
+    expect(replicaLevelText({ node: 'pve1', level: 'port', attested: true, attestedBy: 'pve2' }, 'pve2')).toBe('port (attested by pve2)')
+    expect(replicaLevelText({ node: 'pve1', level: 'observed' }, 'pve2')).toBe('observed')
+    expect(replicaLevelText({ node: 'pve1', level: 'port' })).toBe('port')
     expect(replicaTone({ ok: true, inSet: true })).toBe('ok')
     expect(replicaTone({ ok: true, inSet: false })).toBe('warn')
     expect(replicaTone({ ok: false, inSet: false })).toBe('fail')
