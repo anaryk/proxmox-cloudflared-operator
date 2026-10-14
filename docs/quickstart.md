@@ -127,6 +127,9 @@ run that stopped and changes nothing on a node that is set up. In order, it:
   mounted, and the architecture;
 - makes the store (see [Operations](operations.md)) and the identity of this
   install, a random 12 character id, in observe-only mode;
+- records the identity of the cluster the node is in, or of the node when it
+  stands alone, makes the cluster CA of the install when it has none, and issues
+  the client and server certificates of the node (see [Clusters](guides/clusters.md));
 - creates the Proxmox role `PCO`, the user `pco@pve`, grants the role to the user
   on `/`, and makes the API token `pco@pve!pco`. The role is read-only: it holds
   `VM.Audit`, `Sys.Audit`, `SDN.Audit`, `VM.GuestAgent.Audit` on Proxmox VE 9
@@ -154,6 +157,9 @@ id will differ):
 
     preflight: Proxmox VE 9.0.10 on amd64
     store: created install 7f3a9c0d41b2; it only observes until pco apply
+    cluster: recorded the identity of this node, which stands alone (9c4e2b7d1f0a6358e4c2a9b17d3f58e0c6a4b2d8f1e3579a0c8b6d4e2f1a3c5b)
+    cluster CA: created (SHA-256 2d7f0b9c4a1e6583f7c29d0b4e8a1c6f3d5b7e9a2c4f6081b3d5e7f9a1c3b5d7)
+    certificates: issued the client certificate of node node1 (serial 4b7e1c9d2a6f0835e1c7d9b3a5f2e8c4, SHA-256 e1a3c5b7d9f02468ace13579bdf02468ace13579bdf02468ace13579bdf02468) and the server certificate node-node1.pco-7f3a9c0d41b2.invalid, both until 2027-01-12
     role PCO: created with VM.Audit, Sys.Audit, VM.GuestAgent.Audit, SDN.Audit, Pool.Audit
     user pco@pve: created, granted role PCO on /
     token pco@pve!pco: created
@@ -173,7 +179,9 @@ id will differ):
     next: tag a guest with cf-tunnel and write its routes into its notes, then run pco plan to see what would change and pco apply to make it so
 
 The questions it asks go to the terminal. Without one, pass `--yes` to take the
-default answer to every question. The token is never taken from an argument or the
+default answer to every question; with `--yes` and no token the credentials line
+reads `credentials: no Cloudflare token given; add one later with pco credential add
+--label <label>`. The token is never taken from an argument or the
 environment: use `--cf-token-file <file>` or `--cf-token-stdin`, or leave it for
 the next step.
 
