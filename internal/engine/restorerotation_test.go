@@ -137,6 +137,82 @@ func TestARotationWaitsForTheConnectorsToRunTheNewToken(t *testing.T) {
 	require.False(t, found)
 }
 
+// A record of the rotation that cannot be read holds the whole cycle: it
+// may list a tunnel whose old secret the lost install still holds, so it is
+// never taken for nothing to rotate.
+func TestAnUnreadableRestoreRotationHoldsTheCycle(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	file := filepath.Join(w.paths.Cluster, "meta", "restore-rotation.json")
+	require.NoError(t, os.WriteFile(file, []byte("{not json"), 0o600))
+	n := len(w.cf.Calls())
+
+	st := w.tick(time.Minute)
+
+	require.Contains(t, st.Hold, "reading the rotation of the restored install")
+	for _, call := range w.callsSince(n) {
+		require.NotContains(t, call, "Put", "nothing is written at Cloudflare")
+		require.NotContains(t, call, "Rotate")
+	}
+	require.FileExists(t, file, "nothing is dropped")
+}
+
+// The record lists every tunnel of the install it rotates, as the cycles
+// find them, and is done only once each listed one was rotated, taken up
+// and cleaned; a controller that takes over goes on from it, and gives no
+// secret again.
+func TestTheRestoreRotationListsItsTunnelsAndGoesOnAfterATakeOver(t *testing.T) {
+	w, pinned2 := pinnedDB(t)
+	sharedID, pinnedID := w.tunnelID(t, tunnelName), w.tunnelID(t, pinned2)
+	stale := true
+	w.acts["pve2"].edit = func(st *agentproto.Status) {
+		for i := range st.Connectors {
+			if stale {
+				st.Connectors[i].TokenSHA256 = connector.TokenDigest("the-old-token")
+			}
+		}
+	}
+	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+
+	w.tick(time.Minute)
+	rec, found, err := w.store.RestoreRotation()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.ElementsMatch(t, []string{sharedID, pinnedID}, rec.Tunnels)
+	require.ElementsMatch(t, []string{sharedID, pinnedID}, rec.Rotated)
+
+	w.restart(t)
+	w.tick(time.Minute)
+	stale = false
+	for range 3 {
+		w.tick(time.Minute)
+	}
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+sharedID))
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+pinnedID))
+	_, found, err = w.store.RestoreRotation()
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
+// A tunnel the record lists is crossed off only once it is done, or once a
+// cycle that read every account found it gone: deleted, it has no secret.
+func TestARestoreRotationEndsOnlyWithEveryListedTunnelDone(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	gone := "00000000-0000-4000-8000-0000000000ff"
+	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now(), Tunnels: []string{id, gone}}))
+
+	for range 3 {
+		w.tick(time.Minute)
+	}
+
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id))
+	_, found, err := w.store.RestoreRotation()
+	require.NoError(t, err)
+	require.False(t, found, "the tunnel that is gone has no secret left")
+}
+
 // In observe-only mode the rotation waits for pco apply, and says so.
 func TestTheRotationOfARestoredInstallWaitsForApply(t *testing.T) {
 	w := threeNodes(t)

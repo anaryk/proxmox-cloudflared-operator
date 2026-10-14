@@ -85,9 +85,13 @@ type cycleRun struct {
 	// run looked. checked says that the cycle got through to its DNS run and
 	// that the run looked at the records as the writer. storeHold says that
 	// it held because the store could not be read or written.
-	cfHold        bool
-	storeHold     bool
-	holdWhy       string
+	cfHold    bool
+	storeHold bool
+	holdWhy   string
+	// restoreRec is the rotation of a restored install, read before
+	// anything of the cycle is written; restoreFound says there is one.
+	restoreRec    store.RestoreRotation
+	restoreFound  bool
 	checked       bool
 	recheck       recheck
 	tunnelVerdict reconcile.WriterVerdict
@@ -380,6 +384,7 @@ func (c *cycleRun) prepare() bool {
 		c.problem("%s", c.e.setAside)
 		c.e.setAside = ""
 	}
+	c.readRestoreRotation()
 	if !c.storeHold && c.readPlacements() {
 		c.registryStep()
 	}

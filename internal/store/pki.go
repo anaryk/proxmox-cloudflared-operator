@@ -400,6 +400,11 @@ func (s *Store) DeleteCARotation() error { return s.cluster.Delete(kindMeta, idC
 // up and cleaned.
 type RestoreRotation struct {
 	Since time.Time `json:"since"`
+	// Tunnels are the ids of every tunnel of the install the cycles found
+	// since the rotation began: it is done only once each was rotated,
+	// taken up and cleaned, or found gone in a cycle that read every
+	// account.
+	Tunnels []string `json:"tunnels,omitempty"`
 	TunnelsRotated
 	// Cleaned are the tunnels rotated whose connections were all ended once
 	// every connector that remains ran with the new secret.
