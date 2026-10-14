@@ -14,6 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -505,18 +506,24 @@ func (c *cycleRun) servedTarget(rt model.Route, record placed, replicas []string
 	}
 	dialed, ok := t.Dialed()
 	published := ok && c.sendsTo(rt, record, egress.Target{Addr: dialed, Port: rt.Target.Port})
+	mem := &c.e.place
+	if t.Addr.IsValid() || t.Withdrawn || t.Rejected {
+		delete(mem.unresolvedSince, rt.Hostname)
+	}
 	switch {
 	case !t.Addr.IsValid() && !t.Withdrawn && !t.Rejected:
-		// No node resolves it now, which withdraws nothing: only an
-		// identity that failed, a rejection or a block does. A route
-		// published before keeps its rule, unreachable, and no egress set
-		// holds its target meanwhile.
-		if s, ok := c.placements[rt.Hostname]; ok && s.Addr.IsValid() && c.e.place.blocks[s.Addr] == nil {
-			why := "no node resolves it now; the route is held as it was"
-			if len(unknown) > 0 {
-				why = fmt.Sprintf(reasonHeld, unknown[0])
+		// No node resolves it now. A route published before keeps its
+		// rule at its stored address, unreachable, while its guest may
+		// still run and for as long as a proof may be old; no egress set
+		// holds the target meanwhile. Longer than that, or once the guest
+		// is stopped, the address is withdrawn, as the resolver of its
+		// node would withdraw it.
+		if s, ok := c.placements[rt.Hostname]; ok && s.Addr.IsValid() && mem.blocks[s.Addr] == nil {
+			why, held := c.holdsStored(rt, unknown)
+			if held {
+				return planner.ResolvedTarget{Addr: s.Addr, Owner: rt.Owner(), Reason: why}
 			}
-			return planner.ResolvedTarget{Addr: s.Addr, Owner: rt.Owner(), Reason: why}
+			return planner.ResolvedTarget{Addr: s.Addr, Withdrawn: true, Owner: rt.Owner(), Reason: why}
 		}
 	case !t.Addr.IsValid() || t.Withdrawn || t.Rejected:
 	case c.e.place.blocks[t.Addr] != nil:
@@ -529,6 +536,32 @@ func (c *cycleRun) servedTarget(rt model.Route, record placed, replicas []string
 		t.Reason = cmp.Or(t.Reason, fmt.Sprintf("not reached on %s", strings.Join(failing, ", ")))
 	}
 	return t
+}
+
+// holdsStored says whether the stored address of a route no node resolves
+// now is held, and why, or why it is withdrawn: the guest is stopped, or no
+// node resolved the route for as long as a proof may be old.
+func (c *cycleRun) holdsStored(rt model.Route, unknown []string) (string, bool) {
+	mem := &c.e.place
+	if rt.Guest != nil {
+		if g, ok := c.snap.Guest(*rt.Guest); ok && !g.Running && !g.StatusUnknown {
+			return "its guest is not running; its last address is withdrawn", false
+		}
+	}
+	if mem.unresolvedSince == nil {
+		mem.unresolvedSince = map[string]time.Time{}
+	}
+	since, ok := mem.unresolvedSince[rt.Hostname]
+	if !ok {
+		since, mem.unresolvedSince[rt.Hostname] = c.now, c.now
+	}
+	if c.now.Sub(since) >= resolve.DefaultMaxProofAge {
+		return fmt.Sprintf("no node resolved it for %s; its last address is withdrawn", resolve.DefaultMaxProofAge), false
+	}
+	if len(unknown) > 0 {
+		return fmt.Sprintf(reasonHeld, unknown[0]), true
+	}
+	return "no node resolves it now; the route is held as it was", true
 }
 
 // baseTarget is what the resolving node of a route found of its target.

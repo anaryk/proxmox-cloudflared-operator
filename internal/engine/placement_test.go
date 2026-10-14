@@ -263,6 +263,55 @@ func TestCoverageLostPinsARouteOnlyToANodeThatReachesIt(t *testing.T) {
 	require.Equal(t, "pve2", route(st, "db.example.com").Placement.Node)
 }
 
+// A route no node resolves now keeps its stored address, unreachable, only
+// while its guest may still run and for as long as a proof may be old: the
+// address of a stopped guest, and one no node resolved for longer, is
+// withdrawn.
+func TestAStoredAddressIsHeldOnlyWhileItsGuestMayStillRun(t *testing.T) {
+	dropDB := func(st *agentproto.Status) {
+		st.Targets = slices.DeleteFunc(st.Targets, func(r agentproto.TargetReport) bool { return r.Key == "db.example.com" })
+	}
+	t.Run("a running guest, for five minutes", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve2"].edit = dropDB
+		var st State
+		for range 6 {
+			st = w.tick(50 * time.Second)
+			r := route(st, "db.example.com")
+			require.Equal(t, planner.StateUnreachable, r.State, r.Reason)
+			require.Contains(t, r.Reason, "held as it was")
+		}
+		st = w.tick(50 * time.Second)
+		r := route(st, "db.example.com")
+		require.Equal(t, planner.StateWithdrawn, r.State, r.Reason)
+		require.Contains(t, r.Reason, "no node resolved it for 5m0s")
+	})
+	t.Run("a stopped guest, at once", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve2"].edit = dropDB
+		snap := w.inv.snapshot()
+		snap.Guests[1].Running = false
+		w.inv.set(snap)
+		st := w.tick(time.Second)
+		r := route(st, "db.example.com")
+		require.Equal(t, planner.StateWithdrawn, r.State, r.Reason)
+		require.Contains(t, r.Reason, "its guest is not running")
+	})
+	t.Run("a guest of unknown state, as a running one", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve2"].edit = dropDB
+		snap := w.inv.snapshot()
+		snap.Guests[1].Running, snap.Guests[1].StatusUnknown = false, true
+		w.inv.set(snap)
+		st := w.tick(time.Second)
+		r := route(st, "db.example.com")
+		require.Equal(t, planner.StateUnreachable, r.State, r.Reason)
+	})
+}
+
 // An agent that restarts every 50 seconds for ten minutes: its first
 // restart is forgiven, the second pins the routes, they stay pinned for as
 // long as it flaps, and no route moves twice.

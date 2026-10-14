@@ -63,8 +63,10 @@ type placementMemory struct {
 	// decided is where the last placement put each owner's routes.
 	decided map[string]decidedPlace
 	// pointedAt is, by hostname, the tunnel its record pointed at when a
-	// DNS run of this process last listed its zone.
-	pointedAt map[string]string
+	// DNS run of this process last listed its zone; unresolvedSince is,
+	// by hostname, since when no node resolves the route.
+	pointedAt       map[string]string
+	unresolvedSince map[string]time.Time
 }
 
 // coverageView is coverage as one cycle judges it.
