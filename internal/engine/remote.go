@@ -68,6 +68,7 @@ func (c *cycleRun) publishRemote() {
 		s.Guests = c.snapshotGuests(s.Targets)
 		s.Tunnels = c.withVerified(c.remoteTunnels(name), name)
 		s.Prune = c.pruned && len(s.Tunnels) > 0
+		s.Networks = c.networksFor(name)
 		rep := reports[name]
 		c.e.seqs.stamp(&s, rep.Status.EpochSeen, rep.Status.SeqApplied)
 		c.e.place.noteListed(s)

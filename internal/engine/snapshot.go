@@ -142,6 +142,7 @@ func (c *cycleRun) targetsFor(node string) []agentproto.Target {
 				}
 			}
 		}
+		c.giveService(t)
 	}
 	return out
 }

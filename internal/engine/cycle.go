@@ -192,6 +192,10 @@ type cycleRun struct {
 	joining map[string]string
 	// replicaCache is the replica set of the cycle.
 	replicaCache []string
+	// netsOfNodes are the networks the snapshots of the other nodes give,
+	// read once; netsSaid says that the cycle said they could not be.
+	netsOfNodes *netsRead
+	netsSaid    bool
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {

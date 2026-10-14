@@ -576,24 +576,7 @@ func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []store.S
 // wantedLegs are the legs of the networks with a leg address on this node,
 // by network.
 func (c *cycleRun) wantedLegs(nets map[string]store.Network) []gateway.Leg {
-	var out []gateway.Leg
-	for _, id := range slices.Sorted(maps.Keys(nets)) {
-		n := nets[id]
-		addr, ok := n.Legs[c.e.d.Node]
-		if !ok {
-			continue
-		}
-		mac, err := net.ParseMAC(n.LegMAC)
-		if err != nil {
-			c.problem("network %s: the leg MAC %q: %v; its leg is left out", id, n.LegMAC, err)
-			continue
-		}
-		out = append(out, gateway.Leg{
-			ID: id, Mark: n.Mark, Bridge: n.Bridge, VLAN: n.VLAN, Prefix: netip.PrefixFrom(addr, n.Prefix.Bits()),
-			MAC: mac, Managed: n.Kind == store.NetworkManaged, Uplink: n.Uplink,
-		})
-	}
-	return out
+	return c.legsOn(c.e.d.Node, nets)
 }
 
 // wantedServices are the service addresses of the networks with a leg here
@@ -672,16 +655,21 @@ func leasePins(leases map[string]store.Lease) map[mappingKey]*gateway.Pin {
 }
 
 // wantedSticky are the sticky entries of the cards attached to the managed
-// network, of the guests of this node: each MAC on the port its card takes
-// on the bridge, so that no other port can take the MAC over, with the
-// address the card may send from. A guest that
-// is stopped has no port; its entry is given all the same, and the gateway
-// adds it when the port appears. The appliance has none: the bridge is the
-// node's.
+// network, of the guests of this node. The appliance has none: the bridge is
+// the node's.
 func (c *cycleRun) wantedSticky(atts map[string]store.Attachment) []gateway.Sticky {
 	if c.appliance() {
 		return nil
 	}
+	return c.stickyOn(c.e.d.Node, atts)
+}
+
+// stickyOn are the sticky entries of the cards attached to the managed
+// network, of the guests that run on node: each MAC on the port its card
+// takes on the bridge, so that no other port can take the MAC over, with the
+// address the card may send from. A guest that is stopped has no port; its
+// entry is given all the same, and the gateway adds it when the port appears.
+func (c *cycleRun) stickyOn(node string, atts map[string]store.Attachment) []gateway.Sticky {
 	var out []gateway.Sticky
 	for _, a := range atts {
 		ref, err := model.ParseGuestRef(a.Owner)
@@ -690,7 +678,7 @@ func (c *cycleRun) wantedSticky(atts map[string]store.Attachment) []gateway.Stic
 		}
 		g, ok := c.snap.Guest(ref)
 		mac, merr := net.ParseMAC(a.MAC)
-		if !ok || g.Node != c.e.d.Node || merr != nil || len(mac) != 6 {
+		if !ok || g.Node != node || merr != nil || len(mac) != 6 {
 			continue
 		}
 		firewall := slices.ContainsFunc(g.NICs, func(n model.NIC) bool {
