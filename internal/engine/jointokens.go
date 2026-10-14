@@ -53,6 +53,10 @@ func (e *Engine) NewJoinToken(ctx context.Context, node string) (JoinTokenView, 
 	if e.d.Endpoints != nil {
 		endpoints = e.d.Endpoints()
 	}
+	if len(endpoints) == 0 && inst.Appliance != nil && inst.Appliance.KindName() == store.ApplianceCombined {
+		return JoinTokenView{}, fmt.Errorf("%w: a combined appliance takes no agents of other nodes; "+
+			"pco appliance convert --vmid %d on its node makes it a controller", ErrRefused, inst.Appliance.VMID)
+	}
 	if len(endpoints) == 0 {
 		return JoinTokenView{}, fmt.Errorf("%w: this controller has no agent endpoint to name in the token; pco setup gives the node an agent address", ErrRefused)
 	}

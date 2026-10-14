@@ -118,3 +118,20 @@ func TestAJoinTokenIsRefusedWhereItWouldNotDo(t *testing.T) {
 	require.ErrorIs(t, err, ErrRefused)
 	require.ErrorContains(t, err, "no agent endpoint")
 }
+
+// A combined appliance takes no agents: it has no endpoint, and says how to
+// make it a controller.
+func TestACombinedApplianceMakesNoJoinToken(t *testing.T) {
+	w := threeNodes(t)
+	require.NoError(t, w.store.SaveInstall(store.Install{ID: pkiInstall, CreatedAt: t0, Profile: store.ProfileAppliance, Appliance: &store.ApplianceInstall{
+		VMID: 9250, Node: testNode, MACs: []string{"bc:24:11:00:92:50"}, Endpoints: []store.Endpoint{{Address: "10.92.0.1:8006", ServerName: testNode}},
+	}}))
+	seedCA(t, w.env, testCA(t))
+	w.endpoints = func() []string { return nil }
+	w.settle()
+
+	_, err := w.eng.NewJoinToken(t.Context(), "app1")
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "pco appliance convert --vmid 9250")
+}
