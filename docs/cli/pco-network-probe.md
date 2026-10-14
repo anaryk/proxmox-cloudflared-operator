@@ -10,6 +10,12 @@ prefix that no guest is known to have. `--address` may carry the length of the p
 there; before that it says so, and the leg checks its address when it is raised. The command
 exits with 1 when something answered or the address was not probed.
 
+On a cluster `--scope` probes the legs of a network of that scope, as pco network attach does:
+of scope cluster, this node's at `--address` and every other node's at the address `--leg` gives
+or the highest free one, each by the agent of its node; of scope node, the leg of this node
+or of the node `--node` names. A node without the bridge, or whose agent does not answer, is
+shown without a leg and is no failure.
+
 With `--json` the answer of the daemon is printed as the daemon sent it, re-indented, with
 control and bidirectional characters escaped.
 
@@ -30,14 +36,20 @@ pco network probe vmbr1
 
 # Is 10.20.0.250 free on VLAN 20 of vmbr2?
 pco network probe vmbr2:20 --address 10.20.0.250/24
+
+# On a cluster, the legs of VLAN 20 of vmbr2 on every node
+pco network probe vmbr2:20 --scope cluster
 ```
 
 ## Flags
 
 ```text
-    --address string   the address to probe, as 10.77.0.250 or 10.77.0.250/24
--h, --help             help for probe
-    --prefix string    the prefix of the guests' network, as 10.77.0.0/24
+    --address string    the address to probe, as 10.77.0.250 or 10.77.0.250/24
+-h, --help              help for probe
+    --leg stringArray   the leg of another node of a network of --scope cluster, as pve2=10.77.0.249 (repeatable)
+    --node string       the node of a network of --scope node, this one when not given
+    --prefix string     the prefix of the guests' network, as 10.77.0.0/24
+    --scope string      on a cluster, probe the legs of a network of scope cluster or node
 ```
 
 ## Global flags

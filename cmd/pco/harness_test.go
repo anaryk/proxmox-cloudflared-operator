@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -93,6 +94,7 @@ type fakeEngine struct {
 	networks   []engine.NetworkDetail
 	candidates []engine.CandidateNetwork
 	probe      engine.ProbeResult
+	scoped     engine.ProbeResult // what a probe of a scope answers
 	networkErr error
 
 	// The cluster: what the agent of the node shows of itself, and what an
@@ -405,10 +407,18 @@ func (f *fakeEngine) CandidateNetworks(context.Context) ([]engine.CandidateNetwo
 // ProbeNetwork answers with the probe of the test, for the bridge, the
 // prefix and the address asked for where the request names them.
 func (f *fakeEngine) ProbeNetwork(_ context.Context, r engine.ProbeRequest) (engine.ProbeResult, error) {
-	f.record(fmt.Sprintf("probe %s:%d prefix=%v address=%v", r.Bridge, r.VLAN, r.Prefix, r.Address))
+	call := fmt.Sprintf("probe %s:%d prefix=%v address=%v", r.Bridge, r.VLAN, r.Prefix, r.Address)
+	if r.Scope != "" || r.Node != "" || len(r.Legs) > 0 {
+		call += fmt.Sprintf(" scope=%s node=%s legs=%v", r.Scope, r.Node, r.Legs)
+	}
+	f.record(call)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	res := f.probe
+	if r.Scope != "" {
+		res = f.scoped
+		res.Scope = r.Scope
+	}
 	res.Bridge, res.VLAN = r.Bridge, r.VLAN
 	if r.Prefix.IsValid() {
 		res.Prefix = r.Prefix
@@ -420,12 +430,26 @@ func (f *fakeEngine) ProbeNetwork(_ context.Context, r engine.ProbeRequest) (eng
 }
 
 func (f *fakeEngine) Attach(_ context.Context, r engine.AttachRequest) (engine.NetworkView, error) {
-	f.record(fmt.Sprintf("attach %s:%d prefix=%v address=%v confirmUplink=%t overlapOK=%t",
-		r.Bridge, r.VLAN, r.Prefix, r.Address, r.ConfirmUplink, r.OverlapOK))
+	call := fmt.Sprintf("attach %s:%d prefix=%v address=%v confirmUplink=%t overlapOK=%t",
+		r.Bridge, r.VLAN, r.Prefix, r.Address, r.ConfirmUplink, r.OverlapOK)
+	if r.Scope != "" || r.Node != "" || len(r.Legs) > 0 {
+		call += fmt.Sprintf(" scope=%s node=%s legs=%v", r.Scope, r.Node, r.Legs)
+	}
+	f.record(call)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.networkErr != nil {
 		return engine.NetworkView{}, f.networkErr
+	}
+	if len(r.Legs) > 0 {
+		v := engine.NetworkView{Network: store.Network{
+			ID: store.SegmentID(r.Bridge, r.VLAN), Kind: store.NetworkAttach, Bridge: r.Bridge, VLAN: r.VLAN, Prefix: r.Prefix,
+			Legs: r.Legs, LegMAC: "02:50:43:4f:00:01", Mark: 1, Scope: r.Scope, CreatedAt: t0, Rev: 1,
+		}}
+		for _, node := range slices.Sorted(maps.Keys(r.Legs)) {
+			v.Legs = append(v.Legs, engine.LegView{Node: node, Addr: r.Legs[node], Problem: "the gateway has not reported the leg yet"})
+		}
+		return v, nil
 	}
 	return engine.NetworkView{
 		Network: store.Network{

@@ -310,7 +310,7 @@ func TestNetworkAttachNeedsTheAddressWithItsLength(t *testing.T) {
 	res := r.run("", "network", "attach", "pcot1", "--address", "10.50.0.249")
 	require.EqualError(t, res.err, `--address "10.50.0.249": want the address of the leg with the length of the guests' prefix, as 10.77.0.250/24`)
 	res = r.run("", "network", "attach", "pcot1")
-	require.ErrorContains(t, res.err, `required flag(s) "address" not set`)
+	require.EqualError(t, res.err, "--address: give the address of the leg with the length of the guests' prefix, as 10.77.0.250/24")
 	res = r.run("", "--json", "network", "attach", "pcot1", "--address", "10.50.0.249/24")
 	require.ErrorContains(t, res.err, "--json has no meaning")
 
@@ -400,4 +400,170 @@ func TestNetworkShowJSONIsWhatTheDaemonSent(t *testing.T) {
 
 	require.NoError(t, res.err)
 	require.Equal(t, indented(t, raw), res.out)
+}
+
+// clusterProbe is what the daemon of a cluster answers a probe of VLAN 20 of
+// vmbr2 with: without a scope, that the bridge is one segment on every node;
+// with one, a leg for pve1 and pve2 and none for pve3, which has no vmbr2.
+func clusterProbe(e *fakeEngine) {
+	e.probe = engine.ProbeResult{Prefix: netip.MustParsePrefix("10.20.0.0/24"), Address: netip.MustParseAddr("10.20.0.254"), Free: true,
+		AnsweredBy: []string{}, Uplink: true, Warning: "the leg's MAC becomes visible on the LAN of vmbr2", Clustered: true, Suggested: "cluster"}
+	e.scoped = engine.ProbeResult{Prefix: netip.MustParsePrefix("10.20.0.0/24"), Address: netip.MustParseAddr("10.20.0.250"), Free: true,
+		AnsweredBy: []string{}, Uplink: true, Warning: "the leg's MAC becomes visible on the LAN of vmbr2", Clustered: true, Suggested: "cluster",
+		Legs: []engine.LegProbe{
+			{Node: "pve1", Address: netip.MustParseAddr("10.20.0.250"), Free: true, AnsweredBy: []string{}, Uplink: true},
+			{Node: "pve2", Address: netip.MustParseAddr("10.20.0.253"), Free: true, AnsweredBy: []string{}, Uplink: true},
+			{Node: "pve3", Address: netip.MustParseAddr("10.20.0.252"), AnsweredBy: []string{}, Problem: "vmbr2 is no bridge or vnet of node pve3", Missing: true},
+		}}
+}
+
+const clusterLegs = "Network vmbr2.20 of scope cluster, in 10.20.0.0/24:\n" +
+	"  pve1: 10.20.0.250 is free\n" +
+	"  pve2: 10.20.0.253 is free\n" +
+	"  pve3: no leg: vmbr2 is no bridge or vnet of node pve3\n" +
+	"Uplink: vmbr2 VLAN 20 has a physical uplink: the leg's MAC becomes visible on the LAN of vmbr2.\n"
+
+// On a cluster the attach asks the scope, the one the bridge suggests
+// taken on an empty answer, probes the legs of the nodes and attaches
+// those that may have one.
+func TestNetworkAttachOnAClusterAsksTheScope(t *testing.T) {
+	r, e := daemonWithNetworks(t)
+	clusterProbe(e)
+
+	res := r.tty().run("\ny\n", "network", "attach", "vmbr2:20", "--address", "10.20.0.250/24", "--confirm-uplink")
+
+	require.NoError(t, res.err)
+	require.Equal(t, []string{
+		"probe vmbr2:20 prefix=10.20.0.0/24 address=10.20.0.250",
+		"probe vmbr2:20 prefix=10.20.0.0/24 address=10.20.0.250 scope=cluster node= legs=map[]",
+		"attach vmbr2:20 prefix=10.20.0.0/24 address=invalid IP confirmUplink=true overlapOK=false scope=cluster node= legs=map[pve1:10.20.0.250 pve2:10.20.0.253]",
+	}, e.called())
+	require.Equal(t, clusterLegs+"Attached network vmbr2.20 of scope cluster: the legs leg1 with 10.20.0.250/24 on pve1, 10.20.0.253/24 on pve2, mark 1. "+
+		"The next cycle raises them; pco network show vmbr2.20 shows how they are.\n", res.out)
+	require.Equal(t, "Scope of network vmbr2.20: cluster, one segment on every node, or node, a bridge of one node? [cluster/node, empty for cluster] "+
+		"Attach network vmbr2.20 of scope cluster with the legs 10.20.0.250/24 on pve1, 10.20.0.253/24 on pve2? [y/N] ", res.errOut)
+}
+
+func TestNetworkAttachOnAClusterNamesTheScope(t *testing.T) {
+	t.Run("from a script", func(t *testing.T) {
+		r, e := daemonWithNetworks(t)
+		clusterProbe(e)
+
+		res := r.run("", "network", "attach", "vmbr2:20", "--address", "10.20.0.250/24", "--confirm-uplink", "--yes")
+
+		require.EqualError(t, res.err, "vmbr2 VLAN 20 is on a cluster: name the scope of the network with --scope cluster, "+
+			"one segment on every node, or --scope node, a bridge of one node; cluster is suggested")
+		require.Len(t, e.called(), 1, "nothing is attached")
+	})
+	t.Run("of one node, another", func(t *testing.T) {
+		r, e := daemonWithNetworks(t)
+		clusterProbe(e)
+		e.scoped.Legs = []engine.LegProbe{{Node: "pve2", Address: netip.MustParseAddr("10.20.0.250"), Free: true, AnsweredBy: []string{}}}
+
+		res := r.run("", "network", "attach", "vmbr2:20", "--address", "10.20.0.250/24", "--scope", "node", "--node", "pve2", "--yes")
+
+		require.NoError(t, res.err)
+		require.Equal(t, []string{
+			"probe vmbr2:20 prefix=10.20.0.0/24 address=10.20.0.250 scope=node node=pve2 legs=map[]",
+			"attach vmbr2:20 prefix=10.20.0.0/24 address=invalid IP confirmUplink=false overlapOK=false scope=node node= legs=map[pve2:10.20.0.250]",
+		}, e.called())
+	})
+	t.Run("with the legs of the other nodes", func(t *testing.T) {
+		r, e := daemonWithNetworks(t)
+		clusterProbe(e)
+
+		res := r.run("", "network", "attach", "vmbr2:20", "--address", "10.20.0.250/24", "--scope", "cluster", "--leg", "pve2=10.20.0.253",
+			"--leg", "pve3=10.20.0.252/24", "--confirm-uplink", "--yes")
+
+		require.NoError(t, res.err)
+		require.Equal(t, "probe vmbr2:20 prefix=10.20.0.0/24 address=10.20.0.250 scope=cluster node= legs=map[pve2:10.20.0.253 pve3:10.20.0.252]", e.called()[0])
+	})
+	t.Run("a leg in use", func(t *testing.T) {
+		r, e := daemonWithNetworks(t)
+		clusterProbe(e)
+		e.scoped.Legs[1].Free, e.scoped.Legs[1].AnsweredBy = false, []string{"bc:24:11:00:00:09"}
+
+		res := r.run("", "network", "attach", "vmbr2:20", "--address", "10.20.0.250/24", "--scope", "cluster", "--confirm-uplink", "--yes")
+
+		require.EqualError(t, res.err, "10.20.0.253 is in use on vmbr2 VLAN 20 of node pve2; choose another address with --leg pve2=<address>")
+		require.Len(t, e.called(), 1)
+	})
+	t.Run("a leg refused", func(t *testing.T) {
+		r, e := daemonWithNetworks(t)
+		clusterProbe(e)
+		e.scoped.Legs[1].Free, e.scoped.Legs[1].Problem = false, "node pve2 reaches vmbr2 VLAN 20 directly; nothing to attach"
+
+		res := r.run("", "network", "attach", "vmbr2:20", "--address", "10.20.0.250/24", "--scope", "cluster", "--confirm-uplink", "--yes")
+
+		require.EqualError(t, res.err, "no leg on node pve2: node pve2 reaches vmbr2 VLAN 20 directly; nothing to attach")
+	})
+	t.Run("what it does not take", func(t *testing.T) {
+		r, e := daemonWithNetworks(t)
+		for _, args := range [][]string{
+			{"--scope", "everywhere"},
+			{"--scope", "cluster", "--node", "pve2"},
+			{"--scope", "cluster", "--leg", "pve2"},
+			{"--scope", "cluster", "--leg", "pve2=nowhere"},
+		} {
+			res := r.run("", append([]string{"network", "attach", "vmbr2:20", "--address", "10.20.0.250/24", "--yes"}, args...)...)
+			require.Error(t, res.err, args)
+		}
+		require.Empty(t, e.called())
+	})
+}
+
+// The probe of a scope shows the leg of every node.
+func TestNetworkProbeOfAScope(t *testing.T) {
+	r, e := daemonWithNetworks(t)
+	clusterProbe(e)
+
+	res := r.run("", "network", "probe", "vmbr2:20", "--scope", "cluster")
+
+	require.NoError(t, res.err, "a node without the bridge is no failure")
+	require.Equal(t, clusterLegs, res.out)
+}
+
+// clusterNetwork is VLAN 20 of vmbr3 of scope cluster with a leg on three
+// nodes, that of pve3 refused, and a target behind the leg of pve3 alone.
+func clusterNetwork() engine.NetworkDetail {
+	legs := map[string]netip.Addr{"pve1": netip.MustParseAddr("10.20.0.250"), "pve2": netip.MustParseAddr("10.20.0.249"), "pve3": netip.MustParseAddr("10.20.0.248")}
+	return engine.NetworkDetail{
+		NetworkView: engine.NetworkView{
+			Network: store.Network{
+				ID: "vmbr3.20", Kind: store.NetworkAttach, Bridge: "vmbr3", VLAN: 20, Prefix: netip.MustParsePrefix("10.20.0.0/24"), Legs: legs,
+				LegMAC: "02:50:43:4f:00:03", Mark: 3, Uplink: true, Scope: store.ScopeCluster, CreatedAt: t0.Add(-time.Minute), Rev: 2,
+				LegMACs: map[string]string{"pve1": "02:50:43:4f:00:03", "pve2": "02:50:43:4f:01:03", "pve3": "02:50:43:4f:02:03"},
+			},
+			Legs: []engine.LegView{
+				{Node: "pve1", Addr: legs["pve1"], MAC: "02:50:43:4f:00:03", Up: true},
+				{Node: "pve2", Addr: legs["pve2"], MAC: "02:50:43:4f:01:03", Up: true},
+				{Node: "pve3", Addr: legs["pve3"], MAC: "02:50:43:4f:02:03", Problem: "10.20.0.248 is answered by bc:24:11:00:00:09"},
+			},
+			Targets: 1,
+		},
+		Services: []store.ServiceAddr{},
+		NodeServices: []store.NodeServiceAddr{{Network: "vmbr3.20", Node: "pve3", Addr: netip.MustParseAddr("10.20.0.5"),
+			Service: netip.MustParseAddr("198.18.1.9"), AllocatedAt: t0.Add(-30 * time.Second)}},
+		Served: []string{},
+	}
+}
+
+// A network of a cluster shows its scope, the leg of every node with its
+// MAC and how its gateway found it, and the service addresses of each node.
+func TestNetworkShowOfAClusterNetwork(t *testing.T) {
+	r, e := daemonWithNetworks(t)
+	e.networks = append(e.networks, clusterNetwork())
+
+	res := r.run("", "network", "show", "vmbr3.20")
+	list := r.run("", "network", "list")
+
+	require.NoError(t, res.err)
+	show := strings.Join(strings.Fields(res.out), " ")
+	require.Contains(t, show, "scope: cluster")
+	require.Contains(t, show, "leg: 10.20.0.249 on pve2, leg3 with MAC 02:50:43:4f:01:03: up")
+	require.Contains(t, show, "leg: 10.20.0.248 on pve3, leg3 with MAC 02:50:43:4f:02:03: 10.20.0.248 is answered by bc:24:11:00:00:09")
+	require.Contains(t, show, "Service addresses on node pve3: 198.18.1.9 -> 10.20.0.5 since ")
+	require.NoError(t, list.err)
+	lines := strings.Join(strings.Fields(list.out), " ")
+	require.Contains(t, lines, "10.20.0.250 on pve1 and 2 more pve3: 10.20.0.248 is answered by bc:24:11:00:00:09")
 }

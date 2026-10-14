@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,12 +44,31 @@ func (a *app) ask(cmd *cobra.Command, question string) (string, error) {
 	if err := s.done(); err != nil {
 		return "", err
 	}
-	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	line, err := readLine(cmd.InOrStdin())
 	if err != nil {
 		// The answer did not end with a newline, or never came.
 		s.println("")
 	}
 	return strings.TrimSpace(line), nil
+}
+
+// readLine reads up to a newline a byte at a time, so that what follows is
+// left for the next question.
+func readLine(r io.Reader) (string, error) {
+	var line []byte
+	b := make([]byte, 1)
+	for {
+		n, err := r.Read(b)
+		if n == 1 {
+			if b[0] == '\n' {
+				return string(line), nil
+			}
+			line = append(line, b[0])
+		}
+		if err != nil {
+			return string(line), err
+		}
+	}
 }
 
 // addYesFlag adds --yes, which answers the questions of a command with yes.

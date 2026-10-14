@@ -1,6 +1,8 @@
 package main
 
 import (
+	"cmp"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -83,12 +85,28 @@ func (a *app) networkListCmd() *cobra.Command {
 }
 
 // legOf is the address of the leg of a network on this node, and how the
-// gateway last found it: up, or why not.
+// gateway last found it: up, or why not. A network with legs on more nodes
+// names the node of the first and how many more there are, and is up when
+// every leg is.
 func legOf(n engine.NetworkView) (addr, state string) {
 	if len(n.Legs) == 0 {
 		return "-", "no leg on this node"
 	}
 	l := n.Legs[0]
+	if len(n.Legs) > 1 {
+		addr := fmt.Sprintf("%s on %s and %d more", l.Addr, l.Node, len(n.Legs)-1)
+		for _, other := range n.Legs {
+			if _, state := legState(other); state != "up" {
+				return addr, other.Node + ": " + state
+			}
+		}
+		return addr, "up"
+	}
+	return legState(l)
+}
+
+// legState is the address of a leg and how its gateway last found it.
+func legState(l engine.LegView) (addr, state string) {
 	switch {
 	case l.Up && l.Problem != "":
 		return l.Addr.String(), "up, but " + l.Problem
@@ -179,7 +197,10 @@ func candidateState(c engine.CandidateNetwork) string {
 }
 
 func (a *app) networkProbeCmd() *cobra.Command {
-	var addr, prefix string
+	var (
+		addr, prefix, scope, node string
+		legFlags                  []string
+	)
 	cmd := &cobra.Command{
 		Use:   "probe <bridge>[:<vlan>]",
 		Short: "Ask who answers for an address on a bridge or VLAN",
@@ -191,11 +212,18 @@ func (a *app) networkProbeCmd() *cobra.Command {
 			"prefix that no guest is known to have. --address may carry the length of the prefix, as\n" +
 			"10.77.0.250/24. The appliance probes a bridge only through the card of a network attached\n" +
 			"there; before that it says so, and the leg checks its address when it is raised. The command\n" +
-			"exits with 1 when something answered or the address was not probed.\n\n" + jsonHelp + "\n\n" + askHelp,
+			"exits with 1 when something answered or the address was not probed.\n\n" +
+			"On a cluster --scope probes the legs of a network of that scope, as pco network attach does:\n" +
+			"of scope cluster, this node's at --address and every other node's at the address --leg gives\n" +
+			"or the highest free one, each by the agent of its node; of scope node, the leg of this node\n" +
+			"or of the node --node names. A node without the bridge, or whose agent does not answer, is\n" +
+			"shown without a leg and is no failure.\n\n" + jsonHelp + "\n\n" + askHelp,
 		Example: "  # Propose a free address on vmbr1\n" +
 			"  pco network probe vmbr1\n\n" +
 			"  # Is 10.20.0.250 free on VLAN 20 of vmbr2?\n" +
-			"  pco network probe vmbr2:20 --address 10.20.0.250/24",
+			"  pco network probe vmbr2:20 --address 10.20.0.250/24\n\n" +
+			"  # On a cluster, the legs of VLAN 20 of vmbr2 on every node\n" +
+			"  pco network probe vmbr2:20 --scope cluster",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			seg, err := parseSegment(args[0])
@@ -205,6 +233,17 @@ func (a *app) networkProbeCmd() *cobra.Command {
 			req, err := probeRequest(seg, addr, prefix)
 			if err != nil {
 				return err
+			}
+			legs, legPrefix, err := legsOf(legFlags)
+			if err != nil {
+				return err
+			}
+			if err := scopeFlags(scope, node, legs); err != nil {
+				return err
+			}
+			req.Scope, req.Node, req.Legs = scope, node, legs
+			if !req.Prefix.IsValid() {
+				req.Prefix = legPrefix
 			}
 			ctx := cmd.Context()
 			res, raw, err := a.client().ProbeNetwork(ctx, req)
@@ -217,10 +256,20 @@ func (a *app) networkProbeCmd() *cobra.Command {
 				}
 			} else {
 				s := &screen{w: cmd.OutOrStdout()}
-				printProbe(s, res)
+				if scope != "" {
+					printLegProbes(s, res)
+				} else {
+					printProbe(s, res)
+				}
 				if err := s.done(); err != nil {
 					return err
 				}
+			}
+			if scope != "" {
+				if slices.ContainsFunc(res.Legs, func(l engine.LegProbe) bool { return !l.Missing && (l.Problem != "" || !l.Free) }) {
+					return errReported
+				}
+				return nil
 			}
 			if !res.Free {
 				return errReported
@@ -230,6 +279,9 @@ func (a *app) networkProbeCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&addr, "address", "", "the address to probe, as 10.77.0.250 or 10.77.0.250/24")
 	cmd.Flags().StringVar(&prefix, "prefix", "", "the prefix of the guests' network, as 10.77.0.0/24")
+	cmd.Flags().StringVar(&scope, "scope", "", "on a cluster, probe the legs of a network of scope cluster or node")
+	cmd.Flags().StringVar(&node, "node", "", "the node of a network of --scope node, this one when not given")
+	cmd.Flags().StringArrayVar(&legFlags, "leg", nil, "the leg of another node of a network of --scope cluster, as pve2=10.77.0.249 (repeatable)")
 	return cmd
 }
 
@@ -288,7 +340,8 @@ func printProbe(s *screen, r engine.ProbeResult) {
 
 func (a *app) networkAttachCmd() *cobra.Command {
 	var (
-		addr                     string
+		addr, scope, node        string
+		legFlags                 []string
 		confirmUplink, overlapOK bool
 		yes                      bool
 	)
@@ -305,13 +358,26 @@ func (a *app) networkAttachCmd() *cobra.Command {
 			"route of the node on another interface is refused unless --overlap-ok says that the guests\n" +
 			"there are meant to be reached through the leg; the network records it. The first network\n" +
 			"enables pco-netns.service. The next cycle raises the leg, and the routes of the guests\n" +
-			"there are served through it from then on.\n\n" + askHelp,
+			"there are served through it from then on.\n\n" +
+			"On a cluster the network has a scope, which the command asks for when --scope does not give\n" +
+			"it, proposing the one the configuration of the bridge suggests. Of scope cluster, a bridge\n" +
+			"with a physical uplink or a vnet of a VLAN, QinQ, VXLAN or EVPN zone, every node with the\n" +
+			"bridge gets a leg: --address is this node's, --leg node=address names another node's, and\n" +
+			"the others get the highest free address of the prefix. The agent of each node probes its\n" +
+			"own and checks that the bridge is there; a node without the bridge, or whose agent does not\n" +
+			"answer, gets no leg, and a later attach that names it adds one. Of scope node, an isolated\n" +
+			"bridge or a vnet of a Simple zone, the network has one leg, on this node or the one --node\n" +
+			"names, at --address.\n\n" + askHelp,
 		Example: "  # Attach vmbr1 with the leg at 10.77.0.250\n" +
 			"  pco network attach vmbr1 --address 10.77.0.250/24\n\n" +
 			"  # VLAN 20 of a bridge with a physical uplink, from a script\n" +
 			"  pco network attach vmbr2:20 --address 10.20.0.250/24 --confirm-uplink --yes\n\n" +
 			"  # A network that overlaps a route of the node, on purpose\n" +
-			"  pco network attach pcot1 --address 192.168.4.249/24 --overlap-ok",
+			"  pco network attach pcot1 --address 192.168.4.249/24 --overlap-ok\n\n" +
+			"  # On a cluster, VLAN 20 of an uplinked bridge on every node, pve2 at an address of its own\n" +
+			"  pco network attach vmbr2:20 --address 10.20.0.250/24 --scope cluster --leg pve2=10.20.0.249 --confirm-uplink\n\n" +
+			"  # On a cluster, an isolated bridge of pve3\n" +
+			"  pco network attach vmbr7 --address 10.70.0.250/24 --scope node --node pve3",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -321,53 +387,267 @@ func (a *app) networkAttachCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			leg, err := netip.ParsePrefix(addr)
-			if err != nil || !leg.Addr().Is4() {
-				return fmt.Errorf("--address %q: want the address of the leg with the length of the guests' prefix, as 10.77.0.250/24", addr)
-			}
-			ctx := cmd.Context()
-			req := engine.AttachRequest{
-				Bridge: seg.Bridge, VLAN: seg.VLAN, Prefix: leg.Masked(), Address: leg.Addr(), ConfirmUplink: confirmUplink, OverlapOK: overlapOK,
-			}
-			res, _, err := a.client().ProbeNetwork(ctx, engine.ProbeRequest{Bridge: req.Bridge, VLAN: req.VLAN, Prefix: req.Prefix, Address: req.Address})
+			legs, prefix, err := legsOf(legFlags)
 			if err != nil {
-				return a.explain(ctx, err)
-			}
-			s := &screen{w: cmd.OutOrStdout()}
-			printProbe(s, res)
-			if err := s.done(); err != nil {
 				return err
 			}
+			if err := scopeFlags(scope, node, legs); err != nil {
+				return err
+			}
+			var leg netip.Prefix
 			switch {
-			case !res.Free && res.NotProbed == "":
-				return fmt.Errorf("%s is in use on %s; choose another address, which pco network probe %s proposes", req.Address, seg, args[0])
-			case res.Uplink && !confirmUplink:
-				return fmt.Errorf("%s has a physical uplink: %s; %s", seg, res.Warning, engine.UplinkHint)
-			case res.Overlap != "" && !overlapOK:
-				return fmt.Errorf("%s; %s", res.Overlap, engine.OverlapHint)
+			case addr != "":
+				if leg, err = netip.ParsePrefix(addr); err != nil || !leg.Addr().Is4() {
+					return fmt.Errorf("--address %q: want the address of the leg with the length of the guests' prefix, as 10.77.0.250/24", addr)
+				}
+				prefix = leg.Masked()
+			case !prefix.IsValid():
+				return errors.New("--address: give the address of the leg with the length of the guests' prefix, as 10.77.0.250/24")
 			}
-			ok, err := a.confirm(cmd, yes, fmt.Sprintf("Attach network %s with the leg %s? [y/N]", store.SegmentID(seg.Bridge, seg.VLAN), leg))
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return errAborted
-			}
-			v, err := a.client().Attach(ctx, req)
-			if err != nil {
-				return a.explain(ctx, err)
-			}
-			s.printf("Attached network %s: the leg %s with %s, mark %d. The next cycle raises it; pco network list shows how it is.\n",
-				v.ID, gateway.LegIface(v.Mark), leg, v.Mark)
-			return s.done()
+			at := attachArgs{seg: seg, arg: args[0], prefix: prefix, leg: leg, scope: scope, node: node, legs: legs,
+				confirmUplink: confirmUplink, overlapOK: overlapOK, yes: yes}
+			return a.attach(cmd, at)
 		},
 	}
-	cmd.Flags().StringVar(&addr, "address", "", "the address of the leg with the length of the guests' prefix, as 10.77.0.250/24 (required)")
+	cmd.Flags().StringVar(&addr, "address", "", "the address of the leg with the length of the guests' prefix, as 10.77.0.250/24")
 	cmd.Flags().BoolVar(&confirmUplink, "confirm-uplink", false, "attach to a bridge with a physical uplink, where the leg's MAC is seen on the LAN")
 	cmd.Flags().BoolVar(&overlapOK, "overlap-ok", false, "attach a prefix that overlaps a route of the node on another interface")
-	_ = cmd.MarkFlagRequired("address")
+	cmd.Flags().StringVar(&scope, "scope", "", "on a cluster, cluster for one segment on every node or node for a bridge of one node")
+	cmd.Flags().StringVar(&node, "node", "", "the node of a network of --scope node, this one when not given")
+	cmd.Flags().StringArrayVar(&legFlags, "leg", nil, "the leg of another node of a network of --scope cluster, as pve2=10.77.0.249 (repeatable)")
 	addYesFlag(cmd, &yes)
 	return cmd
+}
+
+// attachArgs are the flags of an attach as read.
+type attachArgs struct {
+	seg                      resolve.Segment
+	arg                      string
+	prefix                   netip.Prefix
+	leg                      netip.Prefix // of this node, or of the node of --node
+	scope, node              string
+	legs                     map[string]netip.Addr
+	confirmUplink, overlapOK bool
+	yes                      bool
+}
+
+// attach probes the legs, shows what the probe found, asks, and attaches.
+// On a cluster without a scope it asks for the scope first.
+func (a *app) attach(cmd *cobra.Command, at attachArgs) error {
+	ctx := cmd.Context()
+	probe := func() (engine.ProbeResult, error) {
+		res, _, err := a.client().ProbeNetwork(ctx, engine.ProbeRequest{Bridge: at.seg.Bridge, VLAN: at.seg.VLAN, Prefix: at.prefix,
+			Address: at.leg.Addr(), Scope: at.scope, Node: at.node, Legs: at.legs})
+		if err != nil {
+			return res, a.explain(ctx, err)
+		}
+		return res, nil
+	}
+	res, err := probe()
+	if err != nil {
+		return err
+	}
+	if at.scope == "" && res.Clustered {
+		if at.scope, err = a.askScope(cmd, at, res.Suggested); err != nil {
+			return err
+		}
+		if res, err = probe(); err != nil {
+			return err
+		}
+	}
+	if at.scope != "" {
+		return a.attachLegs(cmd, at, res)
+	}
+	if !at.leg.IsValid() {
+		return errors.New("--address: give the address of the leg with the length of the guests' prefix, as 10.77.0.250/24")
+	}
+	s := &screen{w: cmd.OutOrStdout()}
+	printProbe(s, res)
+	if err := s.done(); err != nil {
+		return err
+	}
+	switch {
+	case !res.Free && res.NotProbed == "":
+		return fmt.Errorf("%s is in use on %s; choose another address, which pco network probe %s proposes", at.leg.Addr(), at.seg, at.arg)
+	case res.Uplink && !at.confirmUplink:
+		return fmt.Errorf("%s has a physical uplink: %s; %s", at.seg, res.Warning, engine.UplinkHint)
+	case res.Overlap != "" && !at.overlapOK:
+		return fmt.Errorf("%s; %s", res.Overlap, engine.OverlapHint)
+	}
+	ok, err := a.confirm(cmd, at.yes, fmt.Sprintf("Attach network %s with the leg %s? [y/N]", store.SegmentID(at.seg.Bridge, at.seg.VLAN), at.leg))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errAborted
+	}
+	v, err := a.client().Attach(ctx, engine.AttachRequest{
+		Bridge: at.seg.Bridge, VLAN: at.seg.VLAN, Prefix: at.prefix, Address: at.leg.Addr(), ConfirmUplink: at.confirmUplink, OverlapOK: at.overlapOK,
+	})
+	if err != nil {
+		return a.explain(ctx, err)
+	}
+	s.printf("Attached network %s: the leg %s with %s, mark %d. The next cycle raises it; pco network list shows how it is.\n",
+		v.ID, gateway.LegIface(v.Mark), at.leg, v.Mark)
+	return s.done()
+}
+
+// askScope asks the scope of a network on a cluster, the suggested one on
+// an empty answer; a script names it with --scope.
+func (a *app) askScope(cmd *cobra.Command, at attachArgs, suggested string) (string, error) {
+	id := store.SegmentID(at.seg.Bridge, at.seg.VLAN)
+	if _, terminal := a.stdinTerminal(cmd.InOrStdin()); at.yes || !terminal {
+		return "", fmt.Errorf("%s is on a cluster: name the scope of the network with --scope cluster, one segment on every node, "+
+			"or --scope node, a bridge of one node; %s is suggested", at.seg, suggested)
+	}
+	answer, err := a.ask(cmd, fmt.Sprintf("Scope of network %s: cluster, one segment on every node, or node, a bridge of one node? [cluster/node, empty for %s]", id, suggested))
+	if err != nil {
+		return "", err
+	}
+	scope := cmp.Or(strings.ToLower(answer), suggested)
+	if scope != store.ScopeCluster && scope != store.ScopeNode {
+		return "", fmt.Errorf("scope %q: want cluster or node", answer)
+	}
+	return scope, nil
+}
+
+// attachLegs shows the legs a probe of a scope found, asks, and attaches
+// those of the nodes that may have one: a node without the bridge, or whose
+// agent did not answer, gets none; any other problem, or an address in
+// use, stops the attach.
+func (a *app) attachLegs(cmd *cobra.Command, at attachArgs, res engine.ProbeResult) error {
+	ctx := cmd.Context()
+	s := &screen{w: cmd.OutOrStdout()}
+	printLegProbes(s, res)
+	if err := s.done(); err != nil {
+		return err
+	}
+	chosen := map[string]netip.Addr{}
+	uplink, overlap := false, ""
+	var named []string
+	for _, l := range res.Legs {
+		switch {
+		case l.Missing:
+			continue
+		case l.Problem != "":
+			return fmt.Errorf("no leg on node %s: %s", l.Node, l.Problem)
+		case !l.Free:
+			return fmt.Errorf("%s is in use on %s of node %s; choose another address with --leg %s=<address>", l.Address, at.seg, l.Node, l.Node)
+		}
+		chosen[l.Node] = l.Address
+		named = append(named, fmt.Sprintf("%s on %s", netip.PrefixFrom(l.Address, res.Prefix.Bits()), l.Node))
+		uplink = uplink || l.Uplink
+		overlap = cmp.Or(overlap, l.Overlap)
+	}
+	id := store.SegmentID(at.seg.Bridge, at.seg.VLAN)
+	switch {
+	case len(chosen) == 0:
+		return fmt.Errorf("no node can have a leg of %s", id)
+	case uplink && !at.confirmUplink:
+		return fmt.Errorf("%s has a physical uplink: %s; %s", at.seg, cmp.Or(res.Warning, "the leg's MAC becomes visible on the LAN of "+at.seg.Bridge), engine.UplinkHint)
+	case overlap != "" && !at.overlapOK:
+		return fmt.Errorf("%s; %s", overlap, engine.OverlapHint)
+	}
+	legs := strings.Join(named, ", ")
+	word := "legs"
+	if len(chosen) == 1 {
+		word = "leg"
+	}
+	ok, err := a.confirm(cmd, at.yes, fmt.Sprintf("Attach network %s of scope %s with the %s %s? [y/N]", id, at.scope, word, legs))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errAborted
+	}
+	v, err := a.client().Attach(ctx, engine.AttachRequest{
+		Bridge: at.seg.Bridge, VLAN: at.seg.VLAN, Prefix: res.Prefix, Scope: at.scope, Legs: chosen,
+		ConfirmUplink: at.confirmUplink, OverlapOK: at.overlapOK,
+	})
+	if err != nil {
+		return a.explain(ctx, err)
+	}
+	them := "them; pco network show " + v.ID + " shows how they are"
+	if len(chosen) == 1 {
+		them = "it; pco network show " + v.ID + " shows how it is"
+	}
+	s.printf("Attached network %s of scope %s: the %s %s with %s, mark %d. The next cycle raises %s.\n",
+		v.ID, at.scope, word, gateway.LegIface(v.Mark), legs, v.Mark, them)
+	return s.done()
+}
+
+// legsOf reads the --leg flags, node=address, and returns the prefix the
+// first that gives the length of the prefix says.
+func legsOf(flags []string) (map[string]netip.Addr, netip.Prefix, error) {
+	var (
+		legs   map[string]netip.Addr
+		prefix netip.Prefix
+	)
+	for _, f := range flags {
+		node, text, ok := strings.Cut(f, "=")
+		if !ok || node == "" {
+			return nil, prefix, fmt.Errorf("--leg %q: want the node and the address of its leg, as pve2=10.77.0.249", f)
+		}
+		a, err := netip.ParseAddr(text)
+		if p, perr := netip.ParsePrefix(text); perr == nil {
+			a, err = p.Addr(), nil
+			if !prefix.IsValid() {
+				prefix = p.Masked()
+			}
+		}
+		if err != nil || !a.Is4() {
+			return nil, prefix, fmt.Errorf("--leg %q: want an IPv4 address, as pve2=10.77.0.249 or pve2=10.77.0.249/24", f)
+		}
+		if legs == nil {
+			legs = map[string]netip.Addr{}
+		}
+		if _, twice := legs[node]; twice {
+			return nil, prefix, fmt.Errorf("--leg names node %s twice", node)
+		}
+		legs[node] = a
+	}
+	return legs, prefix, nil
+}
+
+// scopeFlags refuses a scope of another name, a node of a network that is
+// not of scope node, and legs of a network that is not of scope cluster.
+func scopeFlags(scope, node string, legs map[string]netip.Addr) error {
+	switch {
+	case scope != "" && scope != store.ScopeCluster && scope != store.ScopeNode:
+		return fmt.Errorf("--scope %q: want cluster or node", scope)
+	case node != "" && scope != store.ScopeNode:
+		return errors.New("--node names the node of a network of --scope node")
+	case len(legs) > 0 && scope != store.ScopeCluster:
+		return errors.New("--leg names the legs of the other nodes of a network of --scope cluster")
+	}
+	return nil
+}
+
+// printLegProbes writes the legs a probe of a scope found, one for each node.
+func printLegProbes(s *screen, r engine.ProbeResult) {
+	seg := resolve.Segment{Bridge: r.Bridge, VLAN: r.VLAN}
+	s.printf("Network %s of scope %s, in %s:\n", store.SegmentID(r.Bridge, r.VLAN), r.Scope, r.Prefix)
+	uplink := false
+	for _, l := range r.Legs {
+		switch {
+		case l.Problem != "":
+			s.printf("  %s: no leg: %s\n", l.Node, l.Problem)
+		case l.Free:
+			s.printf("  %s: %s is free\n", l.Node, l.Address)
+		default:
+			s.printf("  %s: %s is in use: %s answered the probe\n", l.Node, l.Address, strings.Join(l.AnsweredBy, ", "))
+		}
+		if l.Overlap != "" {
+			s.printf("    Overlap: %s.\n", l.Overlap)
+		}
+		uplink = uplink || l.Uplink
+	}
+	if r.Note != "" {
+		s.printf("  %s\n", r.Note)
+	}
+	if uplink {
+		s.printf("Uplink: %s has a physical uplink: %s.\n", seg, cmp.Or(r.Warning, "the leg's MAC becomes visible on the LAN of "+r.Bridge))
+	}
 }
 
 func (a *app) networkDetachCmd() *cobra.Command {
@@ -488,9 +768,12 @@ func (a *app) printNetwork(s *screen, n engine.NetworkDetail) {
 	t.row("  bridge:", n.Bridge)
 	t.row("  vlan:", vlanText(n.VLAN))
 	t.row("  prefix:", n.Prefix.String())
+	if n.Scope != "" {
+		t.row("  scope:", n.Scope)
+	}
 	for _, l := range n.Legs {
-		_, state := legOf(engine.NetworkView{Legs: []engine.LegView{l}})
-		t.row("  leg:", fmt.Sprintf("%s on %s, %s with MAC %s: %s", l.Addr, l.Node, gateway.LegIface(n.Mark), legMAC(n.Network, l.Node), state))
+		_, state := legState(l)
+		t.row("  leg:", fmt.Sprintf("%s on %s, %s with MAC %s: %s", l.Addr, l.Node, gateway.LegIface(n.Mark), cmp.Or(l.MAC, legMAC(n.Network, l.Node)), state))
 	}
 	for _, node := range slices.Sorted(maps.Keys(n.Network.Legs)) {
 		if !slices.ContainsFunc(n.Legs, func(l engine.LegView) bool { return l.Node == node }) {
@@ -505,15 +788,29 @@ func (a *app) printNetwork(s *screen, n engine.NetworkDetail) {
 	t.row("  attached:", a.when(n.CreatedAt))
 	t.row("  revision:", strconv.FormatInt(n.Rev, 10))
 	t.flush()
-	if len(n.Services) == 0 {
+	switch {
+	case len(n.Services) == 0 && len(n.NodeServices) == 0:
 		s.println("No service address: no target behind it is published.")
-	} else {
+	case len(n.Services) > 0:
 		s.println("Service addresses:")
 		t = s.table()
 		for _, m := range n.Services {
 			t.row("  "+m.Service.String(), "-> "+m.Addr.String(), "since "+a.when(m.AllocatedAt))
 		}
 		t.flush()
+	}
+	for i, m := range n.NodeServices {
+		if i == 0 || n.NodeServices[i-1].Node != m.Node {
+			if i > 0 {
+				t.flush()
+			}
+			s.printf("Service addresses on node %s:\n", m.Node)
+			t = s.table()
+		}
+		t.row("  "+m.Service.String(), "-> "+m.Addr.String(), "since "+a.when(m.AllocatedAt))
+		if i == len(n.NodeServices)-1 {
+			t.flush()
+		}
 	}
 	if len(n.Served) == 0 {
 		s.println("No route is served through it.")
