@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -38,7 +39,7 @@ func (c *cycleRun) remoteTunnels(node string) []agentproto.Tunnel {
 		}
 		switch {
 		case t.Name == planner.TunnelName(c.install.ID) && replica:
-		case err == nil && t.Name == own && host:
+		case err == nil && t.Name == own && host && c.planned(tunnelRef{t.AccountID, own}):
 		default:
 			continue
 		}
@@ -75,6 +76,40 @@ func (c *cycleRun) tokenFor(t reconcile.TunnelState) (string, bool) {
 	return token, true
 }
 
+// revoked says whether a placement pins to a node removed from the install
+// or contested: no route stays there, and its tunnel goes at once.
+func (c *cycleRun) revoked(p placed) bool {
+	if p.kind != store.PlacementPinned || p.node == "" {
+		return false
+	}
+	n, ok := c.nodes[p.node]
+	return ok && (n.Node.State == store.NodeRemoved || n.Node.State == store.NodeContested)
+}
+
+// findPinned has the tunnel runs list the pinned tunnels of every account
+// the stored placements or the tunnels seen say had one: after a restart a
+// pinned tunnel no plan names any more is found that way, emptied and in
+// time deleted.
+func (c *cycleRun) findPinned() {
+	accounts := map[string]bool{}
+	for host, p := range c.placements {
+		if p.Kind != store.PlacementPinned {
+			continue
+		}
+		if z, ok := c.zoneOf(host); ok {
+			accounts[z.AccountID] = true
+		}
+	}
+	for _, t := range c.e.seen {
+		if _, pinned := planner.PinnedTunnelNode(c.install.ID, t.name); pinned {
+			accounts[t.account] = true
+		}
+	}
+	for _, account := range slices.Sorted(maps.Keys(accounts)) {
+		c.e.tunnels.ListPinned(account)
+	}
+}
+
 // retirePinned deletes a tunnel pinned to a node once it served no route and
 // no record pointed at it for pinnedEmptyFor, or at once when its node was
 // removed from the install. The tunnel run emptied it first: only a tunnel
@@ -99,7 +134,8 @@ func (c *cycleRun) retirePinned() {
 		if !ok {
 			since, mem.emptySince[ref] = c.now, c.now
 		}
-		removed := c.nodes[node].Node.State == store.NodeRemoved
+		state := c.nodes[node].Node.State
+		removed := state == store.NodeRemoved || state == store.NodeContested
 		if !t.Verified || !removed && c.now.Sub(since) < pinnedEmptyFor {
 			continue
 		}
@@ -121,7 +157,7 @@ func (c *cycleRun) retirePinned() {
 
 func retireWhy(removed bool, node string) string {
 	if removed {
-		return "node " + node + " was removed from the install"
+		return "node " + node + " was removed from the install, or is contested: its copy of the run token must stop working"
 	}
 	return fmt.Sprintf("it served no route for %s", pinnedEmptyFor)
 }

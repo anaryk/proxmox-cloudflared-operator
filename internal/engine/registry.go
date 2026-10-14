@@ -215,12 +215,53 @@ func (c *cycleRun) admits(n *store.NodeEntry, rep NodeReport, self bool) bool {
 			return false
 		}
 	}
-	_, wait, why := registry.Admit(n.Name, nil, nil, c.settings.Cluster.MaxMoves())
+	failing, missing := c.joinFails(rep, self)
+	if missing > 0 {
+		c.problem("node %s stays joining: it has not reported %d of the shared routes yet", n.Name, missing)
+		return false
+	}
+	moves, wait, why := registry.Admit(n.Name, failing, failing, c.settings.Cluster.MaxMoves())
+	if len(moves) > 0 {
+		if c.joining == nil {
+			c.joining = map[string]string{}
+		}
+		for _, host := range moves {
+			c.joining[host] = n.Name
+		}
+	}
 	if wait {
 		c.problem("node %s stays joining: %s", n.Name, why)
 		return false
 	}
 	return true
+}
+
+// joinFails are the hostnames of the shared routes a joining node does not
+// reach in its egress set, of those its report says, and how many it has
+// not reported on: a node is admitted only once it reported every shared
+// route, and those it fails were moved to the tunnels pinned to their
+// nodes. This node, which serves its routes itself, has none.
+func (c *cycleRun) joinFails(rep NodeReport, self bool) (failing []string, missing int) {
+	if self || c.placements == nil {
+		return nil, 0
+	}
+	reported := map[string]agentproto.TargetReport{}
+	for _, t := range rep.Status.Targets {
+		reported[t.Key] = t
+	}
+	for _, host := range slices.Sorted(maps.Keys(c.placements)) {
+		if c.placements[host].Kind != store.PlacementShared {
+			continue
+		}
+		t, ok := reported[host]
+		switch {
+		case !ok || rep.Status.EpochSeen != c.epoch():
+			missing++
+		case !t.OK || !t.InEgressSet:
+			failing = append(failing, host)
+		}
+	}
+	return failing, missing
 }
 
 // transition moves n by ev. One that leaves it where it is changes nothing,

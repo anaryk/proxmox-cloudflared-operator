@@ -186,6 +186,10 @@ type cycleRun struct {
 	// every other tunnel.
 	runTokens map[string]string
 	pruned    bool
+	// joining are, by hostname, the joining node that does not reach a
+	// shared route: the route moves to its guest.s node before the node
+	// is admitted.
+	joining map[string]string
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -328,7 +332,7 @@ func (c *cycleRun) prepare() bool {
 		c.problem("%s", c.e.setAside)
 		c.e.setAside = ""
 	}
-	if !c.storeHold {
+	if !c.storeHold && c.readPlacements() {
 		c.registryStep()
 	}
 	return true

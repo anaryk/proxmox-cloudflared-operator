@@ -299,6 +299,53 @@ func TestATakeoverMovesNothing(t *testing.T) {
 	require.Empty(t, w.placementEvents())
 }
 
+// A node that joins is admitted only once it reported every shared route,
+// and a shared route it does not reach is moved to its guest's node first:
+// no route it fails is served through its connector.
+func TestAJoiningNodeIsAdmittedOnceTheRoutesItFailsMoved(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	n := entryOf(t, w.env, "pve3")
+	n.State, n.StateSince = store.NodeJoining, w.clock.now()
+	require.NoError(t, w.store.SaveNode(n))
+	w.acts["pve3"].started = w.clock.now()
+	w.acts["pve3"].fail = map[string]string{"www.example.com": "not reached"}
+
+	pinned1, _ := planner.PinnedTunnelName(testInstall, "pve1")
+	admitted := false
+	for range 30 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+		if entryOf(t, w.env, "pve3").State == store.NodeActive {
+			admitted = true
+			require.Equal(t, pinned1, w.recordTunnel(t, "www.example.com"), "moved before the node was admitted")
+			break
+		}
+	}
+	require.True(t, admitted)
+}
+
+// A joining node that would move more routes than cluster.admissionMaxMoves
+// stays joining, and says why.
+func TestAJoiningNodeThatWouldMoveTooMuchStaysJoining(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.settings(func(s *store.Settings) { s.Cluster.AdmissionMaxMoves = 1 })
+	n := entryOf(t, w.env, "pve3")
+	n.State, n.StateSince = store.NodeJoining, w.clock.now()
+	require.NoError(t, w.store.SaveNode(n))
+	w.acts["pve3"].started = w.clock.now()
+	w.acts["pve3"].fail = map[string]string{"www.example.com": "no", "db.example.com": "no"}
+
+	var st State
+	for range 10 {
+		st = w.tick(5 * time.Second)
+	}
+	require.Equal(t, store.NodeJoining, entryOf(t, w.env, "pve3").State)
+	require.True(t, hasProblem(st, "node pve3 stays joining"), st.Problems)
+	w.requireNothingWithdrawn(t, hosts3...)
+}
+
 // A pinned guest that moves to another node follows it: a move to the
 // tunnel pinned to its new node, once that node reaches it.
 func TestAPinnedGuestFollowsItsNode(t *testing.T) {

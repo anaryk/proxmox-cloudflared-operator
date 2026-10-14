@@ -37,6 +37,7 @@ const (
 	whyNodeAddress = "it reaches an address of node %s"
 	whyHosted      = "its guest runs on %s"
 	whyNotEvery    = "not every replica reached it when it was placed"
+	whyJoining     = "node %s joins and does not reach it"
 )
 
 // reach is how a replica fares with a target in this cycle.
@@ -161,6 +162,7 @@ func (c *cycleRun) place() {
 		owners[rt.Owner()] = append(owners[rt.Owner()], rt)
 	}
 	c.startMoves()
+	c.findPinned()
 	for _, owner := range slices.Sorted(maps.Keys(owners)) {
 		routes := owners[owner]
 		cur, stored := c.storedOf(routes)
@@ -201,6 +203,12 @@ func (c *cycleRun) storedOf(routes []model.Route) (placed, bool) {
 func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string, cur placed, stored bool) (placed, string) {
 	mem := &c.e.place
 	host := c.hostingNode(routes)
+	if stored && c.revoked(cur) {
+		cur = placed{kind: store.PlacementShared}
+	}
+	if c.revoked(placed{kind: store.PlacementPinned, node: host}) {
+		host = ""
+	}
 	if fixed, why := c.fixedNode(routes); fixed != "" {
 		return placed{kind: store.PlacementPinned, node: fixed, why: why}, ""
 	}
@@ -221,6 +229,14 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 	if cross && c.cover.lost() && host != "" && c.fleet.node(host).fresh || cross && c.cover.lost() && host == c.e.d.Node {
 		pinHost.why = whyCoverage
 		return pinHost, ""
+	}
+	if stored && cur.kind == store.PlacementShared && hostReaches {
+		for _, rt := range routes {
+			if node, ok := c.joining[rt.Hostname]; ok {
+				pinHost.why = fmt.Sprintf(whyJoining, node)
+				return pinHost, ""
+			}
+		}
 	}
 	switch {
 	case !stored:
@@ -566,6 +582,22 @@ func (c *cycleRun) savePlacements() {
 		}
 	}
 	c.placements = next
+}
+
+// readPlacements reads the placements stored, in a cluster; false when they
+// cannot be read, which holds the cycle: nothing is placed, served or
+// handed out on what is not known.
+func (c *cycleRun) readPlacements() bool {
+	if !c.clustered() {
+		return true
+	}
+	placements, err := c.e.d.Store.Placements()
+	if err != nil {
+		c.hold(c.storeProblem("reading the placements of the routes", err))
+		return false
+	}
+	c.placements = placements
+	return true
 }
 
 func samePlacement(a, b store.Placement) bool {

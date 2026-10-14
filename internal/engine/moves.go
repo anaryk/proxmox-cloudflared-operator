@@ -61,6 +61,14 @@ func (c *cycleRun) startMoves() {
 // it starts when the owner should be placed elsewhere than it is.
 func (c *cycleRun) moving(owner string, cur placed, stored bool, want placed) (placed, *placed) {
 	m, under := c.moves[owner]
+	if stored && c.revoked(cur) || under && c.revoked(c.placedOf(m.From, "")) || under && c.revoked(c.placedOf(m.To, "")) {
+		// The tunnel of a node removed or contested keeps no rule a moment
+		// longer: it is deleted, and its token with it.
+		if under && c.e.d.Store.DeleteMove(owner) == nil {
+			delete(c.moves, owner)
+		}
+		return want, nil
+	}
 	if !under {
 		if !stored || want.same(cur) || c.movesFailed {
 			return want, nil

@@ -102,12 +102,9 @@ func (c *cycleRun) observeFleet() bool {
 	if !c.clustered() {
 		return true
 	}
-	placements, err := c.e.d.Store.Placements()
-	if err != nil {
-		c.hold(c.storeProblem("reading the placements of the routes", err))
+	if c.placements == nil && !c.readPlacements() {
 		return false
 	}
-	c.placements = placements
 	c.fleet = &fleetView{nodes: map[string]*agentFacts{}, attested: map[cardRef][]agentproto.Attestation{}, elsewhere: map[cardRef][]string{}, cards: c.publishedCards()}
 	reports := c.reportsNow()
 	for _, name := range slices.Sorted(maps.Keys(c.nodes)) {
