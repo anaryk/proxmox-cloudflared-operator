@@ -363,7 +363,7 @@ func testCoverageLost(t *testing.T, c *clusterRun) {
 	require.NotEqual(t, doctor.LevelOK, f.Level, "%+v", f)
 	require.Contains(t, f.Detail+f.Fix, x)
 
-	t.Logf("the guest %d moves from %s to %s while its routes are pinned", mover.vmid, y, z)
+	c.logf(t, "the guest %d moves from %s to %s while its routes are pinned", mover.vmid, y, z)
 	moved := time.Now()
 	c.on(y).hereMust(t, "pct", "migrate", strconv.Itoa(mover.vmid), z, "--restart")
 	c.waitController(t, moverHost+" pinned to "+z, 5*time.Minute, func(st engine.State) bool {
@@ -437,7 +437,7 @@ func testFlappingAgent(t *testing.T, c *clusterRun) {
 		}
 	}()
 
-	t.Logf("the agent of %s restarted every 50 seconds for %s", x, flap)
+	c.logf(t, "the agent of %s restarted every 50 seconds for %s", x, flap)
 	for end := time.Now().Add(flap); time.Now().Before(end); {
 		c.systemctl(t, x, "restart", "pco")
 		time.Sleep(50 * time.Second)
@@ -446,7 +446,7 @@ func testFlappingAgent(t *testing.T, c *clusterRun) {
 	<-polled
 	mu.Lock()
 	for host, l := range places {
-		t.Logf("%s was placed: %s", host, strings.Join(l, " -> "))
+		c.logf(t, "%s was placed: %s", host, strings.Join(l, " -> "))
 		require.LessOrEqual(t, len(l), 2, "%s moved more than once: %v", host, l)
 	}
 	mu.Unlock()
@@ -462,7 +462,7 @@ func testDrain(t *testing.T, c *clusterRun) {
 	x := c.spareNode(t)
 	v := c.visit(t, hostsOf(homes)...)
 	out := c.ctl(t).pcoMust(t, "node", "drain", x)
-	t.Logf("pco node drain %s:\n%s", x, out)
+	c.logf(t, "pco node drain %s:\n%s", x, out)
 	c.waitCheck(t, x+" drained", 4*time.Minute, func(st engine.State) error {
 		n, _ := nodeView(st, x)
 		if n.State != store.NodeDraining || n.Drained != "admin" || n.ReplicaReady {
@@ -485,7 +485,7 @@ func testDrain(t *testing.T, c *clusterRun) {
 		return nil
 	})
 	out = c.ctl(t).pcoMust(t, "node", "undrain", x)
-	t.Logf("pco node undrain %s:\n%s", x, out)
+	c.logf(t, "pco node undrain %s:\n%s", x, out)
 	c.waitActive(t, x)
 	c.allShared(t, 14*time.Minute)
 	v.requireNoFailure(t, "the drain of "+x)
@@ -585,7 +585,7 @@ func testMACCloneBlocked(t *testing.T, c *clusterRun) {
 	for _, n := range c.names() {
 		when, ok := left[n]
 		require.True(t, ok, "%s is still in the egress set of %s a minute after the clone", target, n)
-		t.Logf("%s left the egress set of %s %s after the watch event", target, n, when.Sub(at))
+		c.logf(t, "%s left the egress set of %s %s after the watch event", target, n, when.Sub(at))
 		require.LessOrEqual(t, when.Sub(at), 2*time.Second+500*time.Millisecond, "%s left the egress set of %s too late", target, n)
 	}
 	cs := c.clusterStatus(t)
@@ -606,7 +606,7 @@ func testMACCloneBlocked(t *testing.T, c *clusterRun) {
 	require.True(t, slices.ContainsFunc(cs.Cluster.Blocks, func(b engine.BlockView) bool { return b.Address == addr }),
 		"the block of %s ended within 10 minutes of the last report", addr)
 	out := c.ctl(t).pcoMust(t, "cluster", "unblock", addr.String())
-	t.Logf("pco cluster unblock %s:\n%s", addr, out)
+	c.logf(t, "pco cluster unblock %s:\n%s", addr, out)
 	c.waitTargetEverywhere(t, target, true, 3*time.Minute, c.names()...)
 	c.allShared(t, 14*time.Minute)
 }
@@ -702,7 +702,7 @@ func testManagedOnAnotherNode(t *testing.T, c *clusterRun) {
 	c.editSettings(t, func(v *store.Settings) { v.Managed.DetachGrace = store.Duration(detachGrace) })
 	c.managed = true
 	out, err := c.ctl(t).pcoCombined("network", "managed", "enable", "--yes")
-	t.Logf("pco network managed enable:\n%s", out)
+	c.logf(t, "pco network managed enable:\n%s", out)
 	require.NoError(t, err)
 	c.waitController(t, "the managed network enabled", 4*time.Minute, func(st engine.State) bool { return st.Managed.Enabled })
 
@@ -787,31 +787,32 @@ func testListenerAllowlist(t *testing.T, c *clusterRun) {
 	const own = "/var/lib/pco/agent"
 
 	exit, code, body := c.agentCall(t, x, own, "")
-	t.Logf("from %s with its own certificate: exit %d, %s %s", x, exit, code, body)
+	c.logf(t, "from %s with its own certificate: exit %d, %s %s", x, exit, code, body)
 	require.NotEqual(t, "000", code, "a registered node with its own certificate gets an answer")
 
 	if other := c.otherAddr(t, x); other == "" {
-		t.Logf("%s has no address besides its address in the cluster and on %s: the source that is not a node is not tried", x, c.bridge)
+		c.logf(t, "%s has no address besides its address in the cluster and on %s: the source that is not a node is not tried", x, c.bridge)
 	} else {
 		began := time.Now()
 		exit, code, _ = c.agentCall(t, x, own, other)
 		took := time.Since(began)
-		t.Logf("from %s at %s: exit %d, %s, after %s", x, other, exit, code, took)
+		c.logf(t, "from %s at %s: exit %d, %s, after %s", x, other, exit, code, took)
 		require.Equal(t, "000", code, "a source that is not a registered node got an answer")
 		require.NotEqual(t, 28, exit, "the connection was not dropped but timed out")
 		require.Less(t, took, 8*time.Second)
 	}
 
-	t.Logf("the certificate of %s used from %s", x, y)
+	c.logf(t, "the certificate of %s used from %s", x, y)
 	dir := "/run/pco-e2e-cert"
 	t.Cleanup(func() { _, _ = c.on(y).here("rm", "-rf", dir) })
 	for _, f := range []string{"cert.pem", "key.pem"} {
 		content, err := c.on(x).readHere(own + "/" + f)
+		c.secret.add(content)
 		require.NoError(t, err)
 		c.writeOn(t, y, dir+"/"+f, content, "0600")
 	}
 	exit, code, body = c.agentCall(t, y, dir, "")
-	t.Logf("from %s with the certificate of %s: exit %d, %s %s", y, x, exit, code, body)
+	c.logf(t, "from %s with the certificate of %s: exit %d, %s %s", y, x, exit, code, body)
 	require.Equal(t, "403", code)
 	require.Contains(t, body, "other-source")
 }
@@ -820,7 +821,7 @@ func testDoctorCluster(t *testing.T, c *clusterRun) {
 	holder := c.holder(t)
 	findings := c.doctorOn(t, holder, true)
 	for _, f := range findings {
-		t.Logf("%s: %s: %s", f.Level, f.Check, f.Detail)
+		c.logf(t, "%s: %s: %s", f.Level, f.Check, f.Detail)
 	}
 	for _, n := range c.others(holder) {
 		f, ok := findingOf(findings, "answer on "+n)
@@ -834,7 +835,7 @@ func testDoctorCluster(t *testing.T, c *clusterRun) {
 	}
 
 	x := c.spareNode(t)
-	t.Logf("the agent of %s stopped", x)
+	c.logf(t, "the agent of %s stopped", x)
 	c.systemctl(t, x, "stop", "pco")
 	t.Cleanup(func() { _, _ = c.on(x).here("systemctl", "start", "pco") })
 	time.Sleep(75 * time.Second)
@@ -849,7 +850,7 @@ func testDoctorCluster(t *testing.T, c *clusterRun) {
 	c.systemctl(t, x, "start", "pco")
 	c.waitActive(t, c.names()...)
 
-	t.Logf("the agent channel of %s cut", x)
+	c.logf(t, "the agent channel of %s cut", x)
 	c.cutOff(t, x, "tcp dport 8644 drop", "tcp sport 8644 drop")
 	time.Sleep(75 * time.Second)
 	f, ok = findingOf(c.doctorOn(t, x, false), "agent dial")
@@ -948,12 +949,12 @@ func testLiveMigration(t *testing.T, c *clusterRun) {
 	vis := c.visit(t, host)
 	time.Sleep(10 * time.Second)
 	out, err := c.combinedWithin(30*time.Minute, "qm", "migrate", strconv.Itoa(v.vmid), dest, "--online", "--with-local-disks")
-	t.Logf("qm migrate %d %s --online --with-local-disks:\n%s", v.vmid, dest, out)
+	c.logf(t, "qm migrate %d %s --online --with-local-disks:\n%s", v.vmid, dest, out)
 	require.NoError(t, err)
 	time.Sleep(20 * time.Second)
 	for n, l := range loads {
 		total, failed, span := l.failedFor()
-		t.Logf("from %s: %d requests, %d failed over %s", n, total, failed, span)
+		c.logf(t, "from %s: %d requests, %d failed over %s", n, total, failed, span)
 		require.NotZero(t, total, "no request was made from %s", n)
 		if n == c.self {
 			require.LessOrEqual(t, span, 3*time.Second, "requests through the source node failed for too long")
@@ -997,7 +998,7 @@ func testForgetPoweredOff(t *testing.T, c *clusterRun) {
 	x := c.spareNode(t)
 	require.NotEqual(t, c.self, x)
 	shared := c.sharedTunnel(t)
-	oldToken := c.cloud.RunToken(t, shared)
+	oldToken := c.runToken(t, shared)
 	v := c.visit(t, hostsOf(homes, x)...)
 
 	c.powerAction(t, "off", x)
@@ -1007,7 +1008,7 @@ func testForgetPoweredOff(t *testing.T, c *clusterRun) {
 	})
 	calls := c.callIndex()
 	out, err := c.ctl(t).pcoCombined("node", "forget", x, "--yes")
-	t.Logf("pco node forget %s:\n%s", x, out)
+	c.logf(t, "pco node forget %s:\n%s", x, out)
 	require.NoError(t, err)
 	require.Contains(t, out, "Node "+x+" is forgotten.")
 	c.waitController(t, x+" removed", 2*time.Minute, func(st engine.State) bool {
@@ -1018,7 +1019,7 @@ func testForgetPoweredOff(t *testing.T, c *clusterRun) {
 	var newToken string
 	deadline := time.Now().Add(5 * time.Minute)
 	for {
-		if newToken = c.cloud.RunToken(t, shared); newToken != oldToken {
+		if newToken = c.runToken(t, shared); newToken != oldToken {
 			break
 		}
 		require.True(t, time.Now().Before(deadline), "the secret of the shared tunnel was not rotated")
@@ -1031,6 +1032,7 @@ func testForgetPoweredOff(t *testing.T, c *clusterRun) {
 		deadline := time.Now().Add(5 * time.Minute)
 		for {
 			got, _ := c.on(n).readHere("/var/lib/pco/tunnels/" + shared + ".token")
+			c.secret.add(got)
 			if strings.TrimSpace(got) == newToken {
 				break
 			}
@@ -1045,7 +1047,7 @@ func testForgetPoweredOff(t *testing.T, c *clusterRun) {
 	}
 	v.requireNoFailure(t, "the forget of "+x)
 
-	t.Logf("%s powered on again: it serves nothing and says it was removed", x)
+	c.logf(t, "%s powered on again: it serves nothing and says it was removed", x)
 	c.powerAction(t, "on", x)
 	c.waitBack(t, x)
 	time.Sleep(5 * time.Minute)
@@ -1054,11 +1056,12 @@ func testForgetPoweredOff(t *testing.T, c *clusterRun) {
 	units := c.on(x).hereMust(t, "systemctl", "list-units", "--state=active", "--plain", "--no-legend", "--no-pager", "pco-cloudflared@*")
 	require.Empty(t, strings.TrimSpace(units), "connectors run on the removed %s", x)
 	got, _ := c.on(x).readHere("/var/lib/pco/tunnels/" + shared + ".token")
-	require.NotEqual(t, newToken, strings.TrimSpace(got), "the removed %s has the new token", x)
+	c.secret.add(got)
+	require.True(t, newToken != strings.TrimSpace(got), "the removed %s has the new token", x)
 
-	t.Logf("%s joins again", x)
+	c.logf(t, "%s joins again", x)
 	out, err = c.pcoWithin(x, uninstallTimeout, "uninstall", "--yes", "--keep-cloudflare", "--force")
-	t.Logf("pco uninstall on %s:\n%s", x, out)
+	c.logf(t, "pco uninstall on %s:\n%s", x, out)
 	require.NoError(t, err)
 	c.join(t, x)
 	c.waitActive(t, c.names()...)
@@ -1074,7 +1077,7 @@ func testForgetCompromised(t *testing.T, c *clusterRun) {
 	holder := c.holder(t)
 	x := c.others(holder)[0]
 	out, err := c.on(holder).pcoCombined("node", "forget", x, "--compromised", "--yes")
-	t.Logf("pco node forget %s --compromised while it is in the cluster:\n%s", x, out)
+	c.logf(t, "pco node forget %s --compromised while it is in the cluster:\n%s", x, out)
 	require.Error(t, err)
 	require.Contains(t, out, "pvecm delnode "+x)
 
@@ -1094,13 +1097,14 @@ func testForgetCompromised(t *testing.T, c *clusterRun) {
 		raw, err := os.ReadFile(file)
 		require.NoError(t, err)
 		newToken = strings.TrimSpace(string(raw))
+		c.secret.add(newToken)
 	}
 	if c.holder(t) == victim {
 		c.handoff(t, c.others(victim)[0])
 	}
 	c.allShared(t, 5*time.Minute)
 	shared := c.sharedTunnel(t)
-	oldToken := c.cloud.RunToken(t, shared)
+	oldToken := c.runToken(t, shared)
 	oldCA := c.must(t, "sha256sum", "/etc/pve/priv/pco/ca/current.json")
 	fingerprints := map[string]string{}
 	remaining := c.others(victim)
@@ -1113,20 +1117,21 @@ func testForgetCompromised(t *testing.T, c *clusterRun) {
 	spare := c.others(victim, c.holder(t))[0]
 	for _, f := range []string{"cert.pem", "key.pem"} {
 		content, err := c.on(spare).readHere("/var/lib/pco/agent/" + f)
+		c.secret.add(content)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(keep, f), []byte(content), 0o600))
 	}
 
 	c.powerAction(t, "off", victim)
 	out = c.must(t, "pvecm", "delnode", victim)
-	t.Logf("pvecm delnode %s:\n%s", victim, out)
+	c.logf(t, "pvecm delnode %s:\n%s", victim, out)
 	c.mu.Lock()
 	c.gone[victim] = true
 	delete(c.down, victim)
 	c.mu.Unlock()
 	ctl := c.ctl(t)
 	out, err = ctl.pcoCombined("node", "forget", victim, "--compromised", "--yes")
-	t.Logf("pco node forget %s --compromised:\n%s", victim, out)
+	c.logf(t, "pco node forget %s --compromised:\n%s", victim, out)
 	require.NoError(t, err)
 
 	t.Log("the admin replaces the Cloudflare token and the Proxmox secret")
@@ -1134,19 +1139,19 @@ func testForgetCompromised(t *testing.T, c *clusterRun) {
 	c.writeOn(t, c.holder(t), tokenFile, newToken+"\n", "0600")
 	out, err = ctl.pcoCombined("credential", "add", "--label", "e2e-rotated", "--token-file", tokenFile)
 	_, _ = ctl.here("rm", "-f", tokenFile)
-	t.Logf("pco credential add:\n%s", out)
+	c.logf(t, "pco credential add:\n%s", out)
 	require.NoError(t, err)
 	var creds []engine.CredentialView
 	require.NoError(t, json.Unmarshal([]byte(ctl.pcoMust(t, "credential", "list", "--json")), &creds))
 	for _, cr := range creds {
 		if cr.Label != "e2e-rotated" {
 			out, err := ctl.pcoCombined("credential", "remove", cr.ID)
-			t.Logf("pco credential remove %s:\n%s", cr.ID, out)
+			c.logf(t, "pco credential remove %s:\n%s", cr.ID, out)
 			require.NoError(t, err)
 		}
 	}
 	out, err = c.pcoWithin(c.holder(t), clusterTimeout, "setup", "--repair", "--yes")
-	t.Logf("pco setup --repair:\n%s", out)
+	c.logf(t, "pco setup --repair:\n%s", out)
 	require.NoError(t, err)
 
 	t.Log("every tunnel's secret, then the CA; ten minutes later the old CA is refused")
@@ -1155,7 +1160,7 @@ func testForgetCompromised(t *testing.T, c *clusterRun) {
 		return r != nil && !r.FinishedAt.IsZero()
 	})
 	require.Empty(t, cs.Cluster.CARotation.Refused)
-	require.NotEqual(t, oldToken, c.cloud.RunToken(t, shared), "the shared tunnel kept its secret")
+	require.True(t, oldToken != c.runToken(t, shared), "the shared tunnel kept its secret")
 	require.NotEqual(t, oldCA, c.must(t, "sha256sum", "/etc/pve/priv/pco/ca/current.json"), "the CA was not rotated")
 	for _, n := range remaining {
 		require.NotEqual(t, fingerprints[n], c.agentStatus(t, n).CertFingerprint, "the agent of %s was not enrolled again", n)
@@ -1216,7 +1221,7 @@ func testRollingUpgrade(t *testing.T, c *clusterRun) {
 		gen := c.ctl(t).state(t).Lease.Generation
 		upgraded := time.Now()
 		out, err := c.onWithin(n, clusterTimeout, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", remote)
-		t.Logf("the package on %s:\n%s", n, out)
+		c.logf(t, "the package on %s:\n%s", n, out)
 		require.NoError(t, err)
 		st := c.waitCheck(t, n+" active with the new build", clusterTimeout, func(st engine.State) error {
 			nv, _ := nodeView(st, n)
@@ -1233,7 +1238,7 @@ func testRollingUpgrade(t *testing.T, c *clusterRun) {
 		}
 		if i == 0 {
 			out, err := c.ctl(t).pcoCombined("cluster", "finish-upgrade", "--yes")
-			t.Logf("pco cluster finish-upgrade with one node upgraded:\n%s", out)
+			c.logf(t, "pco cluster finish-upgrade with one node upgraded:\n%s", out)
 			require.Error(t, err, "finish-upgrade with nodes on the earlier build")
 		}
 	}
@@ -1249,9 +1254,9 @@ func testRollingUpgrade(t *testing.T, c *clusterRun) {
 
 func testUninstallCluster(t *testing.T, c *clusterRun) {
 	x := c.spareNode(t)
-	t.Logf("%s leaves the install", x)
+	c.logf(t, "%s leaves the install", x)
 	out, err := c.pcoWithin(x, uninstallTimeout, "uninstall", "--yes", "--keep-cloudflare")
-	t.Logf("pco uninstall on %s:\n%s", x, out)
+	c.logf(t, "pco uninstall on %s:\n%s", x, out)
 	require.NoError(t, err)
 	c.waitController(t, x+" removed", 3*time.Minute, func(st engine.State) bool {
 		n, ok := nodeView(st, x)
@@ -1272,12 +1277,12 @@ func testUninstallCluster(t *testing.T, c *clusterRun) {
 	t.Log("the whole install goes")
 	holder := c.holder(t)
 	out, err = c.pcoWithin(holder, uninstallTimeout, "uninstall", "--cluster", "--yes", "--purge-cloudflare", "--detach-managed")
-	t.Logf("pco uninstall --cluster on %s:\n%s", holder, out)
+	c.logf(t, "pco uninstall --cluster on %s:\n%s", holder, out)
 	require.NoError(t, err)
 	c.uninstalled = true
 	for _, n := range c.others(holder, x) {
 		out, err := c.pcoWithin(n, uninstallTimeout, "uninstall", "--yes", "--keep-cloudflare")
-		t.Logf("pco uninstall on %s:\n%s", n, out)
+		c.logf(t, "pco uninstall on %s:\n%s", n, out)
 		require.NoError(t, err)
 	}
 	require.Empty(t, c.leftOfInstall(t), "the install left something at Cloudflare")

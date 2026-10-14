@@ -87,6 +87,7 @@ func (c *clusterRun) startAppliance(t *testing.T) {
 	require.NotEmpty(t, a.relay, "the relay: build it with make e2e-binaries and put bin/e2e-relay beside the suite, or name it with PCO_E2E_RELAY")
 	a.tags = c.registeredTags(t)
 	a.token = c.chooseCloud(t)
+	c.secret.add(a.token)
 	if c.fake != nil {
 		c.at.env = []string{overrideOf + "=" + relayURL}
 	} else {
@@ -112,7 +113,7 @@ func (c *clusterRun) startAppliance(t *testing.T) {
 	args := c.containerArgs("controller", a.vmid, controllerOffset, a.template, a.checksums)
 	a.installed = true
 	out, err := c.nodePcoRun(installTimeout, args...)
-	t.Logf("pco %s:\n%s", strings.Join(args, " "), out)
+	c.logf(t, "pco %s:\n%s", strings.Join(args, " "), out)
 	require.NoError(t, err)
 	c.waitAppliance(t, a.vmid)
 	c.guestCard(t, c.self, a.vmid, controllerOffset)
@@ -192,12 +193,13 @@ func (c *clusterRun) joinToken(t testing.TB, node string) string {
 	t.Helper()
 	file := "/root/e2e-" + node + ".join"
 	out := c.pcoMust(t, "cluster", "join-token", "--node", node, "--file", file)
-	t.Logf("pco cluster join-token --node %s:\n%s", node, out)
+	c.logf(t, "pco cluster join-token --node %s:\n%s", node, out)
 	token, err := c.readHere(file)
 	require.NoError(t, err)
 	_, _ = c.here("rm", "-f", file)
 	token = strings.TrimSpace(token)
 	require.True(t, strings.HasPrefix(token, "pco1."), "the join token is not one: %d characters", len(token))
+	c.secret.add(joinSecrets(token)...)
 	return token
 }
 
@@ -239,7 +241,7 @@ func (c *clusterRun) installAgent(t testing.TB, node, token string) (string, err
 	out, err := c.onWithin(node, installTimeout, args[0], args[1:]...)
 	close(stop)
 	wg.Wait()
-	t.Logf("pco appliance install --kind agent on %s (%v):\n%s", node, err, out)
+	c.logf(t, "pco appliance install --kind agent on %s (%v):\n%s", node, err, out)
 	if err == nil {
 		c.guestCard(t, node, vmid, agentOffset+slices.Index(c.others(c.self), node))
 	}
@@ -259,7 +261,7 @@ func (c *clusterRun) uninstallAgent(t testing.TB, node string) error {
 		installer = c.app.nodePco
 	}
 	out, err := c.onWithin(node, installTimeout, installer, "appliance", "uninstall", "--vmid", strconv.Itoa(vmid), "--yes", "--keep-cloudflare")
-	t.Logf("pco appliance uninstall --vmid %d on %s (%v):\n%s", vmid, node, err, out)
+	c.logf(t, "pco appliance uninstall --vmid %d on %s (%v):\n%s", vmid, node, err, out)
 	if err != nil {
 		return err
 	}
@@ -318,7 +320,7 @@ func testControllerContainer(t *testing.T, c *clusterRun) {
 		addr = ""
 	}
 	listening := c.hereMust(t, "ss", "-Hltn", "sport = :8644")
-	t.Logf("the agent endpoint listens on:\n%s", listening)
+	c.logf(t, "the agent endpoint listens on:\n%s", listening)
 	require.NotEmpty(t, strings.TrimSpace(listening), "nothing listens on 8644 in the controller")
 	for line := range strings.Lines(listening) {
 		f := strings.Fields(line)
@@ -329,7 +331,7 @@ func testControllerContainer(t *testing.T, c *clusterRun) {
 		}
 	}
 	rules := c.must(t, "pvesh", "get", fmt.Sprintf("/nodes/%s/lxc/%d/firewall/rules", c.self, c.app.vmid), "--output-format", "json")
-	t.Logf("the firewall rules of the controller container: %s", rules)
+	c.logf(t, "the firewall rules of the controller container: %s", rules)
 	require.Contains(t, rules, "8644")
 	require.Contains(t, rules, "pco-agents")
 }
@@ -357,11 +359,11 @@ func testAgentsJoin(t *testing.T, c *clusterRun) {
 		fp := strings.ToLower(v.CertFingerprint)
 		for _, wrong := range []string{fp[:7], wrongPrefix(fp[:8])} {
 			out, err := c.pcoCombined("node", "admit", node, "--fingerprint", wrong)
-			t.Logf("pco node admit %s --fingerprint %s:\n%s", node, wrong, out)
+			c.logf(t, "pco node admit %s --fingerprint %s:\n%s", node, wrong, out)
 			require.Error(t, err, "admitted with %q", wrong)
 		}
 		out := c.pcoMust(t, "node", "admit", node, "--fingerprint", fp[:12])
-		t.Logf("pco node admit %s:\n%s", node, out)
+		c.logf(t, "pco node admit %s:\n%s", node, out)
 		c.waitState(t, node+" active", 3*time.Minute, func(st engine.State) bool {
 			n, ok := nodeView(st, node)
 			return ok && n.State == store.NodeActive
@@ -401,7 +403,7 @@ func testAgentRoutes(t *testing.T, c *clusterRun) {
 		return true
 	})
 	out, err := c.pcoCombined("segment", "acknowledge", c.bridge)
-	t.Logf("pco segment acknowledge %s:\n%s", c.bridge, out)
+	c.logf(t, "pco segment acknowledge %s:\n%s", c.bridge, out)
 	require.NoError(t, err)
 	for i, node := range nodes {
 		st := c.waitState(t, hosts[i]+" active and pinned to "+node, 5*time.Minute, func(st engine.State) bool {
@@ -454,7 +456,7 @@ func testJoinTokenNowhere(t *testing.T, c *clusterRun) {
 		require.NotEmpty(t, seen[node], "the processes of %s were not read during the install", node)
 		for name, text := range where {
 			for _, secret := range joinSecrets(token) {
-				require.NotContains(t, text, secret, "the join token of %s is in %s", node, name)
+				require.False(t, strings.Contains(text, secret), "the join token of %s is in %s", node, name)
 			}
 		}
 	}
@@ -468,7 +470,7 @@ func testJoinTokenReused(t *testing.T, c *clusterRun) {
 	c.agents.mu.Unlock()
 	require.NotEmpty(t, used)
 
-	t.Logf("the agent of %s goes, and its node is forgotten", second)
+	c.logf(t, "the agent of %s goes, and its node is forgotten", second)
 	require.NoError(t, c.uninstallAgent(t, second))
 	c.waitState(t, second+" no longer active", 3*time.Minute, func(st engine.State) bool {
 		n, ok := nodeView(st, second)
@@ -476,25 +478,25 @@ func testJoinTokenReused(t *testing.T, c *clusterRun) {
 	})
 	if st := c.state(t); func() bool { n, ok := nodeView(st, second); return ok && n.State != store.NodeRemoved }() {
 		out, err := c.pcoCombined("node", "forget", second, "--yes")
-		t.Logf("pco node forget %s:\n%s", second, out)
+		c.logf(t, "pco node forget %s:\n%s", second, out)
 		require.NoError(t, err)
 	}
 
-	t.Logf("the used token of %s, on %s", first, second)
+	c.logf(t, "the used token of %s, on %s", first, second)
 	reused := time.Now()
 	out, err := c.installAgent(t, second, used)
 	require.Error(t, err, "an agent joined with a used token of another node:\n%s", out)
 	require.NoError(t, c.uninstallAgentLeft(t, second))
 	n, _ := nodeView(c.state(t), first)
-	t.Logf("%s is %s after its token was used again", first, n.State)
+	c.logf(t, "%s is %s after its token was used again", first, n.State)
 	var sec []engine.Event
 	require.NoError(t, json.Unmarshal([]byte(c.pcoMust(t, "events", "--kind", "security", "--json", "--since", reused.UTC().Format(time.RFC3339))), &sec))
 	require.NotEmpty(t, sec, "no security event of the refused use of the token of %s", first)
 	for _, ev := range sec {
-		t.Logf("security event: %s %s: %s", ev.Node, ev.Subject, ev.Message)
+		c.logf(t, "security event: %s %s: %s", ev.Node, ev.Subject, ev.Message)
 	}
 
-	t.Logf("a token of its own for %s", second)
+	c.logf(t, "a token of its own for %s", second)
 	token := c.joinToken(t, second)
 	_, err = c.installAgent(t, second, token)
 	require.NoError(t, err)

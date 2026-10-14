@@ -126,7 +126,7 @@ func testHandoff(t *testing.T, c *clusterRun) {
 	began := time.Now()
 	st := c.handoff(t, to)
 	took := time.Since(began)
-	t.Logf("%s holds the lease %s after the hand-off from %s", to, took, before.Holder)
+	c.logf(t, "%s holds the lease %s after the hand-off from %s", to, took, before.Holder)
 	require.Less(t, took, 30*time.Second)
 	require.Equal(t, before.Generation+1, st.Lease.Generation)
 	c.waitSentinel(t, shared, before.Generation, 2*time.Minute)
@@ -151,7 +151,7 @@ func testControllerKilled(t *testing.T, c *clusterRun) {
 		return st.Node == holder && st.At.After(killed) && !st.FinishedAt.IsZero()
 	})
 	took := st.FinishedAt.Sub(killed)
-	t.Logf("the first cycle after the kill finished %s after it", took)
+	c.logf(t, "the first cycle after the kill finished %s after it", took)
 	require.Empty(t, others, "another node took the lease")
 	require.Equal(t, before.Generation, st.Lease.Generation)
 	require.Equal(t, before.Nonce, st.Lease.Nonce)
@@ -173,7 +173,7 @@ func testControllerRebooted(t *testing.T, c *clusterRun) {
 		return st.Node != holder && st.Mode == engine.ModeEnforce && st.At.After(rebooted) && !st.FinishedAt.IsZero()
 	})
 	took := st.FinishedAt.Sub(rebooted)
-	t.Logf("%s finished its first enforcing cycle %s after the reboot of %s", next, took, holder)
+	c.logf(t, "%s finished its first enforcing cycle %s after the reboot of %s", next, took, holder)
 	require.LessOrEqual(t, took, rebootBound)
 	c.waitBack(t, holder)
 	c.waitActive(t, c.names()...)
@@ -190,7 +190,7 @@ func testTakeoverHold(t *testing.T, c *clusterRun) {
 	from := c.callIndex()
 	v := c.visit(t, hostsOf(homes, late)...)
 
-	t.Logf("the agent of %s stopped, then the controller on %s", late, holder)
+	c.logf(t, "the agent of %s stopped, then the controller on %s", late, holder)
 	t.Cleanup(func() {
 		_, _ = c.on(late).here("systemctl", "start", "pco")
 		_, _ = c.on(holder).here("systemctl", "start", "pco")
@@ -277,7 +277,7 @@ func testWatchdog(t *testing.T, c *clusterRun) {
 		}
 		if restarted.IsZero() && restarts() > was {
 			restarted = time.Now()
-			t.Logf("systemd restarted pco on %s %s after it was held", holder, restarted.Sub(stopped))
+			c.logf(t, "systemd restarted pco on %s %s after it was held", holder, restarted.Sub(stopped))
 		}
 		if !restarted.IsZero() {
 			if st, err := c.on(holder).tryState(); err == nil && st.Lease != nil && st.Lease.Holder == holder && st.Lease.Valid && st.At.After(restarted) {
@@ -313,7 +313,7 @@ func testControllerNotQuorate(t *testing.T, c *clusterRun) {
 	c.settleCluster(t)
 	v := c.visit(t, hostsOf(homes, holder)...)
 	from := c.fakeIndex()
-	t.Logf("corosync of %s cut off", holder)
+	c.logf(t, "corosync of %s cut off", holder)
 	c.cutOff(t, holder, "udp dport 5405-5412 drop", "udp sport 5405-5412 drop")
 	var lost time.Time
 	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
@@ -336,7 +336,7 @@ func testControllerNotQuorate(t *testing.T, c *clusterRun) {
 		require.False(t, w.At.After(lost.Add(staleWrite)), "%s wrote %s %s at %s, %s after it lost quorum", holder, w.Method, w.Path, w.At, w.At.Sub(lost))
 	}
 	_, next := c.waitController(t, "a controller in the quorate part", 3*time.Minute, func(st engine.State) bool { return st.Node != holder })
-	t.Logf("%s took over", next)
+	c.logf(t, "%s took over", next)
 	c.uncut(t, holder)
 	c.waitActive(t, c.names()...)
 	c.allShared(t, 14*time.Minute)
@@ -382,7 +382,7 @@ func testControllerStopped(t *testing.T, c *clusterRun) {
 			break
 		}
 	}
-	t.Logf("the new epoch %d wrote first at %s", gen, first.Format(time.TimeOnly))
+	c.logf(t, "the new epoch %d wrote first at %s", gen, first.Format(time.TimeOnly))
 	time.Sleep(10 * time.Second)
 	c.systemctl(t, node, "kill", "--signal=SIGCONT", "pco.service")
 	time.Sleep(90 * time.Second)
@@ -411,7 +411,7 @@ func testRestoredLeader(t *testing.T, c *clusterRun) {
 	require.Equal(t, before.Generation+2, gen)
 	v := c.visit(t, hostsOf(homes)...)
 
-	t.Logf("leader.json of generation %d put back over generation %d", before.Generation, gen)
+	c.logf(t, "leader.json of generation %d put back over generation %d", before.Generation, gen)
 	require.NoError(t, os.WriteFile(file+".e2e", saved, 0o600))
 	require.NoError(t, os.Rename(file+".e2e", file))
 	restored := time.Now()
@@ -422,7 +422,7 @@ func testRestoredLeader(t *testing.T, c *clusterRun) {
 		for _, n := range c.names() {
 			if st, err := c.on(n).tryState(); err == nil && st.Lease != nil && st.Lease.Holder == n && st.Lease.Behind != "" {
 				behind = n
-				t.Logf("%s is behind: %s", n, st.Lease.Behind)
+				c.logf(t, "%s is behind: %s", n, st.Lease.Behind)
 			}
 		}
 		require.True(t, time.Now().Before(deadline), "no node says it is behind after the restore")
@@ -435,7 +435,7 @@ func testRestoredLeader(t *testing.T, c *clusterRun) {
 	require.Equal(t, gen, c.sentinelOf(t, shared))
 
 	out, err := c.on(behind).pcoCombined("promote", "--yes")
-	t.Logf("pco promote on %s:\n%s", behind, out)
+	c.logf(t, "pco promote on %s:\n%s", behind, out)
 	require.NoError(t, err)
 	c.on(behind).enforce(t)
 	c.waitSentinel(t, shared, gen, 3*time.Minute)
@@ -476,7 +476,7 @@ func testControllerAbsent(t *testing.T, c *clusterRun) {
 	t.Cleanup(func() { c.setEligible(t, nil, c.names()...) })
 	for _, n := range append(c.others(holder), holder) {
 		out, err := c.on(holder).pcoCombined("node", "set", n, "--controller-eligible=false")
-		t.Logf("pco node set %s --controller-eligible=false:\n%s", n, out)
+		c.logf(t, "pco node set %s --controller-eligible=false:\n%s", n, out)
 		require.NoError(t, err)
 	}
 	c.systemctl(t, holder, "restart", "pco")
@@ -493,7 +493,7 @@ func testControllerAbsent(t *testing.T, c *clusterRun) {
 	}
 	reboot := c.others(c.self)[0]
 	rebooted := false
-	t.Logf("no controller for %s; %s reboots in the middle", absent, reboot)
+	c.logf(t, "no controller for %s; %s reboots in the middle", absent, reboot)
 	for end := time.Now().Add(absent); time.Now().Before(end); time.Sleep(10 * time.Second) {
 		require.Empty(t, c.writesFrom(from, ""), "something was written at Cloudflare without a controller")
 		require.Empty(t, c.holderSeen(), "a node took the lease")
@@ -557,7 +557,7 @@ func testControllerPowerLoss(t *testing.T, c *clusterRun) {
 		c.powerAction(t, "off", holder)
 		at, got := c.waitSentinel(t, shared, gen, powerLossBound+time.Minute)
 		took = append(took, at.Sub(off))
-		t.Logf("run %d of %d: %s off, generation %d written %s later", run, runs, holder, got, at.Sub(off))
+		c.logf(t, "run %d of %d: %s off, generation %d written %s later", run, runs, holder, got, at.Sub(off))
 		require.LessOrEqual(t, at.Sub(off), powerLossBound, "run %d", run)
 		v.requireNoFailure(t, fmt.Sprintf("run %d", run))
 		c.powerAction(t, "on", holder)
@@ -569,7 +569,7 @@ func testControllerPowerLoss(t *testing.T, c *clusterRun) {
 		}
 		c.waitActive(t, c.names()...)
 	}
-	t.Logf("the new epoch's first write after the power loss: %v", took)
+	c.logf(t, "the new epoch's first write after the power loss: %v", took)
 	c.allShared(t, 14*time.Minute)
 }
 

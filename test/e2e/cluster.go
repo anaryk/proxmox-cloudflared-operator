@@ -105,6 +105,9 @@ type clusterRun struct {
 	homes   []homed
 	// agents are the agent containers of the appliance on a cluster.
 	agents *agentsOf
+	// secret holds every token and key the run handles, which no line it
+	// logs may carry.
+	secret secrets
 	// before is each node's state before pco was set up on it.
 	before map[string]string
 	// uninstalled says that a scenario uninstalled pco from every node.
@@ -387,6 +390,7 @@ func (c *clusterRun) nodeState(node string) (string, error) {
 // other nodes join it, with everything undone when t ends.
 func (c *clusterRun) start(t *testing.T) {
 	token := c.chooseCloud(t)
+	c.secret.add(token, fakeSecondToken)
 	if c.fake == nil {
 		for _, n := range c.names() {
 			if !c.cloudflaredOn[n] {
@@ -497,12 +501,22 @@ func (c *clusterRun) copyTo(t testing.TB, node, local, remote string) {
 
 // writeOn writes a file on a node with the mode given, through a file beside
 // it renamed over it.
+//
+// The content goes through the standard input of the command, never its
+// arguments, which any process of the node may read: some of it is a token
+// or a key. A directory the write makes is made for root alone.
 func (c *clusterRun) writeOn(t testing.TB, node, path, content, mode string) {
 	t.Helper()
-	enc := base64.StdEncoding.EncodeToString([]byte(content))
-	script := fmt.Sprintf("set -e; mkdir -p %s; umask 077; printf %%s %s | base64 -d >%s.e2e; chmod %s %s.e2e; mv -f %s.e2e %s",
-		filepath.Dir(path), enc, path, mode, path, path, path)
-	c.on(node).hereMust(t, "sh", "-c", script)
+	script := fmt.Sprintf("set -e; umask 077; mkdir -p -m 0700 %s; cat >%s.e2e; chmod %s %s.e2e; mv -f %s.e2e %s",
+		shellLine([]string{filepath.Dir(path)}), path, mode, path, path, path)
+	argv := c.on(node).at.argv("sh", "-c", script)
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = c.childEnv()
+	cmd.Stdin = strings.NewReader(content)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "writing %s on %s: %s", path, node, c.secret.scrub(string(out)))
 }
 
 // join sets pco up on a further node, which joins the install.
@@ -513,7 +527,7 @@ func (c *clusterRun) join(t testing.TB, node string) {
 		args = append(args, "--skip-cloudflared")
 	}
 	out, err := c.pcoWithin(node, clusterTimeout, args...)
-	t.Logf("pco %s on %s:\n%s", strings.Join(args, " "), node, out)
+	c.logf(t, "pco %s on %s:\n%s", strings.Join(args, " "), node, out)
 	require.NoError(t, err)
 }
 
@@ -638,7 +652,7 @@ func (c *clusterRun) handoff(t testing.TB, to string) engine.State {
 	}
 	asked := time.Now()
 	out, err := c.pcoWithin(from, commandTimeout, "cluster", "handoff", "--to", to, "--yes")
-	t.Logf("pco cluster handoff --to %s on %s:\n%s", to, from, out)
+	c.logf(t, "pco cluster handoff --to %s on %s:\n%s", to, from, out)
 	require.NoError(t, err)
 	st, _ := c.waitController(t, to+" holding the lease", 2*time.Minute, func(st engine.State) bool {
 		return st.Node == to && st.At.After(asked) && !st.FinishedAt.IsZero()
@@ -769,7 +783,7 @@ func (c *clusterRun) createOn(t testing.TB, node string, n int, g guest) guest {
 	}
 	script.WriteString("rc-update add local default >/dev/null\n/etc/local.d/e2e.start\n")
 	on.hereMust(t, "pct", "exec", id, "--", "sh", "-c", script.String())
-	t.Logf("guest %d is up on %s at %s", g.vmid, node, g.ip())
+	c.logf(t, "guest %d is up on %s at %s", g.vmid, node, g.ip())
 	return g
 }
 
@@ -864,7 +878,7 @@ func (c *clusterRun) uninstallCluster(t *testing.T) {
 			continue
 		}
 		out, err := c.pcoWithin(n, uninstallTimeout, "uninstall", "--yes", "--keep-cloudflare", "--force")
-		t.Logf("pco uninstall on %s (%v):\n%s", n, err, out)
+		c.logf(t, "pco uninstall on %s (%v):\n%s", n, err, out)
 		if err != nil {
 			t.Errorf("pco uninstall on %s: %v", n, err)
 		}
@@ -876,7 +890,7 @@ func (c *clusterRun) uninstallCluster(t *testing.T) {
 		}
 		var out string
 		out, err = c.pcoWithin(last, uninstallTimeout, "uninstall", "--yes", "--purge-cloudflare", "--force", "--detach-managed")
-		t.Logf("pco uninstall on %s, attempt %d of %d (%v):\n%s", last, attempt, purgeAttempts, err, out)
+		c.logf(t, "pco uninstall on %s, attempt %d of %d (%v):\n%s", last, attempt, purgeAttempts, err, out)
 		if err == nil {
 			break
 		}
@@ -923,11 +937,11 @@ func (c *clusterRun) diagnoseCluster(t *testing.T) {
 			continue
 		}
 		out, _ := c.on(n).here("journalctl", "-u", "pco", "--since", since, "--no-pager", "-n", "150")
-		t.Logf("journal of pco on %s:\n%s", n, out)
+		c.logf(t, "journal of pco on %s:\n%s", n, out)
 	}
 	if c.fake != nil {
 		calls := c.fake.f.Calls()
-		t.Logf("the last calls of the fake:\n%s", strings.Join(calls[max(0, len(calls)-80):], "\n"))
+		c.logf(t, "the last calls of the fake:\n%s", strings.Join(calls[max(0, len(calls)-80):], "\n"))
 	}
 }
 
@@ -948,7 +962,7 @@ func (c *clusterRun) powerAction(t testing.TB, action, node string) {
 	t.Helper()
 	require.NotEqual(t, c.self, node, "the suite never powers off the node it runs on")
 	out, err := c.combinedWithin(5*time.Minute, c.power, action, node)
-	t.Logf("%s %s %s:\n%s", c.power, action, node, out)
+	c.logf(t, "%s %s %s:\n%s", c.power, action, node, out)
 	require.NoError(t, err)
 	c.mu.Lock()
 	defer c.mu.Unlock()

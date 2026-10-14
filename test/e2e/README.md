@@ -438,6 +438,14 @@ and purges the install's tunnels, the pinned ones too, at the end.
 - With `PCO_E2E_UPGRADE_DEB`, installs that package on every node; the nodes keep it.
 - With `PCO_E2E_COMPROMISE`, powers that node off and removes it from the cluster.
 
+The tokens and keys the profiles of a cluster handle, the Cloudflare tokens, the tunnels'
+run tokens, the join tokens and the agents' keys, never go into a command line: a file
+the suite puts on a node goes through the standard input of the command that writes it,
+with mode 0600, in a directory only root may enter, and is removed when the scenario is
+done. Every line the profiles log is scrubbed of those values first, and a line that
+carried one fails the run; `go test -tags e2e -run TestSecretsStayOutOfLogs ./test/e2e`
+checks that scrubbing without a node.
+
 It records the nodes, the install and the mode of the run in `/var/lib/pco-e2e/cluster` on
 the driver. `cleanup-cluster.sh`, run on the driver, removes what a run that was cut off
 left: it removes the cuts and continues a stopped daemon, uninstalls pco from every node
