@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -110,11 +112,20 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	answers, err := e.probeManaged(ctx, ln)
+	if ln.clustered {
+		if err := e.controllerOnly(ctx); err != nil {
+			return err
+		}
+	}
+	probed, err := e.probeManaged(ctx, ln)
 	if err != nil {
 		return err
 	}
-	if err := e.acquireWriter(ctx); err != nil {
+	acquire := e.acquireWriter
+	if len(probed.asked) > 0 {
+		acquire = e.acquireFresh
+	}
+	if err := acquire(ctx); err != nil {
 		return err
 	}
 	defer e.release()
@@ -123,11 +134,21 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if have, ok := f.nets[gateway.ManagedBridge]; ok {
+	have, stored := f.nets[gateway.ManagedBridge]
+	if ln.clustered {
+		subnet := f.settings.Managed.Subnet
+		if stored {
+			subnet = have.Prefix
+		}
+		if subnet != probed.subnet {
+			return fmt.Errorf("%w: managed.subnet changed while the nodes were probed, from %s to %s; enable it again", ErrRefused, probed.subnet, subnet)
+		}
+	}
+	if stored {
 		if !ln.clustered {
 			return nil
 		}
-		return e.addManagedLegs(ctx, f, ln, have, answers)
+		return e.addManagedLegs(ctx, f, ln, have, probed)
 	}
 	if e.d.Vnet == nil {
 		return fmt.Errorf("%w: this daemon cannot read the vnet %s, so the managed network is not stored", ErrRefused, gateway.ManagedBridge)
@@ -167,7 +188,7 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	}
 	var said []string
 	if ln.clustered {
-		said = e.managedLegs(ctx, f, ln, &n, answers)
+		said = e.managedLegs(f, ln, probed.configs, &n, probed.answers)
 	}
 	if err := e.d.Store.SaveNetwork(n, 0); err != nil {
 		if first {
@@ -185,41 +206,61 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	return nil
 }
 
+// managedProbe is what the agents of the other nodes answered for the
+// managed network, with the subnet they were asked in, the nodes asked and
+// the network of each as the API had it before the cycle lock.
+type managedProbe struct {
+	subnet  netip.Prefix
+	asked   []string
+	answers map[string]nodeAnswer
+	configs map[string][]pve.NodeIface
+}
+
 // probeManaged asks the agent of every other node that has no leg of the
-// managed network whether pconet is there and its first address free. On
-// a node alone it asks nothing.
-func (e *Engine) probeManaged(ctx context.Context, ln legNodes) (map[string]nodeAnswer, error) {
+// managed network whether pconet is there and its first address free, and
+// reads the network of those nodes. On a node alone it asks nothing.
+func (e *Engine) probeManaged(ctx context.Context, ln legNodes) (managedProbe, error) {
+	var out managedProbe
 	if !ln.clustered {
-		return nil, nil
+		return out, nil
 	}
 	settings, err := e.d.Store.Settings()
 	if err != nil {
-		return nil, fmt.Errorf("reading the settings: %w", err)
+		return out, fmt.Errorf("reading the settings: %w", err)
 	}
 	nets, err := e.d.Store.Networks()
 	if err != nil {
-		return nil, fmt.Errorf("reading the networks: %w", err)
+		return out, fmt.Errorf("reading the networks: %w", err)
 	}
-	first := settings.Managed.Subnet.Addr().Next()
+	out.subnet = settings.Managed.Subnet
 	have, stored := nets[gateway.ManagedBridge]
 	if stored {
-		first = have.Prefix.Addr().Next()
+		out.subnet = have.Prefix
 	}
+	first := out.subnet.Addr().Next()
 	addrs := map[string]netip.Addr{}
 	for node := range e.writes.agentNodes() {
 		if _, has := have.Legs[node]; node == e.d.Node || !ln.known[node] || stored && has {
 			continue
 		}
 		addrs[node] = first
+		out.asked = append(out.asked, node)
 	}
-	return e.probeNodes(ctx, resolve.Segment{Bridge: gateway.ManagedBridge}, addrs), nil
+	api, err := e.readNodes(ctx, out.asked, false)
+	if err != nil {
+		return out, err
+	}
+	out.configs = api.configs
+	out.answers = e.probeNodes(ctx, resolve.Segment{Bridge: gateway.ManagedBridge}, addrs)
+	return out, nil
 }
 
 // managedLegs gives n the leg of each other node that has none whose agent
 // found pconet there, the node not on it and nobody at the first address,
 // and returns what is said of each other node: the leg it got, or why it
 // got none.
-func (e *Engine) managedLegs(ctx context.Context, f networkFacts, ln legNodes, n *store.Network, answers map[string]nodeAnswer) []string {
+func (e *Engine) managedLegs(f networkFacts, ln legNodes, configs map[string][]pve.NodeIface, n *store.Network,
+	answers map[string]nodeAnswer) []string {
 	first := n.Prefix.Addr().Next()
 	var said []string
 	for _, node := range slices.Sorted(maps.Keys(ln.known)) {
@@ -228,10 +269,15 @@ func (e *Engine) managedLegs(ctx context.Context, f networkFacts, ln legNodes, n
 		}
 		got, asked := answers[node]
 		why := ""
-		if !asked {
-			why = e.unasked([]string{node})[node]
-		} else {
-			why = e.managedLegWhy(ctx, f, node, first, got)
+		switch cfg, read := configs[node]; {
+		case !asked:
+			// Its agent may have become fresh since the others were asked:
+			// a node is given a leg only on what its own agent answered.
+			why = cmp.Or(e.unasked([]string{node})[node], "its agent was not asked")
+		case !read:
+			why = "its network was not read"
+		default:
+			why = managedLegWhy(onNode(f, node, cfg), first, got)
 		}
 		if why != "" {
 			said = append(said, fmt.Sprintf("the managed network has no leg on node %s: %s", node, why))
@@ -243,15 +289,12 @@ func (e *Engine) managedLegs(ctx context.Context, f networkFacts, ln legNodes, n
 	return said
 }
 
-// managedLegWhy says why node gets no leg of the managed network at addr by
-// what its agent answered; empty when it gets one.
-func (e *Engine) managedLegWhy(ctx context.Context, f networkFacts, node string, addr netip.Addr, got nodeAnswer) string {
+// managedLegWhy says why the node of g gets no leg of the managed network
+// at addr by what its agent answered; empty when it gets one.
+func managedLegWhy(g networkFacts, addr netip.Addr, got nodeAnswer) string {
+	node := g.node
 	if got.why != "" {
 		return got.why
-	}
-	g, err := e.onNode(ctx, f, node)
-	if err != nil {
-		return err.Error()
 	}
 	g = g.withAnswer(got.answer)
 	seg := resolve.Segment{Bridge: gateway.ManagedBridge}
@@ -275,10 +318,10 @@ func (e *Engine) managedLegWhy(ctx context.Context, f networkFacts, node string,
 
 // addManagedLegs gives the managed network stored a leg on each other node
 // that has none and may.
-func (e *Engine) addManagedLegs(ctx context.Context, f networkFacts, ln legNodes, have store.Network, answers map[string]nodeAnswer) error {
+func (e *Engine) addManagedLegs(ctx context.Context, f networkFacts, ln legNodes, have store.Network, probed managedProbe) error {
 	n := have
 	n.Legs = maps.Clone(have.Legs)
-	said := e.managedLegs(ctx, f, ln, &n, answers)
+	said := e.managedLegs(f, ln, probed.configs, &n, probed.answers)
 	if len(n.Legs) > len(have.Legs) {
 		if err := e.d.Store.SaveNetwork(n, have.Rev); err != nil {
 			if errors.Is(err, store.ErrRevision) {

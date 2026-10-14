@@ -53,7 +53,7 @@ type takenOf struct {
 // to doctor actions the status carries are taken as it comes, for the
 // doctor that waits for them.
 func (e *Engine) TakeAgentEvents(node string, st agentproto.Status, epoch agentproto.Epoch) uint64 {
-	e.asks.take(node, st)
+	e.asks.take(node, st, epoch)
 	t := &e.taken
 	t.mu.Lock()
 	if t.nodes == nil {

@@ -34,12 +34,23 @@ type fakeNetworks struct {
 	// nodes are the networks of the other nodes, and zones the SDN zones.
 	nodes map[string][]pve.NodeIface
 	zones []pve.SDNZone
+	// locked says whether the cycle lock is held; the reads of the other
+	// nodes and of the zones made under it are counted in lockedReads.
+	locked      func() bool
+	lockedReads []string
+}
+
+func (f *fakeNetworks) underLock(what string) {
+	if f.locked != nil && f.locked() {
+		f.lockedReads = append(f.lockedReads, what)
+	}
 }
 
 func (f *fakeNetworks) NodeNetwork(_ context.Context, node string) ([]pve.NodeIface, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if cfg, ok := f.nodes[node]; ok {
+		f.underLock("network of " + node)
 		return slices.Clone(cfg), nil
 	}
 	if node != testNode {
@@ -51,6 +62,7 @@ func (f *fakeNetworks) NodeNetwork(_ context.Context, node string) ([]pve.NodeIf
 func (f *fakeNetworks) Zones(context.Context) ([]pve.SDNZone, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.underLock("zones")
 	return slices.Clone(f.zones), nil
 }
 

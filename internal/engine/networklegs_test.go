@@ -590,3 +590,186 @@ func TestANodeWithoutAManagedLegIsAProblem(t *testing.T) {
 	require.Contains(t, st.Problems, "the managed network has no leg on node pve2; pco network managed enable gives it one once its agent finds pconet there")
 	require.Contains(t, st.Problems, "the managed network has no leg on node pve3; pco network managed enable gives it one once its agent finds pconet there")
 }
+
+// A node whose agent was not asked, as one whose report became fresh while
+// the others were probed, gets no leg of the managed network: never one
+// without the checks of its agent's answer.
+func TestANodeNotAskedGetsNoManagedLeg(t *testing.T) {
+	c := newNetCluster(t)
+	f, err := c.eng.networkFacts(t.Context())
+	require.NoError(t, err)
+	ln, err := c.eng.legNodes()
+	require.NoError(t, err)
+	first := netip.MustParseAddr("10.203.118.1")
+	n := store.Network{ID: gateway.ManagedBridge, Kind: store.NetworkManaged, Bridge: gateway.ManagedBridge,
+		Prefix: netip.MustParsePrefix(managedSubnet), Legs: map[string]netip.Addr{testNode: first}}
+	answers := map[string]nodeAnswer{"pve3": {answer: agentproto.ProbeAnswer{Interfaces: agentIfaces("pve3"), AnsweredBy: []string{}}}}
+
+	said := c.eng.managedLegs(f, ln, configsOf(t, c, "pve2", "pve3"), &n, answers)
+
+	require.Equal(t, map[string]netip.Addr{testNode: first, "pve3": first}, n.Legs)
+	require.Contains(t, said, "the managed network has no leg on node pve2: its agent was not asked")
+}
+
+func configsOf(t *testing.T, c *netCluster, nodes ...string) map[string][]pve.NodeIface {
+	t.Helper()
+	out := map[string][]pve.NodeIface{}
+	for _, n := range nodes {
+		cfg, err := c.nets.NodeNetwork(t.Context(), n)
+		require.NoError(t, err)
+		out[n] = cfg
+	}
+	return out
+}
+
+// The answers of the agents are at most a few seconds old when they are
+// judged: an attach that cannot take the cycle lock soon after the probes
+// is refused, and asks again when tried again.
+func TestAnAttachRefusesAnswersThatWaitedTooLong(t *testing.T) {
+	c := newNetCluster(t)
+	c.eng.timeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		if d == freshWait {
+			d = 50 * time.Millisecond
+		}
+		return context.WithTimeout(ctx, d)
+	}
+	hog := func(node string, p agentproto.Probe) agentproto.ActionResult {
+		c.eng.sem <- struct{}{}
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			<-c.eng.sem
+		}()
+		return probeAnswer(node, p)
+	}
+
+	_, _, err := c.attach(t, AttachRequest{Bridge: "vmbr1", Prefix: netip.MustParsePrefix("10.77.0.0/24"),
+		Address: netip.MustParseAddr("10.77.0.250"), Scope: store.ScopeNode, Node: "pve2"}, hog)
+
+	require.ErrorIs(t, err, ErrBusy)
+	require.ErrorContains(t, err, "the answers of the agents would be older than")
+	stored, serr := c.store.Networks()
+	require.NoError(t, serr)
+	require.Empty(t, stored)
+}
+
+// A node that is not the controller asks no agent.
+func TestAnAttachOffTheControllerAsksNoAgent(t *testing.T) {
+	c := newNetCluster(t)
+	c.lease.mu.Lock()
+	c.lease.st.Holder = false
+	c.lease.mu.Unlock()
+
+	_, asked, err := c.attach(t, AttachRequest{Bridge: "vmbr1", Prefix: netip.MustParsePrefix("10.77.0.0/24"),
+		Address: netip.MustParseAddr("10.77.0.250"), Scope: store.ScopeNode, Node: "pve2"}, probeAnswer)
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "not the controller")
+	require.Empty(t, asked)
+}
+
+// The network of the other nodes and the SDN zones are read through the API
+// before the cycle lock is taken, not under it.
+func TestTheOtherNodesAreReadOutsideTheCycleLock(t *testing.T) {
+	c := newNetCluster(t)
+	c.nets.mu.Lock()
+	c.nets.locked = func() bool { return len(c.eng.sem) == 1 }
+	c.nets.mu.Unlock()
+
+	_, _, err := c.attach(t, AttachRequest{Bridge: "vmbr2", VLAN: 20, Prefix: vlan20, Address: leg250, ConfirmUplink: true,
+		Scope: store.ScopeCluster, Legs: map[string]netip.Addr{"pve2": leg249, "pve3": leg248}}, probeAnswer)
+	require.NoError(t, err)
+	var probeErr error
+	c.probes(t, probeAnswer, func() {
+		_, probeErr = c.eng.ProbeNetwork(t.Context(), ProbeRequest{Bridge: "vmbr1", Scope: store.ScopeCluster})
+	})
+	require.NoError(t, probeErr)
+
+	c.nets.mu.Lock()
+	defer c.nets.mu.Unlock()
+	require.Empty(t, c.nets.lockedReads)
+}
+
+// A bridge the agent would refuse is refused before any agent is asked.
+func TestAProbeNamesABridgeAsTheAgentTakesIt(t *testing.T) {
+	c := newNetCluster(t)
+
+	_, err := c.eng.ProbeNetwork(t.Context(), ProbeRequest{Bridge: "vmbr0123456789ab", Scope: store.ScopeCluster})
+
+	var fe *FieldError
+	require.ErrorAs(t, err, &fe)
+	require.Equal(t, "bridge", fe.Field)
+	require.ErrorContains(t, err, "want up to 15 letters")
+}
+
+// The managed network is saved with the subnet its legs were probed in:
+// a subnet changed meanwhile refuses the enable.
+func TestEnableManagedRefusesASubnetChangedWhileItProbed(t *testing.T) {
+	c := newNetCluster(t)
+	facts := &managedFacts{vnet: ManagedVnet{Exists: true, ZoneType: "simple", IsolatePorts: true}}
+	c.managed = facts.deps
+	c.eng = c.newEngine()
+	c.watchHere(t)
+	c.settle()
+	changed := false
+	change := func(node string, p agentproto.Probe) agentproto.ActionResult {
+		if !changed {
+			changed = true
+			st, err := c.store.Settings()
+			require.NoError(t, err)
+			st.Managed.Subnet = netip.MustParsePrefix("10.204.0.0/24")
+			require.NoError(t, c.store.SaveSettings(st))
+		}
+		return probeAnswer(node, p)
+	}
+	var err error
+
+	c.probes(t, change, func() { err = c.eng.EnableManaged(t.Context()) })
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "managed.subnet changed while the nodes were probed")
+	stored, serr := c.store.Networks()
+	require.NoError(t, serr)
+	require.NotContains(t, stored, gateway.ManagedBridge)
+}
+
+// An answer whose epoch is the one the probe was listed under, taken after
+// the controller moved on to another epoch, is not taken: the controller
+// that asked is not the one that would act on it.
+func TestAnAnswerAfterTheEpochChangedIsNotTaken(t *testing.T) {
+	c := newNetCluster(t)
+	c.eng.timeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		if d == probeWait {
+			d = 300 * time.Millisecond
+		}
+		return context.WithTimeout(ctx, d)
+	}
+	var err error
+	c.probes(t, nil, func() {
+		go func() {
+			for range 50 {
+				time.Sleep(5 * time.Millisecond)
+				s, ok := c.r.lastOf("pve2")
+				if !ok || len(s.Actions) == 0 {
+					continue
+				}
+				res := probeAnswer("pve2", agentproto.Probe{})
+				res.ID = s.Actions[0].ID
+				now := s.Epoch
+				now.Generation++
+				c.eng.TakeAgentEvents("pve2", agentproto.Status{Node: "pve2", EpochSeen: s.Epoch, Actions: []agentproto.ActionResult{res}}, now)
+				return
+			}
+		}()
+		_, err = c.eng.Attach(t.Context(), AttachRequest{Bridge: "vmbr1", Prefix: netip.MustParsePrefix("10.77.0.0/24"),
+			Address: netip.MustParseAddr("10.77.0.250"), Scope: store.ScopeNode, Node: "pve2"})
+	})
+
+	require.ErrorContains(t, err, "the agent of node pve2 did not answer the probe within")
+
+	t.Run("nor handed out again under the new epoch", func(t *testing.T) {
+		d := &doctorAsks{acts: map[string]*doctorAsk{"probe-1": {node: "pve2", action: agentproto.Action{ID: "probe-1", Kind: agentproto.ActionProbe}}}}
+		a, b := agentproto.Epoch{InstallID: "i", Generation: 1, Nonce: "a"}, agentproto.Epoch{InstallID: "i", Generation: 2, Nonce: "b"}
+		require.Len(t, d.actionsFor("pve2", a), 1)
+		require.Empty(t, d.actionsFor("pve2", b))
+	})
+}

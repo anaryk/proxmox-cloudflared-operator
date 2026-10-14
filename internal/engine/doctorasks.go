@@ -137,9 +137,10 @@ func (d *doctorAsks) actionsFor(node string, epoch agentproto.Epoch) []agentprot
 // the word of the node whose agent sent the status, of that node alone.
 //
 // The answer to a probe is taken only from a status of the epoch the probe
-// was handed out under: what a node found under another controller's
-// snapshot, or before this one listed it, is not this probe's answer.
-func (d *doctorAsks) take(node string, st agentproto.Status) {
+// was handed out under, while the controller is still of that epoch, epoch:
+// what a node found under another controller's snapshot, before this one
+// listed it, or once this one moved on, is not this probe's answer.
+func (d *doctorAsks) take(node string, st agentproto.Status, epoch agentproto.Epoch) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, res := range st.Actions {
@@ -147,7 +148,7 @@ func (d *doctorAsks) take(node string, st agentproto.Status) {
 		if !ok || a.node != node || a.answer != nil {
 			continue
 		}
-		if a.action.Kind == agentproto.ActionProbe && (!a.listed || st.EpochSeen != a.epoch) {
+		if a.action.Kind == agentproto.ActionProbe && (!a.listed || st.EpochSeen != a.epoch || epoch != a.epoch) {
 			continue
 		}
 		answer := res

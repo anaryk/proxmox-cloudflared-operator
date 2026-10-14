@@ -797,7 +797,9 @@ func (f networkFacts) suggestion(seg resolve.Segment) string {
 	return f.suggestedScope(seg)
 }
 
-// probeArgs checks a bridge and a VLAN as a request names them.
+// probeArgs checks a bridge and a VLAN as a request names them, by the
+// rules the agent of another node checks a probe by, so that what one node
+// takes no other refuses.
 func probeArgs(bridge string, vlan int) error {
 	switch {
 	case bridge == "":
@@ -806,6 +808,9 @@ func probeArgs(bridge string, vlan int) error {
 		return fieldError("bridge", "bridge %q: want letters, digits, - and _", bridge)
 	case vlan < 0 || vlan > maxVLAN:
 		return fieldError("vlan", "vlan %d: want 0 for untagged, or 1 to %d", vlan, maxVLAN)
+	}
+	if err := (agentproto.Probe{Bridge: bridge, VLAN: vlan}).Check(); err != nil {
+		return fieldError("bridge", "bridge %q: %v", bridge, err)
 	}
 	return nil
 }
@@ -906,6 +911,14 @@ func (e *Engine) ProbeNetwork(ctx context.Context, r ProbeRequest) (ProbeResult,
 	if r.Scope != "" || r.Node != "" || len(r.Legs) > 0 {
 		return e.probeLegs(ctx, r)
 	}
+	ln, err := e.legNodes()
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	api, err := e.readNodes(ctx, nil, ln.clustered)
+	if err != nil {
+		return ProbeResult{}, err
+	}
 	if err := e.acquireAdmin(ctx); err != nil {
 		return ProbeResult{}, err
 	}
@@ -915,6 +928,7 @@ func (e *Engine) ProbeNetwork(ctx context.Context, r ProbeRequest) (ProbeResult,
 	if err != nil {
 		return ProbeResult{}, err
 	}
+	f.zones = api.zones
 	c, err := f.lookup(r.Bridge, r.VLAN)
 	if err != nil {
 		return ProbeResult{}, err
@@ -923,11 +937,6 @@ func (e *Engine) ProbeNetwork(ctx context.Context, r ProbeRequest) (ProbeResult,
 		return ProbeResult{}, err
 	}
 	seg := resolve.Segment{Bridge: c.Bridge, VLAN: c.VLAN}
-	if f.clustered {
-		if err := e.readZones(ctx, &f); err != nil {
-			return ProbeResult{}, err
-		}
-	}
 	res := ProbeResult{Clustered: f.clustered, Suggested: f.suggestion(seg), Bridge: c.Bridge, VLAN: c.VLAN, Prefix: r.Prefix, Address: r.Address, AnsweredBy: []string{}, Uplink: c.Uplink}
 	var notes []string
 	if !res.Prefix.IsValid() {
@@ -1075,12 +1084,23 @@ func (e *Engine) Attach(ctx context.Context, r AttachRequest) (NetworkView, erro
 	seg := resolve.Segment{Bridge: r.Bridge, VLAN: r.VLAN}
 	others := maps.Clone(legs)
 	delete(others, e.d.Node)
+	if err := e.controllerOnly(ctx); err != nil {
+		return NetworkView{}, err
+	}
 	if why := e.unasked(slices.Collect(maps.Keys(others))); len(why) > 0 {
 		node := slices.Sorted(maps.Keys(why))[0]
 		return NetworkView{}, fmt.Errorf("%w: %s; no leg can be checked there", ErrRefused, why[node])
 	}
+	api, err := e.readNodes(ctx, slices.Collect(maps.Keys(others)), ln.clustered && r.Scope == store.ScopeCluster)
+	if err != nil {
+		return NetworkView{}, err
+	}
 	answers := e.probeNodes(ctx, seg, others)
-	if err := e.acquireWriter(ctx); err != nil {
+	acquire := e.acquireWriter
+	if len(others) > 0 {
+		acquire = e.acquireFresh
+	}
+	if err := acquire(ctx); err != nil {
 		return NetworkView{}, err
 	}
 	defer e.release()
@@ -1089,12 +1109,8 @@ func (e *Engine) Attach(ctx context.Context, r AttachRequest) (NetworkView, erro
 	if err != nil {
 		return NetworkView{}, err
 	}
-	if ln.clustered && r.Scope == store.ScopeCluster {
-		if err := e.readZones(ctx, &f); err != nil {
-			return NetworkView{}, err
-		}
-	}
-	a, err := e.attachable(ctx, f, ln, r, legs, answers)
+	f.zones = api.zones
+	a, err := e.attachable(ctx, f, ln, r, legs, answers, api)
 	if err != nil {
 		return NetworkView{}, err
 	}
@@ -1154,7 +1170,7 @@ type attachment struct {
 // what its agent answered. On a cluster a network of scope cluster is first
 // checked to be one segment on each node.
 func (e *Engine) attachable(ctx context.Context, f networkFacts, ln legNodes, r AttachRequest, legs map[string]netip.Addr,
-	answers map[string]nodeAnswer) (attachment, error) {
+	answers map[string]nodeAnswer, api apiFacts) (attachment, error) {
 	seg := resolve.Segment{Bridge: r.Bridge, VLAN: r.VLAN}
 	id := store.SegmentID(r.Bridge, r.VLAN)
 	var a attachment
@@ -1169,10 +1185,7 @@ func (e *Engine) attachable(ctx context.Context, f networkFacts, ln legNodes, r 
 	for _, node := range legOrder(store.Network{Legs: legs}, e.d.Node) {
 		g := f
 		if node != e.d.Node {
-			var err error
-			if g, err = e.onNode(ctx, f, node); err != nil {
-				return a, err
-			}
+			g = onNode(f, node, api.configs[node])
 		}
 		if r.Scope == store.ScopeCluster && ln.clustered {
 			if why := g.notOneSegment(seg); why != "" {

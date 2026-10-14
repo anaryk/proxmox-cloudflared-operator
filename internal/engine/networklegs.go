@@ -20,8 +20,13 @@ import (
 
 // probeWait is how long a probe, an attach or the setup of the managed
 // network on a cluster waits for the agents of the other nodes to answer
-// their probes.
-const probeWait = 20 * time.Second
+// their probes, and freshWait how long it waits for the cycle lock after:
+// the answers are judged while they are at most freshWait old, and the
+// whole call stays well within the minute the command waits.
+const (
+	probeWait = 10 * time.Second
+	freshWait = 10 * time.Second
+)
 
 // spanningZones are the types of the SDN zones whose vnets are one segment
 // on every node; a vnet of any other, as a Simple zone, is a bridge of each
@@ -179,35 +184,70 @@ func hostIfaces(ifaces []agentproto.ProbeIface) []resolve.HostIface {
 }
 
 // onNode are the facts of another node: Proxmox's configuration of its
-// network as the controller reads it, and no interfaces until its agent
+// network as the controller read it, and no interfaces until its agent
 // answered. Only the configuration says which bridges it has; what its
 // agent says can only take away.
-func (e *Engine) onNode(ctx context.Context, f networkFacts, node string) (networkFacts, error) {
+func onNode(f networkFacts, node string, cfg []pve.NodeIface) networkFacts {
 	g := f
-	g.node, g.remote, g.appliance, g.host = node, true, false, nil
-	cfg, err := e.d.Networks.NodeNetwork(ctx, node)
-	if err != nil {
-		return g, fmt.Errorf("reading the network of node %s: %w", node, err)
+	g.node, g.remote, g.appliance, g.host, g.config = node, true, false, nil, cfg
+	return g
+}
+
+// apiFacts is what the controller reads of the other nodes through the
+// Proxmox API, before it takes the cycle lock: the network of each node, by
+// node, and the SDN zones when the scope of a vnet is judged.
+type apiFacts struct {
+	configs map[string][]pve.NodeIface
+	zones   []pve.SDNZone
+}
+
+// readNodes reads the network of each node of nodes but this one, and the
+// zones when zones says so.
+func (e *Engine) readNodes(ctx context.Context, nodes []string, zones bool) (apiFacts, error) {
+	out := apiFacts{configs: map[string][]pve.NodeIface{}}
+	for _, node := range slices.Sorted(slices.Values(nodes)) {
+		if node == e.d.Node {
+			continue
+		}
+		cfg, err := e.d.Networks.NodeNetwork(ctx, node)
+		if err != nil {
+			return out, fmt.Errorf("reading the network of node %s: %w", node, err)
+		}
+		out.configs[node] = cfg
 	}
-	g.config = cfg
-	return g, nil
+	if zones {
+		z, err := e.d.Networks.Zones(ctx)
+		if err != nil {
+			return out, fmt.Errorf("reading the SDN zones: %w", err)
+		}
+		out.zones = z
+	}
+	return out, nil
+}
+
+// acquireFresh takes the cycle lock for a write within freshWait of the
+// probes of the agents, so that their answers are judged while fresh; a
+// cycle that holds it longer has the call refused, to be tried again.
+func (e *Engine) acquireFresh(ctx context.Context) error {
+	wait, cancel := e.timeout(ctx, freshWait)
+	defer cancel()
+	if err := e.acquire(wait); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		return fmt.Errorf("%w: the answers of the agents would be older than %s once it ends; try again", ErrBusy, freshWait)
+	}
+	if err := e.controllerOnly(ctx); err != nil {
+		e.release()
+		return err
+	}
+	return nil
 }
 
 // withAnswer is f with the interfaces the agent of its node answered.
 func (f networkFacts) withAnswer(a agentproto.ProbeAnswer) networkFacts {
 	f.host = hostIfaces(a.Interfaces)
 	return f
-}
-
-// readZones reads the SDN zones into f, which the scope of a vnet is
-// judged by.
-func (e *Engine) readZones(ctx context.Context, f *networkFacts) error {
-	zones, err := e.d.Networks.Zones(ctx)
-	if err != nil {
-		return fmt.Errorf("reading the SDN zones: %w", err)
-	}
-	f.zones = zones
-	return nil
 }
 
 // notOneSegment says why seg is not one segment on every node as Proxmox
@@ -408,9 +448,14 @@ type legPlan struct {
 	facts map[string]networkFacts
 }
 
-// planLegs reads the facts of each node, chooses the prefix and the address
-// of each leg, and probes the leg of this node, under the cycle lock.
+// planLegs reads the facts of each node, the other nodes' through the API
+// before the cycle lock, chooses the prefix and the address of each leg,
+// and probes the leg of this node, under the cycle lock.
 func (e *Engine) planLegs(ctx context.Context, ln legNodes, r ProbeRequest, nodes []string) (legPlan, error) {
+	api, err := e.readNodes(ctx, nodes, ln.clustered)
+	if err != nil {
+		return legPlan{}, err
+	}
 	if err := e.acquireAdmin(ctx); err != nil {
 		return legPlan{}, err
 	}
@@ -419,11 +464,7 @@ func (e *Engine) planLegs(ctx context.Context, ln legNodes, r ProbeRequest, node
 	if err != nil {
 		return legPlan{}, err
 	}
-	if ln.clustered {
-		if err := e.readZones(ctx, &f); err != nil {
-			return legPlan{}, err
-		}
-	}
+	f.zones = api.zones
 	seg := resolve.Segment{Bridge: r.Bridge, VLAN: r.VLAN}
 	plan := legPlan{seg: seg, facts: map[string]networkFacts{}}
 	res := ProbeResult{Bridge: r.Bridge, VLAN: r.VLAN, Prefix: r.Prefix, AnsweredBy: []string{}, Clustered: ln.clustered,
@@ -432,9 +473,7 @@ func (e *Engine) planLegs(ctx context.Context, ln legNodes, r ProbeRequest, node
 	for _, node := range nodes {
 		g := f
 		if node != e.d.Node {
-			if g, err = e.onNode(ctx, f, node); err != nil {
-				return legPlan{}, err
-			}
+			g = onNode(f, node, api.configs[node])
 			plan.facts[node] = g
 		}
 		if g.knownBridge(seg.Bridge) {
