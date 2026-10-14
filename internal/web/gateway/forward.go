@@ -83,11 +83,12 @@ type Gateway struct {
 	// judged is called when a stream has taken the result of a check.
 	judged func()
 
-	// The read of the state for the role of the node: one at a time, and
-	// not more often than roleRefreshEvery.
-	roleMu      sync.Mutex
-	roleReading bool
-	roleAskedAt time.Time
+	// The reads of the state for the role of the node, one at a time: the
+	// last one that answered and when, and when the last one failed.
+	roleMu       sync.Mutex
+	roleRead     *snapshot
+	roleReadAt   time.Time
+	roleFailedAt time.Time
 }
 
 // New returns the gateway to the daemon that listens on socket, for the

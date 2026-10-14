@@ -60,7 +60,9 @@ On a cluster the interface is served by the controller, the node that holds the 
 on any other node sends a page you open to the controller's address, `https://<address>:8643/`,
 with the path and the query kept. Sign in there as on any node: the session of Proxmox VE is
 bound to the host name you opened, so the browser does not hand it on, and an API token works
-under any name. While no controller is known, a node serves its own page. The calls of a page
+under any name. While no controller is known, a node serves its own page. The redirect follows
+the lease as the node's daemon sees it when the page is asked for, as `pco` on that node does:
+a controller that stopped is not redirected to, and one that took over is at once. The calls of a page
 are never sent on: a page left open on a node that lost the lease gets `not_controller` from
 its actions, with the controller's address
 ([API](api.md#on-a-node-that-is-not-the-controller)), and reloading it goes to the controller.

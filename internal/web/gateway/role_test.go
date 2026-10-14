@@ -28,24 +28,30 @@ func settled(t *testing.T, s *testServer, controller bool, addr string, ok bool)
 	}, 5*time.Second, 10*time.Millisecond, "the role follows the state")
 }
 
-func TestTheRoleComesFromTheLeaseOfTheStateWithoutHoldingThePage(t *testing.T) {
+func TestTheRoleIsReadWhenTheStateHeldIsNotKnownCurrent(t *testing.T) {
 	s := newTestServer(t)
 	s.daemon.serveState(leaseState("d1", "pve2"))
 
-	// Nothing is held yet: the page is served here, and the state is read
-	// in the background, once.
+	// Nothing is held yet: the state is read for the page that asks.
 	controller, addr, ok := s.gw.Role()
+	require.False(t, controller)
+	require.Equal(t, "10.9.0.2", addr)
+	require.True(t, ok)
+	require.Equal(t, 1, s.daemon.count("GET /v1/state"))
+
+	// Without a stream, what was read a moment ago is taken as current.
+	_, _, _ = s.gw.Role()
+	_, _, _ = s.gw.Role()
+	require.Equal(t, 1, s.daemon.count("GET /v1/state"), "the read is not repeated for every page")
+
+	// Later it is read again, before it is gone by.
+	s.daemon.serveState(leaseState("d2", ""))
+	s.clock.advance(roleRefreshEvery)
+	controller, addr, ok = s.gw.Role()
 	require.False(t, controller)
 	require.Empty(t, addr)
 	require.False(t, ok)
-	settled(t, s, false, "10.9.0.2", true)
-	require.Equal(t, 1, s.daemon.count("GET /v1/state"))
-
-	// Without a stream the state held cannot be known current, but a page
-	// a moment later starts no second read.
-	_, _, _ = s.gw.Role()
-	_, _, _ = s.gw.Role()
-	require.Equal(t, 1, s.daemon.count("GET /v1/state"), "the refresh is rate-limited")
+	require.Equal(t, 2, s.daemon.count("GET /v1/state"))
 }
 
 func TestTheRoleFollowsTheDigestOfTheStream(t *testing.T) {
@@ -66,6 +72,65 @@ func TestTheRoleFollowsTheDigestOfTheStream(t *testing.T) {
 	s.daemon.serveState(leaseState("d2", "pve1"))
 	conn.send <- sse("", "state", engine.StateNotice{At: t0, Digest: "d2"})
 	settled(t, s, true, "", false)
+}
+
+// The first page after the lease moved is already sent where the lease is
+// now: a stopped controller is not redirected to, and a new one at once.
+func TestTheFirstPageAfterTheLeaseMovedFollowsIt(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.serveState(leaseState("d1", "pve2"))
+	s.run()
+	conn := s.daemon.stream.next(t)
+	require.Eventually(t, func() bool { return s.gw.hub.digest() == "d1" }, 5*time.Second, 10*time.Millisecond, "the gateway took the hello")
+	_, addr, ok := s.gw.Role()
+	require.True(t, ok)
+	require.Equal(t, "10.9.0.2", addr)
+
+	stopped := leaseState("d2", "")
+	stopped.Lease.Address = netip.Addr{}
+	s.daemon.serveState(stopped)
+	conn.send <- sse("", "state", engine.StateNotice{At: t0, Digest: "d2"})
+	require.Eventually(t, func() bool { return s.gw.hub.digest() == "d2" }, 5*time.Second, 10*time.Millisecond, "the gateway took the notice")
+	controller, addr, ok := s.gw.Role()
+	require.False(t, controller)
+	require.Empty(t, addr)
+	require.False(t, ok, "no controller: the page is served here")
+
+	taken := leaseState("d3", "pve3")
+	taken.Lease.Address = netip.MustParseAddr("10.9.0.3")
+	taken.Nodes = []engine.NodeView{{Name: "pve3", Kind: "host", AgentAddress: netip.MustParseAddr("10.9.0.3")}}
+	s.daemon.serveState(taken)
+	conn.send <- sse("", "state", engine.StateNotice{At: t0, Digest: "d3"})
+	require.Eventually(t, func() bool { return s.gw.hub.digest() == "d3" }, 5*time.Second, 10*time.Millisecond, "the gateway took the notice")
+	controller, addr, ok = s.gw.Role()
+	require.False(t, controller)
+	require.Equal(t, "10.9.0.3", addr)
+	require.True(t, ok)
+}
+
+func TestADaemonThatDoesNotAnswerHoldsThePageOnlyBriefly(t *testing.T) {
+	s := newTestServer(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	s.daemon.on("GET /v1/state", func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+
+	start := time.Now()
+	controller, addr, ok := s.gw.Role()
+	require.Less(t, time.Since(start), 2*roleReadTimeout)
+	require.False(t, controller)
+	require.Empty(t, addr)
+	require.False(t, ok)
+
+	// It is not asked again for every page.
+	start = time.Now()
+	_, _, _ = s.gw.Role()
+	require.Less(t, time.Since(start), roleReadTimeout/2)
+	require.Equal(t, 1, s.daemon.count("GET /v1/state"))
 }
 
 func TestTheRoleOfASingleNodeAndOfAHolderWithoutAnAddress(t *testing.T) {
