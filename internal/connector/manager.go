@@ -58,7 +58,10 @@ type Manager struct {
 	queued map[string]pendingState // by tunnel id: the marker a start or restart was queued for
 	stuck  map[string]struct{}     // stale temporary files that could not be removed, by path
 	held   map[int]time.Time       // metrics ports another process held, and when, which are not given out for heldFor
-	now    func() time.Time
+	// started are, by tunnel id, the digests of the tokens this process
+	// last started or restarted the units with.
+	started map[string]string
+	now     func() time.Time
 }
 
 // heldFor is how long a metrics port that another process held is not given
@@ -90,6 +93,7 @@ func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) 
 		readFile:  os.ReadFile,
 		readDir:   os.ReadDir,
 		queued:    make(map[string]pendingState),
+		started:   make(map[string]string),
 		held:      make(map[int]time.Time),
 		now:       time.Now,
 	}
@@ -547,6 +551,7 @@ func (m *Manager) remove(ctx context.Context, id string) error {
 		return fmt.Errorf("stopping %s: %w", unit, err)
 	}
 	delete(m.queued, id)
+	delete(m.started, id)
 	var errs []error
 	for _, name := range []string{pendingFile(id), configFile(id), tokenFile(id)} {
 		if err := m.removeFile(name); err != nil {

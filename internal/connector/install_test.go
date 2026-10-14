@@ -2,6 +2,7 @@ package connector
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -198,6 +199,27 @@ func TestStatusNamesTheTokenByItsDigest(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, TokenDigest("token-b"), st.TokenSHA256)
 	require.Empty(t, TokenDigest(" "))
+}
+
+// The digest is of the token the unit was started with, not of the file:
+// while a restart with a new token failed, or is pending, the connector
+// still runs the old one, and says none rather than the new one.
+func TestStatusNamesTheTokenTheUnitRunsWith(t *testing.T) {
+	m, sd, _ := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	sd.fail["Restart "+UnitName(idA)] = errors.New("restart failed")
+
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-b"))
+
+	st, err := m.Status(t.Context(), idA)
+	require.NoError(t, err)
+	require.Empty(t, st.TokenSHA256, "a restart is pending: the unit may run either token")
+
+	delete(sd.fail, "Restart "+UnitName(idA))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-b"))
+	st, err = m.Status(t.Context(), idA)
+	require.NoError(t, err)
+	require.Equal(t, TokenDigest("token-b"), st.TokenSHA256)
 }
 
 func TestListNamesEveryConnectorOnTheNode(t *testing.T) {

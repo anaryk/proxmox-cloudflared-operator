@@ -97,6 +97,12 @@ func (m *Manager) apply(ctx context.Context, id string) error {
 	case !marker.present:
 		return nil
 	}
+	// The unit was started or restarted with the files as they are now.
+	if b, err := m.readFile(m.path(tokenFile(id))); err == nil {
+		m.started[id] = TokenDigest(string(b))
+	} else {
+		delete(m.started, id)
+	}
 	if marker.present {
 		m.queued[id] = marker
 	}
@@ -105,6 +111,27 @@ func (m *Manager) apply(ctx context.Context, id string) error {
 	}
 	delete(m.queued, id)
 	return nil
+}
+
+// runningDigest is the digest of the token the unit of a tunnel runs with:
+// none while a change waits for its start or restart, which the old token
+// still runs through; the one this process started it with; else, as no
+// change waits, the one of the token file, which the unit was started with
+// before this process. It takes the lock.
+func (m *Manager) runningDigest(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.statPending(id).present {
+		return ""
+	}
+	if d, ok := m.started[id]; ok {
+		return d
+	}
+	b, err := m.readFile(m.path(tokenFile(id)))
+	if err != nil {
+		return ""
+	}
+	return TokenDigest(string(b))
 }
 
 func (m *Manager) clearPending(id string) error {

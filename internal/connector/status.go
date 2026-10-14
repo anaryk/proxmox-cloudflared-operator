@@ -40,7 +40,8 @@ type Status struct {
 	MetricsPortHeld bool `json:"metricsPortHeld,omitempty"`
 	// TokenSHA256 is TokenDigest of the token the connector was last
 	// started with, so that the controller knows which secret of the tunnel
-	// a ready connector runs with; empty without a token file.
+	// a ready connector runs with; empty without a token file, and while a
+	// restart with another token is pending.
 	TokenSHA256 string `json:"tokenSHA256,omitempty"`
 }
 
@@ -89,9 +90,7 @@ func (m *Manager) Status(ctx context.Context, tunnelID string) (Status, error) {
 		return Status{}, fmt.Errorf("tunnel %s: reading env file: %w", tunnelID, err)
 	}
 	st.Install = values[installKey]
-	if b, err := m.readFile(m.path(tokenFile(tunnelID))); err == nil {
-		st.TokenSHA256 = TokenDigest(string(b))
-	}
+	st.TokenSHA256 = m.runningDigest(tunnelID)
 	addr, port, err := metricsOf(values)
 	if err != nil {
 		return st, nil
