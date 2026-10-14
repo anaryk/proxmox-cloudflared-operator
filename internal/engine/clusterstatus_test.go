@@ -18,7 +18,7 @@ import (
 func TestTheNodeViewsCarryWhatTheClusterStatusShows(t *testing.T) {
 	w := threeNodes(t)
 	old := testCA(t)
-	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, old, "pve2")}))
+	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, old)}))
 	require.NoError(t, w.store.SaveJoinToken(store.JoinRecord{
 		ID: "tok1", Node: "pve3", SecretSHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", CreatedAt: t0, Expires: t0.Add(time.Hour),
 		Uses: []store.JoinUse{{At: t0, Source: netip.MustParseAddr("10.0.0.4"), VMID: 9003}},

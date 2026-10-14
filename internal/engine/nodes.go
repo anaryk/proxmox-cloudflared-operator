@@ -34,6 +34,9 @@ var notRotated = []string{
 // whose routes may all move, until they are active.
 type nodeMemory struct {
 	admitted map[string]bool
+	// driftSaid is the last reason a rotation could not go on that was
+	// told as an event.
+	driftSaid string
 }
 
 // NodePatch is what PUT /v1/nodes/:name changes of an entry: each field set

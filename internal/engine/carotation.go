@@ -53,6 +53,8 @@ const (
 	problemRotationCA      = "node %s was forgotten as compromised: rotating the CA failed: %v; it is tried again in the next cycle"
 	problemRotationRefused = "the certificate of node %s is not under the install's new CA: its agent is refused until the node issues its certificate again, " +
 		"which it does when it reads leader.json at its next start"
+	problemRotationDrift = "node %s was forgotten as compromised, but the record of the rotation and the install's CA disagree: %s; " +
+		"no step of the rotation runs until they agree"
 )
 
 // beginRotation records the rotation of every secret a compromised node
@@ -94,11 +96,33 @@ func (c *cycleRun) rotationStep() {
 	case err != nil:
 		c.problem("reading the rotation of the secrets: %v", err)
 		return
-	case !found || !rec.FinishedAt.IsZero():
+	case !found:
+		return
+	}
+	// What the record says was done is checked against the CA the store
+	// holds and the one leader.json names, every cycle: a store restored
+	// from a copy, or a write that failed between two steps, must not let
+	// the rotation go on from a step the files do not show.
+	facts, err := c.caFacts()
+	if err != nil {
+		c.problem("%s", fmt.Sprintf(problemRotationDrift, rec.Node, err))
+		c.e.nodes.noteDrift(c, rec.Node, err.Error())
+		return
+	}
+	if why := rotationDrift(rec, facts); why != "" {
+		c.problem("%s", fmt.Sprintf(problemRotationDrift, rec.Node, why))
+		c.e.nodes.noteDrift(c, rec.Node, why)
+		return
+	}
+	if !rec.FinishedAt.IsZero() {
+		// Finished: a previous CA a crash left behind still goes.
+		if facts.previous {
+			c.dropPreviousCA()
+		}
 		return
 	}
 	for _, step := range rotationSteps {
-		if slices.Contains(rec.Done, step) {
+		if slices.Contains(rec.Done, step) && !c.undone(&rec, step) {
 			continue
 		}
 		done, wait := c.rotationStepDone(&rec, step)
@@ -108,7 +132,9 @@ func (c *cycleRun) rotationStep() {
 		if !done {
 			return
 		}
-		rec.Done = append(rec.Done, step)
+		if !slices.Contains(rec.Done, step) {
+			rec.Done = append(rec.Done, step)
+		}
 		if step == stepPrevious {
 			rec.FinishedAt = c.now
 		}
@@ -118,6 +144,98 @@ func (c *cycleRun) rotationStep() {
 		}
 		c.rotationEvent(rec, step)
 	}
+}
+
+// undone says whether a step the record holds done has to be done again,
+// as the store shows it: a tunnel of the install not rotated, which a
+// tunnel made since or a record of another time leaves, is rotated before
+// anything after it.
+func (c *cycleRun) undone(rec *store.CARotation, step string) bool {
+	if step != stepTunnels || !c.checked || c.cfHold {
+		return false
+	}
+	for _, t := range c.tunnels {
+		if t.Exists && t.ID != "" && t.CredentialID != "" && !slices.Contains(rec.Rotated, t.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+// caFactsView is the CA as the store and leader.json have it now.
+type caFactsView struct {
+	current   string // the SHA-256 of the current CA
+	previous  bool   // a previous CA is kept
+	prevSHA   string
+	rotatedAt time.Time
+	leader    string // the CA leader.json names; empty for none
+}
+
+// caFacts reads the CA of the store and the one leader.json names.
+func (c *cycleRun) caFacts() (caFactsView, error) {
+	cur, prev, rotatedAt, err := c.e.d.Store.CA()
+	if err != nil {
+		return caFactsView{}, fmt.Errorf("the install's CA cannot be read: %w", err)
+	}
+	curCert, err := parseCert(cur.CertPEM)
+	if err != nil {
+		return caFactsView{}, fmt.Errorf("the install's current CA cannot be read: %w", err)
+	}
+	f := caFactsView{current: pki.Fingerprint(curCert), rotatedAt: rotatedAt}
+	if prev != nil {
+		prevCert, err := parseCert(prev.CertPEM)
+		if err != nil {
+			return caFactsView{}, fmt.Errorf("the install's previous CA cannot be read: %w", err)
+		}
+		f.previous, f.prevSHA = true, pki.Fingerprint(prevCert)
+	}
+	rec, _, found, err := c.e.d.Store.Leader()
+	if err != nil {
+		return caFactsView{}, fmt.Errorf("leader.json cannot be read: %w", err)
+	}
+	if found {
+		f.leader = rec.CASHA256
+	}
+	return f, nil
+}
+
+// rotationDrift says how the record of a rotation and the CA of the store
+// disagree, or nothing when they agree, a step cut short included: a CA
+// made for the rotation and not yet named in leader.json or in the record
+// is what the next cycle finishes, not drift.
+func rotationDrift(rec store.CARotation, f caFactsView) string {
+	rotated := !f.rotatedAt.IsZero() && !f.rotatedAt.Before(rec.StartedAt)
+	caDone := slices.Contains(rec.Done, stepCA)
+	switch {
+	case caDone && !rotated:
+		return fmt.Sprintf("the record says the CA was rotated, but the store's CA was not since the rotation began at %s: the store was restored from an earlier copy",
+			rec.StartedAt.UTC().Format(time.RFC3339))
+	case caDone && f.leader != f.current:
+		return fmt.Sprintf("the record says the CA was rotated, but leader.json names CA %s where the store's current CA is %s", caName(f.leader), f.current)
+	case !caDone && rotated && !f.previous:
+		return "the store's CA was rotated for this rotation and its previous CA is gone, before the record says the CA step was done: the store and the record are of different times"
+	case f.leader != "" && f.leader != f.current && (!f.previous || f.leader != f.prevSHA):
+		return fmt.Sprintf("leader.json names CA %s, which is neither the store's current CA (%s) nor its previous one", f.leader, f.current)
+	}
+	return ""
+}
+
+func caName(sha string) string {
+	if sha == "" {
+		return "none"
+	}
+	return sha
+}
+
+// noteDrift tells once, per reason, that a rotation cannot go on: the event
+// is of the audit trail.
+func (m *nodeMemory) noteDrift(c *cycleRun, node, why string) {
+	if m.driftSaid == why {
+		return
+	}
+	m.driftSaid = why
+	c.events = append(c.events, Event{At: c.now, Level: levelError, Kind: kindRotation, Subject: node, Node: node, Security: true,
+		Message: fmt.Sprintf(problemRotationDrift, node, why)})
 }
 
 // rotationStepDone does what one step of a rotation does now, and says

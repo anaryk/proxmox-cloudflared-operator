@@ -19,12 +19,12 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-// certUnder is a client certificate of a host node under ca.
-func certUnder(t *testing.T, ca pki.CA, node string) string {
+// certUnder is a client certificate of the host node pve2 under ca.
+func certUnder(t *testing.T, ca pki.CA) string {
 	t.Helper()
 	key, err := pki.NewKey(rand.Reader)
 	require.NoError(t, err)
-	id := pki.Identity{Kind: pki.KindHost, InstallID: pkiInstall, Node: node}
+	id := pki.Identity{Kind: pki.KindHost, InstallID: pkiInstall, Node: "pve2"}
 	csr, err := pki.NewCSR(key, id, rand.Reader)
 	require.NoError(t, err)
 	cert, err := ca.IssueClient(csr, id, t0, rand.Reader)
@@ -71,7 +71,7 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 	w := threeNodes(t)
 	old := testCA(t)
 	seedCA(t, w.env, old)
-	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, old, "pve2")}))
+	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, old)}))
 	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("old-secret")}))
 	reissued := 0
 	w.reissue = func(context.Context) error { reissued++; return nil }
@@ -201,7 +201,7 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 	}, rotationEvents(w.env))
 
 	// Once the node issued its certificate again, nothing is refused.
-	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, next, "pve2")}))
+	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, next)}))
 	st = w.tick(time.Second)
 	require.Empty(t, st.Cluster.CARotation.Refused)
 }
@@ -229,6 +229,187 @@ func TestTheTunnelsStepNeedsACycleThatGotThroughWhole(t *testing.T) {
 			require.Empty(t, rec.Rotated)
 		})
 	}
+}
+
+// caFilesOf is a CA as the store keeps it.
+func caFilesOf(t *testing.T, ca pki.CA) store.CAFiles {
+	t.Helper()
+	certPEM, keyPEM, err := ca.PEM()
+	require.NoError(t, err)
+	return store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}
+}
+
+// compromisedWorld is a cluster whose node pve3 was just forgotten as
+// compromised, with a CA, an enrolment of pve2 under it and a Proxmox token.
+func compromisedWorld(t *testing.T) (*world, pki.CA) {
+	t.Helper()
+	w := threeNodes(t)
+	old := testCA(t)
+	seedCA(t, w.env, old)
+	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, old)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("old-secret")}))
+	w.settle()
+	*w.listed = []members.Member{{Name: "pve1", ID: 1, Online: true}, {Name: "pve2", ID: 2, Online: true}}
+	w.acts["pve3"].silent = true
+	_, err := w.eng.ForgetNode(t.Context(), "pve3", true)
+	require.NoError(t, err)
+	return w, old
+}
+
+// restart is the daemon crashing and starting again: a new engine over the
+// same store, with nothing remembered.
+func (w *world) restart(t *testing.T) {
+	t.Helper()
+	w.eng = w.newEngine()
+	w.watchHere(t)
+}
+
+func (w *world) rotationRecord(t *testing.T) store.CARotation {
+	t.Helper()
+	rec, found, err := w.store.CARotation()
+	require.NoError(t, err)
+	require.True(t, found)
+	return rec
+}
+
+// A crash between any two steps, or inside one after its files were
+// written and before the record was, changes nothing of the outcome: the
+// next controller derives where the rotation is from the store, does again
+// only what the files do not show, and never makes a second new CA.
+func TestTheRotationGoesOnFromAnyStepACrashCutShort(t *testing.T) {
+	w, old := compromisedWorld(t)
+	id := w.eng.State().Tunnels[0].ID
+	rotations := func() int {
+		n := 0
+		for _, call := range w.cf.Calls() {
+			if call == "RotateTunnelSecret acc1 "+id {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Before the first step.
+	w.restart(t)
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
+	st := w.tick(time.Second)
+	require.Equal(t, []string{stepCredentials}, st.Cluster.CARotation.Done)
+
+	// Between credentials and proxmox, and a crash after the tunnel's
+	// secret was rotated and before the record said so.
+	w.restart(t)
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+	w.acts["pve2"].edit = func(s *agentproto.Status) { s.Connectors = nil }
+	st = w.tick(time.Second)
+	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels}, st.Cluster.CARotation.Done)
+	require.Equal(t, 1, rotations())
+	rec := w.rotationRecord(t)
+	rec.Rotated = nil
+	require.NoError(t, w.store.SaveCARotation(rec))
+	w.restart(t)
+	st = w.tick(time.Second)
+	require.Equal(t, 2, rotations(), "a tunnel the record does not show rotated is rotated again")
+	require.Equal(t, []string{id}, w.rotationRecord(t).Rotated)
+	require.Equal(t, stepRollout, st.Cluster.CARotation.Next)
+
+	// Between rollout and the CA, then a crash after the CA was made and
+	// named and before the record said so.
+	w.restart(t)
+	w.acts["pve2"].edit = nil
+	st = w.settle()
+	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels, stepRollout, stepCA}, st.Cluster.CARotation.Done)
+	made, _, rotatedAt, err := w.store.CA()
+	require.NoError(t, err)
+	rec = w.rotationRecord(t)
+	rec.Done = rec.Done[:4]
+	require.NoError(t, w.store.SaveCARotation(rec))
+	w.restart(t)
+	st = w.tick(time.Second)
+	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels, stepRollout, stepCA}, st.Cluster.CARotation.Done)
+	again, prev, rotatedAgain, err := w.store.CA()
+	require.NoError(t, err)
+	require.Equal(t, made.CertPEM, again.CertPEM, "no second new CA")
+	require.Equal(t, rotatedAt, rotatedAgain)
+	require.Equal(t, old.SHA256(), fingerprintOf(t, prev.CertPEM))
+
+	// Between the CA and the end of the window, then a crash after the
+	// previous CA went and before the record was finished.
+	w.restart(t)
+	st = w.tick(caRotationWindow)
+	require.False(t, st.Cluster.CARotation.FinishedAt.IsZero())
+	rec = w.rotationRecord(t)
+	rec.Done, rec.FinishedAt = rec.Done[:5], time.Time{}
+	require.NoError(t, w.store.SaveCARotation(rec))
+	w.restart(t)
+	st = w.tick(time.Second)
+	require.Equal(t, rotationSteps, st.Cluster.CARotation.Done)
+	require.False(t, st.Cluster.CARotation.FinishedAt.IsZero())
+	_, prev, _, err = w.store.CA()
+	require.NoError(t, err)
+	require.Nil(t, prev)
+
+	// Finished, with a previous CA a crash left behind: it goes.
+	require.NoError(t, w.store.SaveCA(again, &store.CAFiles{CertPEM: caFilesOf(t, old).CertPEM, KeyPEM: caFilesOf(t, old).KeyPEM}, rotatedAt))
+	w.restart(t)
+	st = w.tick(time.Second)
+	_, prev, _, err = w.store.CA()
+	require.NoError(t, err)
+	require.Nil(t, prev)
+	require.False(t, hasProblem(st, "disagree"), st.Problems)
+}
+
+// A record that says more than the store shows, or less, stops the
+// rotation where it is, with an event, until the two agree again.
+func TestARotationWhoseRecordAndCADisagreeStops(t *testing.T) {
+	w, old := compromisedWorld(t)
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+	st := w.settle()
+	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels, stepRollout, stepCA}, st.Cluster.CARotation.Done)
+	made, _, rotatedAt, err := w.store.CA()
+	require.NoError(t, err)
+	oldFiles := caFilesOf(t, old)
+	drift := func() []string {
+		var out []string
+		for _, ev := range w.eng.Events(time.Time{}) {
+			if ev.Kind == kindRotation && ev.Level == levelError {
+				out = append(out, ev.Message)
+			}
+		}
+		return out
+	}
+
+	// The store goes back to the old CA, as a restore from a copy of before
+	// the rotation does: the record says the CA was rotated, the store not.
+	require.NoError(t, w.store.SaveCA(oldFiles, nil, time.Time{}))
+	st = w.tick(caRotationWindow)
+	require.True(t, hasProblem(st, "the record says the CA was rotated, but the store's CA was not since the rotation began"), st.Problems)
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, "no step ran")
+	require.True(t, st.Cluster.CARotation.FinishedAt.IsZero())
+	st = w.tick(time.Second)
+	require.Len(t, drift(), 1, "said once")
+	require.True(t, drift()[0] != "" && st.Problems != nil)
+
+	// leader.json names a CA the store does not hold.
+	require.NoError(t, w.store.SaveCA(made, &oldFiles, rotatedAt))
+	leader, _, _, err := w.store.Leader()
+	require.NoError(t, err)
+	named := leader.CASHA256
+	leader.CASHA256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	require.NoError(t, w.store.SaveLeader(leader))
+	st = w.tick(time.Second)
+	require.True(t, hasProblem(st, "leader.json names CA 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"), st.Problems)
+	require.Len(t, drift(), 2)
+
+	// Once they agree again the rotation goes on from where the files show.
+	leader.CASHA256 = named
+	require.NoError(t, w.store.SaveLeader(leader))
+	st = w.tick(time.Second)
+	require.False(t, hasProblem(st, "disagree"), st.Problems)
+	require.False(t, st.Cluster.CARotation.FinishedAt.IsZero())
+	require.Len(t, drift(), 2)
 }
 
 // A node forgotten while a rotation runs on a store the previous build
