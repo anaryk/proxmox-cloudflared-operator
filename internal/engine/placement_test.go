@@ -191,12 +191,39 @@ func TestThePlacementMemoryIsPrunedAgainstTheWinners(t *testing.T) {
 	w.settle()
 	w.eng.place.addedAt = map[string]time.Time{"qemu/101": t0, "qemu/999": t0}
 	w.eng.place.unresolvedSince = map[string]time.Time{"old.example.com": t0}
+	w.eng.place.waiting = map[string]time.Time{"qemu/999": t0}
+	w.eng.place.reaching = map[string]time.Time{"qemu/999": t0}
+	w.eng.place.diverged = map[string]time.Time{"qemu/999": t0}
 
 	w.tick(time.Second)
 
 	require.Contains(t, w.eng.place.addedAt, "qemu/101", "an owner of a winner keeps its timer")
 	require.NotContains(t, w.eng.place.addedAt, "qemu/999")
 	require.NotContains(t, w.eng.place.unresolvedSince, "old.example.com")
+	require.NotContains(t, w.eng.place.waiting, "qemu/999")
+	require.NotContains(t, w.eng.place.reaching, "qemu/999")
+	require.NotContains(t, w.eng.place.diverged, "qemu/999")
+}
+
+// A route that waited long for the replicas to report it, was released and
+// comes back waits for them again: the time it waited before does not let
+// it be placed at once, which would store it shared without a word from
+// any replica.
+func TestARouteThatComesBackWaitsForTheReplicasAgain(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.eng.place.waiting = map[string]time.Time{"qemu/104": w.clock.now().Add(-time.Hour)}
+	w.tick(time.Second)
+	snap := w.inv.snapshot()
+	snap.Guests = append(snap.Guests, carded(guest(104, "new", "new.example.com -> :8080"), "pve3", "bc:24:11:00:04:01"))
+	w.inv.set(snap)
+	w.acts["pve2"].silent = true
+
+	st := w.tick(time.Second)
+	require.Contains(t, route(st, "new.example.com").Reason, "waiting for pve2")
+	placements, err := w.store.Placements()
+	require.NoError(t, err)
+	require.NotContains(t, placements, "new.example.com")
 }
 
 // Three nodes, a guest on each: every route is shared once every replica
@@ -753,6 +780,80 @@ func TestAPinnedGuestFollowsItsNode(t *testing.T) {
 		w.tick(5 * time.Second)
 	}
 	st = w.tick(time.Second)
+	require.Equal(t, "pve3", route(st, "db.example.com").Placement.Node, fmt.Sprint(w.placementEvents()))
+	require.Equal(t, pinned3, w.recordTunnel(t, "db.example.com"))
+}
+
+// A route stored shared that no replica can serve, as one placed before
+// its node was admitted, moves to its guest's node all the same once
+// coverage is lost: the rule of the tunnel it goes to is judged by that
+// tunnel's node, not by the replicas of the shared tunnel, so the move
+// gets its rule, rolls out and switches the record.
+func TestARouteTheSharedTunnelNeverServedMovesToItsNode(t *testing.T) {
+	w := threeNodes(t)
+	pinned3, _ := planner.PinnedTunnelName(testInstall, "pve3")
+	w.acts["pve2"].noWatch = true
+	w.acts["pve2"].fail = map[string]string{"app.example.com": "not reached"}
+	w.res.setUnreachable("app.example.com", "not reached")
+	require.NoError(t, w.store.SavePlacements(map[string]store.Placement{
+		"app.example.com": {Hostname: "app.example.com", Kind: store.PlacementShared, Tunnel: tunnelName, ResolvingNode: "pve3", Since: w.clock.now()},
+	}))
+
+	var st State
+	for range 60 {
+		st = w.tick(5 * time.Second)
+	}
+	require.Equal(t, pinned3, w.recordTunnel(t, "app.example.com"), fmt.Sprint(w.placementEvents()))
+	require.Equal(t, []string{pinned3}, w.servedIn(t, "app.example.com"))
+	require.Equal(t, planner.StateActive, route(st, "app.example.com").State, route(st, "app.example.com").Reason)
+}
+
+// The move of an owner that is released is dropped: nothing of it is left
+// to move, and a route that comes back with its name starts afresh rather
+// than in a move of its earlier self.
+func TestTheMoveOfAReleasedOwnerIsDropped(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	pinned3, _ := planner.PinnedTunnelName(testInstall, "pve3")
+	require.NoError(t, w.store.SaveMove(store.Move{Owner: "qemu/103", From: tunnelName, To: pinned3, Step: store.MoveRulesAdded, At: w.clock.now()}))
+	snap := w.inv.snapshot()
+	snap.Guests = snap.Guests[:2]
+	w.inv.set(snap)
+
+	for range 40 {
+		w.tick(5 * time.Second)
+	}
+	_, ok := w.moveOf(t, "qemu/103")
+	require.False(t, ok, "the move of a released owner is gone")
+}
+
+// A pinned guest that moves to another node while coverage is lost is
+// resolved on its new node at once: that node is the one that resolves it,
+// whatever tunnel the route is in. The route follows it by a move, and is
+// served where its record points at every step.
+func TestAPinnedGuestFollowsItsNodeWithoutCoverage(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].noWatch = true
+	pinned2, _ := planner.PinnedTunnelName(testInstall, "pve2")
+	pinned3, _ := planner.PinnedTunnelName(testInstall, "pve3")
+	for range 100 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+	require.Equal(t, pinned2, w.recordTunnel(t, "db.example.com"))
+
+	snap := w.inv.snapshot()
+	snap.Guests[1].Node = "pve3"
+	w.inv.set(snap)
+	w.acts["pve2"].fail = map[string]string{"db.example.com": "gone"}
+	w.tick(5 * time.Second)
+	require.True(t, w.targetOf(t, "pve3", "db.example.com").Resolve, "its new node resolves it")
+	for range 30 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+	st := w.tick(time.Second)
 	require.Equal(t, "pve3", route(st, "db.example.com").Placement.Node, fmt.Sprint(w.placementEvents()))
 	require.Equal(t, pinned3, w.recordTunnel(t, "db.example.com"))
 }

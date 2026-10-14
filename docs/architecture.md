@@ -722,11 +722,16 @@ flowchart LR
 
 A route moves between the tunnels as a hostname moves between guests: its rule goes into the
 tunnel it moves to, its DNS record is switched once that tunnel's connectors run the rule, and
-the old rule goes five minutes later. A shared route is pinned once one replica has failed it
-for 30 seconds while another reaches it, and goes back once every replica has reached it for
-ten minutes; a route that every replica fails is `unreachable`, and does not move. A guest that
-migrates takes its pinned routes along to its new node. Placements and moves under way are in
-the store, so a new controller moves nothing at a takeover.
+the old rule goes five minutes later. Each tunnel of a move serves the route as its own nodes
+find the target: the tunnel moved to gets the rule its node verified even while the replicas
+of the tunnel left cannot, and the tunnel left answers 503 for a target its nodes no longer
+reach rather than losing the hostname before the record is switched. A guest's route is
+always resolved on the node the guest runs on, whichever tunnel it is in. A shared route is
+pinned once one replica has failed it for 30 seconds while another reaches it, and goes back
+once every replica has reached it for ten minutes; a route that every replica fails is
+`unreachable`, and does not move. A guest that migrates takes its pinned routes along to its
+new node. Placements and moves under way are in the store, so a new controller moves nothing at
+a takeover; the move of an owner that holds no hostname any more is dropped.
 
 ### Proofs across nodes
 

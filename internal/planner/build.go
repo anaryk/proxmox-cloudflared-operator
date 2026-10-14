@@ -158,6 +158,13 @@ type BuildInput struct {
 	// the same rule without a record pointing at it: the tunnel a move
 	// takes the hostname from or to, until the move is done.
 	Also map[string]PlacementInput
+	// AlsoTargets say, by hostname, what the second tunnel of a move
+	// serves, as its own nodes judge the target: a rule while it has an
+	// address to serve, which stands in for the block the hostname has
+	// elsewhere when the tunnel its record points at cannot serve it yet,
+	// and a block otherwise. A hostname absent here has the rule of the
+	// tunnel its record points at in the second tunnel too.
+	AlsoTargets map[string]ResolvedTarget
 }
 
 // Plan is the desired Cloudflare state.
@@ -192,6 +199,7 @@ func Build(in BuildInput) Plan {
 		zones:   newZoneIndex(in.Zones),
 		rules:   make(map[tunnelKey][]IngressRule),
 		blocks:  make(map[string][]IngressRule),
+		open:    make(map[tunnelKey]map[string]bool),
 		live:    make(map[tunnelKey]bool),
 		records: []RecordPlan{},
 		routes:  []RouteStatus{},
@@ -219,9 +227,10 @@ func Build(in BuildInput) Plan {
 type builder struct {
 	in      BuildInput
 	zones   zoneIndex
-	rules   map[tunnelKey][]IngressRule // the rules that serve a hostname, by tunnel
-	blocks  map[string][]IngressRule    // the 503 rules, by account: every tunnel of the account carries them
-	live    map[tunnelKey]bool          // tunnels that serve a rule or have a record
+	rules   map[tunnelKey][]IngressRule   // the rules that serve a hostname, by tunnel
+	blocks  map[string][]IngressRule      // the 503 rules, by account: every tunnel of the account carries them
+	open    map[tunnelKey]map[string]bool // hostnames the account blocks that the second tunnel of a move serves
+	live    map[tunnelKey]bool            // tunnels that serve a rule, have a record or are one of a move
 	records []RecordPlan
 	routes  []RouteStatus
 }
@@ -251,6 +260,16 @@ func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 	target := b.in.Targets[rt.Hostname]
 	st.Level = target.Level
 	tunnel, placeErr := b.tunnelOf(zone, rt.Hostname)
+	also, moving := b.alsoIn(zone, rt.Hostname)
+	moving = moving && (placeErr != nil || also != tunnel)
+	if moving {
+		// A record may point at either tunnel of a move until it is over:
+		// neither is emptied meanwhile.
+		b.live[also] = true
+		if placeErr == nil {
+			b.live[tunnel] = true
+		}
+	}
 	switch {
 	case target.Owner != "" && target.Owner != rt.Owner():
 		// Everything resolution knows is about another owner.
@@ -272,9 +291,12 @@ func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 		}
 		b.rules[tunnel] = append(b.rules[tunnel], rule)
 		b.live[tunnel] = true
-		if also, ok := b.alsoIn(zone, rt.Hostname); ok && also != tunnel {
-			b.rules[also] = append(b.rules[also], rule)
-			b.live[also] = true
+		if moving {
+			if r, ok := b.alsoRule(rt, &rule); ok {
+				b.rules[also] = append(b.rules[also], r)
+			} else {
+				b.rules[also] = append(b.rules[also], IngressRule{Hostname: rt.Hostname, Service: BlockedService})
+			}
 		}
 		b.addRecord(zone, rt.Hostname, tunnel)
 		st.Service = rule.Service
@@ -285,6 +307,34 @@ func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 		return
 	}
 	b.block(zone.AccountID, rt.Hostname)
+	if !moving {
+		return
+	}
+	if r, ok := b.alsoRule(rt, nil); ok {
+		b.rules[also] = append(b.rules[also], r)
+		if b.open[also] == nil {
+			b.open[also] = map[string]bool{}
+		}
+		b.open[also][rt.Hostname] = true
+	}
+}
+
+// alsoRule is the rule the second tunnel of a move serves for a route: by
+// the target its own nodes judged, when the input has one, and otherwise
+// the rule of the tunnel the record points at, if any.
+func (b *builder) alsoRule(rt model.Route, rule *IngressRule) (IngressRule, bool) {
+	t, own := b.in.AlsoTargets[rt.Hostname]
+	if !own {
+		if rule == nil {
+			return IngressRule{}, false
+		}
+		return *rule, true
+	}
+	if t.Owner != "" && t.Owner != rt.Owner() || t.Rejected || t.Withdrawn || !t.Addr.IsValid() {
+		return IngressRule{}, false
+	}
+	r, err := newRule(rt, t)
+	return r, err == nil
 }
 
 // blockHeld blocks every claimed hostname that has no winner, so that no other

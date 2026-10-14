@@ -229,7 +229,8 @@ func (w *world) targetKeys(t *testing.T, node string) []string {
 
 // A node that leaves the placement of routes has their targets leave its
 // snapshot in the same cycle, and with them its egress set: drained, it
-// keeps only what is pinned to it and loses the shared token; while
+// keeps only what is pinned to it and the routes of its own guests, which
+// no other node resolves, and loses the shared token; while
 // coverage is lost, a replica keeps only the routes of its own guests; a
 // node that is down, unknown, removed or contested is served nothing more.
 func TestANodeThatLeavesAPlacementLosesItsTargets(t *testing.T) {
@@ -241,7 +242,8 @@ func TestANodeThatLeavesAPlacementLosesItsTargets(t *testing.T) {
 		require.NoError(t, w.store.SaveNode(n))
 		w.tick(time.Second)
 		require.Equal(t, store.NodeDraining, entryOf(t, w.env, "pve3").State)
-		require.Empty(t, w.targetKeys(t, "pve3"))
+		require.Equal(t, []string{"app.example.com"}, w.targetKeys(t, "pve3"), "its own guest's route alone")
+		require.True(t, w.targetOf(t, "pve3", "app.example.com").Resolve)
 		shared, ok := w.tunnelIn(t, "pve3", tunnelName)
 		require.False(t, ok && shared.Run)
 		require.Empty(t, shared.Token.Reveal())

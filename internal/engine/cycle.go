@@ -566,7 +566,7 @@ func (c *cycleRun) build() {
 		Refused:   slices.Concat(c.refused, c.unzoned),
 	}
 	if p := c.placing; p != nil {
-		in.Placements, in.Also = p.inputs, p.also
+		in.Placements, in.Also, in.AlsoTargets = p.inputs, p.also, p.alsoTargets
 		maps.Copy(in.Targets, p.targets)
 	}
 	c.plan = planner.Build(in)

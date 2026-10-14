@@ -257,6 +257,68 @@ func tunnelNames(plan Plan) []string {
 	return out
 }
 
+// Each tunnel of a move serves what its own nodes judge of the target: the
+// tunnel moved to gets its rule while the one the record points at cannot
+// serve it yet, and answers for the hostname instead of the block every
+// other tunnel has; a second tunnel whose nodes cannot serve it blocks it,
+// and both tunnels of a move stay in the plan, so that neither is emptied
+// while a record may point at it.
+func TestBuildServesEachTunnelOfAMoveByItsOwnTarget(t *testing.T) {
+	plan := Build(BuildInput{
+		Winners: []model.Route{
+			winner(t, "app.shop.cz", "qemu/1"),
+			winner(t, "db.shop.cz", "qemu/2"),
+		},
+		Targets: map[string]ResolvedTarget{
+			"app.shop.cz": {Reason: "waiting for pve1 to verify it"},
+			"db.shop.cz":  verified(originAddr),
+		},
+		AlsoTargets: map[string]ResolvedTarget{
+			"app.shop.cz": verified(originAddr),
+			"db.shop.cz":  {Reason: "waiting for pve1 to verify it"},
+		},
+		Placements: map[string]PlacementInput{"db.shop.cz": pinned("pve3")},
+		Also:       map[string]PlacementInput{"app.shop.cz": pinned("pve3"), "db.shop.cz": {Kind: PlacementShared}},
+		Zones:      []Zone{shopZone},
+		Writer:     buildWriter,
+	})
+
+	require.Equal(t, []TunnelPlan{
+		{
+			AccountID: "acc1", CredentialID: "cred1", Name: tunnelName,
+			Rules: withSentinel(blockRule("app.shop.cz"), blockRule("db.shop.cz")),
+		},
+		{
+			AccountID: "acc1", CredentialID: "cred1", Name: tunnelName + "-pve3", Kind: PlacementPinned, Node: "pve3",
+			Rules: withSentinel(httpRule("app.shop.cz", originAddr), httpRule("db.shop.cz", originAddr)),
+		},
+	}, plan.Tunnels)
+	require.Equal(t, []RecordPlan{pinnedRecordFor(shopZone, "db.shop.cz", "pve3")}, plan.Records)
+	require.Equal(t, StateUnreachable, plan.Routes[0].State)
+	require.Equal(t, "waiting for pve1 to verify it", plan.Routes[0].Reason)
+	require.Equal(t, StateActive, plan.Routes[1].State)
+}
+
+// Neither tunnel of a move is emptied while the route is served in none:
+// the record may point at either, and each answers with the block.
+func TestBuildKeepsBothTunnelsOfAMoveThatServesNothing(t *testing.T) {
+	plan := Build(BuildInput{
+		Winners:     []model.Route{winner(t, "app.shop.cz", "qemu/1")},
+		Targets:     map[string]ResolvedTarget{"app.shop.cz": {Reason: "waiting for pve2 to verify it"}},
+		AlsoTargets: map[string]ResolvedTarget{"app.shop.cz": {Reason: "waiting for pve3 to verify it"}},
+		Placements:  map[string]PlacementInput{"app.shop.cz": pinned("pve2")},
+		Also:        map[string]PlacementInput{"app.shop.cz": pinned("pve3")},
+		Zones:       []Zone{shopZone},
+		Writer:      buildWriter,
+	})
+
+	require.Equal(t, []string{tunnelName + "-pve2", tunnelName + "-pve3"}, tunnelNames(plan))
+	for _, tp := range plan.Tunnels {
+		require.Equal(t, withSentinel(blockRule("app.shop.cz")), tp.Rules, tp.Name)
+	}
+	require.Empty(t, plan.Records)
+}
+
 // A hostname that moves between tunnels has its rule in the tunnel it moves
 // from and in the one it moves to, while its record points at its
 // placement. A route that is not served has no rule to keep; its block is in

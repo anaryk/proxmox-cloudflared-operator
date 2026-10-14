@@ -77,7 +77,8 @@ func (b *builder) alsoIn(zone Zone, host string) (tunnelKey, bool) {
 func (b *builder) tunnels() []TunnelPlan {
 	out := []TunnelPlan{}
 	for _, key := range slices.SortedFunc(maps.Keys(b.live), compareTunnelKeys) {
-		rules := slices.Concat(b.rules[key], b.blocks[key.account])
+		blocks := slices.DeleteFunc(slices.Clone(b.blocks[key.account]), func(r IngressRule) bool { return b.open[key][r.Hostname] })
+		rules := slices.Concat(b.rules[key], blocks)
 		slices.SortStableFunc(rules, func(x, y IngressRule) int { return hostname.Compare(x.Hostname, y.Hostname) })
 		rules = append(rules, SentinelRule(b.in.Writer), CatchAllRule())
 		tp := TunnelPlan{

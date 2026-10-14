@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
@@ -46,6 +47,7 @@ func (c *cycleRun) startMoves() {
 		return
 	}
 	c.moves = moves
+	c.dropReleased()
 	mem := &c.e.place
 	if mem.movesRead {
 		return
@@ -63,6 +65,37 @@ func (c *cycleRun) startMoves() {
 		delete(c.moves, owner)
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
 			Message: fmt.Sprintf("the move of %s from %s to %s is given up: its rules were not rolled out when this controller took over", owner, m.From, m.To)})
+	}
+}
+
+// dropReleased deletes the moves of owners that hold no hostname any more,
+// once the claims were settled: their routes are served nowhere, and a
+// route that comes back under the name of one starts afresh instead of in
+// the move of its earlier self, which waits for rules nothing plans.
+func (c *cycleRun) dropReleased() {
+	if !c.settled {
+		return
+	}
+	holds := map[string]bool{}
+	for _, rt := range c.claims.Winners {
+		holds[rt.Owner()] = true
+	}
+	for _, cl := range c.claims.Claims {
+		holds[cl.Owner] = true
+	}
+	for _, owner := range slices.Sorted(maps.Keys(c.moves)) {
+		if holds[owner] {
+			continue
+		}
+		m := c.moves[owner]
+		if err := c.e.d.Store.DeleteMove(owner); err != nil {
+			c.problem("dropping the move of %s from %s to %s: %v", owner, m.From, m.To, err)
+			continue
+		}
+		delete(c.moves, owner)
+		delete(c.e.place.addedAt, owner)
+		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
+			Message: fmt.Sprintf("the move of %s from %s to %s is dropped: %s holds no hostname any more", owner, m.From, m.To, owner)})
 	}
 }
 
@@ -240,6 +273,15 @@ func (c *cycleRun) rolledOutTo(m store.Move) bool {
 	}
 	if len(nodes) == 0 || len(routes) == 0 {
 		return false
+	}
+	to := c.placedOf(m.To, "")
+	for _, rt := range routes {
+		// A configuration confirmed before the rules were added confirms
+		// nothing of them.
+		dialed, ok := c.baseTarget(rt).Dialed()
+		if !ok || !c.sendsTo(rt, to, egress.Target{Addr: dialed, Port: rt.Target.Port}) {
+			return false
+		}
 	}
 	if r, ok := c.e.rolledOut[t.ID]; ok && r.Version >= t.Version {
 		return true

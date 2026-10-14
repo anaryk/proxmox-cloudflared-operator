@@ -80,14 +80,17 @@ func (p placed) String() string {
 
 // placement is what the cycle decided of the placement of the routes, by
 // hostname: their placement for the planner, the second tunnel of a move,
-// the target the planner serves, and the replicas the state shows.
+// the target the planner serves in the tunnel the record points at and in
+// the second one, each as the nodes of that tunnel judge it, and the
+// replicas the state shows.
 type placement struct {
-	inputs   map[string]planner.PlacementInput
-	also     map[string]planner.PlacementInput
-	targets  map[string]planner.ResolvedTarget
-	views    map[string]*PlacementView
-	replicas map[string][]ReplicaView
-	decided  map[string]decidedPlace // by owner
+	inputs      map[string]planner.PlacementInput
+	also        map[string]planner.PlacementInput
+	targets     map[string]planner.ResolvedTarget
+	alsoTargets map[string]planner.ResolvedTarget
+	views       map[string]*PlacementView
+	replicas    map[string][]ReplicaView
+	decided     map[string]decidedPlace // by owner
 }
 
 // decidedPlace is where an owner's routes went: the tunnel their records
@@ -98,7 +101,9 @@ type decidedPlace struct {
 }
 
 // listsFor says whether the snapshot of node lists the target of a route:
-// a node of its placement runs it; a replica of the shared tunnel, and a
+// the node that resolves it always has it, wherever the route is placed,
+// as a guest that moved to it is found there only; a node of its placement
+// runs it; a replica of the shared tunnel, and a
 // node joining to become one, verifies a shared route, one not placed yet,
 // and a pinned one that may be shared again, which takes every replica to
 // have it in its set first. Any other node does not have it: a node that
@@ -115,6 +120,9 @@ func (c *cycleRun) listsFor(node string, rt model.Route) bool {
 			return p.node == node
 		}
 		return replica
+	}
+	if c.resolverOf(rt) == node {
+		return true
 	}
 	d, ok := decided[rt.Owner()]
 	if c.cover.lost() && rt.Guest != nil && c.hostingNode([]model.Route{rt}) != node {
@@ -206,7 +214,7 @@ func (c *cycleRun) place() {
 	}
 	p := &placement{
 		inputs: map[string]planner.PlacementInput{}, also: map[string]planner.PlacementInput{},
-		targets: map[string]planner.ResolvedTarget{}, views: map[string]*PlacementView{},
+		targets: map[string]planner.ResolvedTarget{}, alsoTargets: map[string]planner.ResolvedTarget{}, views: map[string]*PlacementView{},
 		replicas: map[string][]ReplicaView{}, decided: map[string]decidedPlace{},
 	}
 	c.placing = p
@@ -241,7 +249,13 @@ func (c *cycleRun) place() {
 		for _, rt := range routes {
 			p.inputs[rt.Hostname] = record.input()
 			if also != nil {
+				// The tunnel moved to gets its rule before its record
+				// points there, which the replicas of the tunnel left may
+				// not be able to judge, as the guest left their node or
+				// coverage is lost; the tunnel left keeps what it serves
+				// by what its own nodes say.
 				p.also[rt.Hostname] = also.input()
+				p.alsoTargets[rt.Hostname] = c.servedTarget(rt, *also, replicas)
 			}
 			p.targets[rt.Hostname] = c.servedTarget(rt, record, replicas)
 			p.views[rt.Hostname] = c.placementView(record)
@@ -255,7 +269,12 @@ func (c *cycleRun) place() {
 	for _, rt := range c.claims.Winners {
 		hosts[rt.Hostname] = true
 	}
-	maps.DeleteFunc(mem.addedAt, func(owner string, _ time.Time) bool { _, ok := owners[owner]; return !ok })
+	// One that waited for long would otherwise be placed at once, without
+	// a word from the nodes, when it comes back.
+	gone := func(owner string, _ time.Time) bool { _, ok := owners[owner]; return !ok }
+	for _, m := range []map[string]time.Time{mem.addedAt, mem.waiting, mem.reaching, mem.diverged} {
+		maps.DeleteFunc(m, gone)
+	}
 	maps.DeleteFunc(mem.unresolvedSince, func(host string, _ time.Time) bool { return !hosts[host] })
 }
 
