@@ -153,7 +153,7 @@ func (c *applianceCluster) listen(ctx context.Context, at netip.AddrPort, creds 
 	}
 	srv := clusterapi.New(applianceController{c.remote, c.joins}, chk, creds.ServerTLS(), chk.Pool, c.log)
 	srv.AcceptJoins(clusterapi.Joins{
-		InstallID: c.install, Tokens: c.st, Misused: c.joins.misused,
+		InstallID: c.install, Tokens: c.st, Misused: c.joins.misused, Repeat: c.joins.repeat,
 		CASHA256: func() string {
 			ca, err := c.joins.ca()
 			if err != nil {

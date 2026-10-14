@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
@@ -58,6 +59,7 @@ func (f *fakeJoinPVE) LXCInterfaces(context.Context, string, int) ([]pve.GuestIf
 
 type joinTest struct {
 	t     *testing.T
+	key   *ecdsa.PrivateKey // of the agent that joins
 	st    *store.Store
 	ca    pki.CA
 	px    *fakeJoinPVE
@@ -104,6 +106,13 @@ func (jt *joinTest) csr() []byte {
 	jt.t.Helper()
 	key, err := pki.NewKey(rand.Reader)
 	require.NoError(jt.t, err)
+	jt.key = key
+	return jt.csrOf(key)
+}
+
+// csrOf is a certificate request of key for the container that joins.
+func (jt *joinTest) csrOf(key *ecdsa.PrivateKey) []byte {
+	jt.t.Helper()
 	csr, err := pki.NewCSR(key, pki.Identity{Kind: pki.KindAppliance, InstallID: joinInstall, Node: "pve2", VMID: agentVMID}, rand.Reader)
 	require.NoError(jt.t, err)
 	return csr
@@ -268,4 +277,71 @@ func TestAnEnrolledAgentRenewsAndTheOldCertificateIsNoLongerNamed(t *testing.T) 
 	require.NoError(t, jt.st.SaveNode(n))
 	_, err = jt.j.Renew(context.Background(), "pve2", jt.csr())
 	require.ErrorContains(t, err, "node pve2 is removed")
+}
+
+func (jt *joinTest) facts() clusterapi.JoinFacts {
+	return clusterapi.JoinFacts{Node: "pve2", VMID: agentVMID, MACs: []string{agentMAC}, Build: "1.2.3", Protocol: agentproto.Range{Min: 1, Max: 1}}
+}
+
+func (jt *joinTest) securityEvents() []store.SecurityEvent {
+	jt.t.Helper()
+	events, err := jt.st.SecurityEvents()
+	require.NoError(jt.t, err)
+	return events
+}
+
+// A join whose answer was lost comes again with the same container, source
+// and key while the node is joining: it gets the certificate issued then,
+// and nothing is contested. Anything else is no repeat.
+func TestAJoinWhoseAnswerWasLostGetsItsCertificateAgain(t *testing.T) {
+	jt := newJoinTest(t)
+	first, err := jt.join(agentAddr)
+	require.NoError(t, err)
+	key := jt.key
+
+	rec := jt.use(agentAddr)
+	again, ok := jt.j.repeat(context.Background(), rec, jt.csrOf(key), agentAddr, jt.facts())
+
+	require.True(t, ok)
+	require.Equal(t, first, again)
+	require.Equal(t, store.NodeJoining, jt.agentEntry().State)
+	require.Empty(t, jt.securityEvents())
+
+	other, err := pki.NewKey(rand.Reader)
+	require.NoError(t, err)
+	_, ok = jt.j.repeat(context.Background(), rec, jt.csrOf(other), agentAddr, jt.facts())
+	require.False(t, ok, "another key")
+	_, ok = jt.j.repeat(context.Background(), jt.use(netip.MustParseAddr("10.92.0.66")), jt.csrOf(key), netip.MustParseAddr("10.92.0.66"), jt.facts())
+	require.False(t, ok, "another source")
+	n := jt.agentEntry()
+	n.State = store.NodeActive
+	require.NoError(t, jt.st.SaveNode(n))
+	_, ok = jt.j.repeat(context.Background(), jt.use(agentAddr), jt.csrOf(key), agentAddr, jt.facts())
+	require.False(t, ok, "a node admitted since")
+}
+
+// A used token that comes again once the node is admitted, and a token used
+// for a node the install serves already, are security events; the node is
+// left as it is.
+func TestATokenAgainstANodeServedIsASecurityEventAlone(t *testing.T) {
+	jt := newJoinTest(t)
+	_, err := jt.join(agentAddr)
+	require.NoError(t, err)
+	n := jt.agentEntry()
+	n.State = store.NodeActive
+	require.NoError(t, jt.st.SaveNode(n))
+
+	jt.j.misused(context.Background(), jt.use(netip.MustParseAddr("10.92.0.66")))
+
+	require.Equal(t, store.NodeActive, jt.agentEntry().State)
+	events := jt.securityEvents()
+	require.Len(t, events, 1)
+	require.Contains(t, events[0].Message, "came again from 10.92.0.66 as container 9301")
+
+	_, err = jt.join(netip.MustParseAddr("10.92.0.67"))
+	require.ErrorContains(t, err, "node pve2 is active in the install already")
+	require.Equal(t, store.NodeActive, jt.agentEntry().State)
+	events = jt.securityEvents()
+	require.Len(t, events, 2)
+	require.Contains(t, events[1].Message, "from 10.92.0.67 as container 9301")
 }

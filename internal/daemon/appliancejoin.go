@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -30,6 +32,10 @@ type joinProxmox interface {
 	GuestConfig(ctx context.Context, node string, ref model.GuestRef) (pve.GuestConfig, error)
 	LXCInterfaces(ctx context.Context, node string, vmid int) ([]pve.GuestIface, error)
 }
+
+// attestTimeout bounds the reads of the Proxmox API a join makes, well
+// within the 30 seconds an agent waits for its answer.
+const attestTimeout = 10 * time.Second
 
 // errContested is a join whose container does not hold together with what it
 // says of itself: the node is held contested.
@@ -68,9 +74,13 @@ func (j *applianceJoins) Join(ctx context.Context, tok pki.JoinToken, csr []byte
 		return nil, err
 	}
 	if found && entry.State != store.NodeRemoved {
+		j.security(facts.Node, fmt.Sprintf("a join token for node %s, which is %s in the install already, was used from %s as container %d; "+
+			"the node is left as it is", facts.Node, cmpState(entry.State), src, facts.VMID))
 		return nil, fmt.Errorf("node %s is %s in the install already: one agent serves a node", facts.Node, cmpState(entry.State))
 	}
-	if err := j.attest(ctx, src, facts); err != nil {
+	actx, cancel := context.WithTimeout(ctx, attestTimeout)
+	defer cancel()
+	if err := j.attest(actx, src, facts); err != nil {
 		if errors.Is(err, errContested) {
 			j.contest(tok, facts.Node, rev, found, err.Error())
 		}
@@ -96,6 +106,12 @@ func (j *applianceJoins) Join(ctx context.Context, tok pki.JoinToken, csr []byte
 	if found {
 		next.Index = entry.Index
 	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	// The certificate is kept, so that a join whose answer was lost gets it
+	// again.
+	if err := j.st.SaveEnrolment(facts.Node, store.Enrolment{CertPEM: string(certPEM)}); err != nil {
+		return nil, fmt.Errorf("keeping the certificate of node %s: %w", facts.Node, err)
+	}
 	if err := j.save(next, rev, found); err != nil {
 		return nil, err
 	}
@@ -104,7 +120,49 @@ func (j *applianceJoins) Join(ctx context.Context, tok pki.JoinToken, csr []byte
 		facts.VMID, facts.Node, src, next.CertSHA256, facts.Node)
 	j.log.Info().Str("node", facts.Node).Int("vmid", facts.VMID).Msg(msg)
 	j.tell(facts.Node, msg)
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), nil
+	return certPEM, nil
+}
+
+// repeat answers a use of a token past the first that repeats the join its
+// first use made, as an agent whose answer was lost sends it again: the same
+// container from the same source, for the key of the certificate issued
+// then, while the node is still joining. It returns that certificate.
+func (j *applianceJoins) repeat(_ context.Context, rec store.JoinRecord, csrDER []byte, src netip.Addr, facts clusterapi.JoinFacts) ([]byte, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(rec.Uses) < 2 {
+		return nil, false
+	}
+	first, last := rec.Uses[0], rec.Uses[len(rec.Uses)-1]
+	if first.VMID != facts.VMID || last.VMID != facts.VMID || first.Source != src.Unmap() || last.Source != first.Source {
+		return nil, false
+	}
+	_, entry, found, err := j.entry(rec.Node)
+	if err != nil || !found || entry.State != store.NodeJoining || entry.VMID != facts.VMID || entry.Name != facts.Node {
+		return nil, false
+	}
+	en, found, err := j.st.Enrolment(rec.Node)
+	if err != nil || !found || en.SHA256 != entry.CertSHA256 {
+		return nil, false
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		return nil, false
+	}
+	block, _ := pem.Decode([]byte(en.CertPEM))
+	if block == nil {
+		return nil, false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, false
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !pub.Equal(csr.PublicKey) {
+		return nil, false
+	}
+	j.log.Info().Str("node", rec.Node).Int("vmid", facts.VMID).Msg("the join of an appliance agent came again; it gets the certificate issued for it")
+	return []byte(en.CertPEM), true
 }
 
 // attest checks the container through the Proxmox API: an LXC on the node
@@ -231,6 +289,9 @@ func (j *applianceJoins) misused(_ context.Context, rec store.JoinRecord) {
 		return
 	}
 	if found && entry.State != store.NodeJoining && entry.State != store.NodeRemoved && entry.State != store.NodeContested {
+		last := rec.Uses[len(rec.Uses)-1]
+		j.security(rec.Node, fmt.Sprintf("the used join token of node %s came again from %s as container %d; the node is %s and is left as it is",
+			rec.Node, last.Source, last.VMID, entry.State))
 		return
 	}
 	now := j.now()
@@ -288,11 +349,15 @@ func (j *applianceJoins) Renew(_ context.Context, node string, csr []byte) ([]by
 		return nil, fmt.Errorf("issuing the next certificate of node %s: %w", node, err)
 	}
 	entry.CertSerial, entry.CertSHA256 = cert.SerialNumber.Text(16), pki.Fingerprint(cert)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	if err := j.st.SaveEnrolment(node, store.Enrolment{CertPEM: string(certPEM)}); err != nil {
+		return nil, fmt.Errorf("keeping the certificate of node %s: %w", node, err)
+	}
 	if err := j.save(entry, rev, true); err != nil {
 		return nil, err
 	}
 	j.log.Info().Str("node", node).Str("serial", entry.CertSerial).Msg("renewed the certificate of an appliance agent")
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), nil
+	return certPEM, nil
 }
 
 // entry reads node's entry of the registry with its revision.
