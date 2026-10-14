@@ -531,6 +531,24 @@ func (u *upgradeRig) enrol(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "client.pem"), []byte("a certificate"), 0o600))
 }
 
+// An agent container that has not joined yet holds no certificate, and is
+// an agent all the same: its connectors wait for a replica as well.
+func TestAnAgentContainerThatHasNotJoinedRefusesToUpgradeCloudflared(t *testing.T) {
+	u := newUpgradeRig(t)
+	st, err := store.Open(u.paths)
+	require.NoError(t, err)
+	require.NoError(t, st.Init())
+	require.NoError(t, st.SaveInstall(store.Install{ID: "0123456789ab", Profile: store.ProfileAppliance, Appliance: &store.ApplianceInstall{
+		VMID: 9301, Node: "pve2", MACs: []string{"bc:24:11:00:93:01"}, Kind: store.ApplianceAgent,
+		Endpoints: []store.Endpoint{{Address: "10.0.0.2:8006", ServerName: "pve2"}},
+	}}))
+
+	res := u.r.run("", "upgrade", "cloudflared", "--yes")
+
+	require.ErrorIs(t, res.err, upgrade.ErrCannotTell)
+	require.Empty(t, u.host.commands(), "nothing is installed")
+}
+
 const cannotTell = "pco cannot tell whether another replica of each tunnel is ready: "
 
 func TestAnAgentThatCannotTellRefusesToUpgradeCloudflared(t *testing.T) {

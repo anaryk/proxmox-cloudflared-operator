@@ -515,11 +515,20 @@ func (a *app) replicaGate(ctx context.Context, paths store.Paths, cloudflared, f
 	return view, nil
 }
 
-// enrolledAgent says whether this node's agent holds the client certificate
-// it dials a controller with: an agent that cannot be asked whom it follows
-// may have replicas on other nodes. A certificate that cannot be read
+// enrolledAgent says whether this node's agent follows a controller on
+// another node, where replicas of its tunnels may run: an agent container,
+// by the kind its install records, joined or not, and any agent that holds
+// the client certificate it dials a controller with. A combined appliance
+// and a controller container hold none. A certificate that cannot be read
 // counts: the node was enrolled.
 func enrolledAgent(paths store.Paths) bool {
-	_, err := agent.TLSFiles{Dir: agent.TLSDir(paths)}.Client()
-	return !errors.Is(err, agent.ErrNoCredentials)
+	if _, err := (agent.TLSFiles{Dir: agent.TLSDir(paths)}).Client(); !errors.Is(err, agent.ErrNoCredentials) {
+		return true
+	}
+	st, err := store.Open(paths)
+	if err != nil {
+		return false
+	}
+	inst, found, err := st.Install()
+	return err == nil && found && inst.Appliance != nil && inst.Appliance.KindName() == store.ApplianceAgent
 }
