@@ -217,7 +217,11 @@ func (c *cycleRun) admits(n *store.NodeEntry, rep NodeReport, self bool) bool {
 			return false
 		}
 	}
-	failing, missing := c.joinFails(rep, self)
+	failing, missing := c.joinFails(n.Name, rep, self)
+	if c.joinReaches == nil {
+		c.joinReaches = map[string]bool{}
+	}
+	c.joinReaches[n.Name] = !self && len(failing) == 0 && missing == 0
 	if missing > 0 {
 		c.problem("node %s stays joining: it has not reported %d of the shared routes yet", n.Name, missing)
 		return false
@@ -247,8 +251,10 @@ func (c *cycleRun) admits(n *store.NodeEntry, rep NodeReport, self bool) bool {
 // reach in its egress set, of those its report says, and how many it has
 // not reported on: a node is admitted only once it reported every shared
 // route, and those it fails were moved to the tunnels pinned to their
-// nodes. This node, which serves its routes itself, has none.
-func (c *cycleRun) joinFails(rep NodeReport, self bool) (failing []string, missing int) {
+// nodes. A shared route its snapshot does not list, as a guest's on
+// another node while coverage is lost, it never reports and would not
+// serve: it fails it. This node, which serves its routes itself, has none.
+func (c *cycleRun) joinFails(node string, rep NodeReport, self bool) (failing []string, missing int) {
 	if self || c.placements == nil {
 		return nil, 0
 	}
@@ -262,6 +268,8 @@ func (c *cycleRun) joinFails(rep NodeReport, self bool) (failing []string, missi
 		}
 		t, ok := reported[host]
 		switch {
+		case c.e.place.withholds(node, host, c.epoch()):
+			failing = append(failing, host)
 		case !ok || rep.Status.EpochSeen != c.epoch():
 			missing++
 		case !t.OK || !t.InEgressSet:

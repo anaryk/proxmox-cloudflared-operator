@@ -753,9 +753,9 @@ The registry of the store holds every node of the install, in one of these state
 
 | State | What it means |
 |---|---|
-| `joining` | Enrolled and not admitted yet, or back after it was `unknown`, `down` or rebooted. Its agent verifies the shared routes and runs no shared connector. |
+| `joining` | Enrolled and not admitted yet, or back after it was `unknown`, `down` or rebooted. Its agent verifies the shared routes and starts no shared connector: one that still runs, as after only the daemon restarted, is kept while the node reaches every shared route and removed otherwise. A shared route a joining node is not given, as one of a guest on another node while coverage is lost, counts as one it does not reach. |
 | `active` | Admitted: it runs a replica of the shared tunnel and its pinned tunnels. |
-| `draining` | Taken out of the shared tunnel by an admin, or by Proxmox's maintenance mode; its pinned tunnels go on. |
+| `draining` | Taken out of the shared tunnel by an admin, or by Proxmox's maintenance mode: its shared connector is removed, its pinned tunnels go on. |
 | `unknown` | Its agent sent no status for 30 seconds. Its placements hold, and nothing is withdrawn for it. |
 | `down` | The cluster lists it offline: `/etc/pve/.members` on a host, the API in the appliance. |
 | `contested` | An appliance agent whose join token was used twice or by a container that did not match: refused until it is forgotten. |

@@ -503,6 +503,7 @@ func TestRoutesAreSharedAgainTenMinutesAfterCoverageIsBack(t *testing.T) {
 		w.requireNothingWithdrawn(t, hosts3...)
 	}
 	require.Equal(t, TunnelShared, route(st, "www.example.com").Placement.Kind)
+	requirePlacementReasons(t, w)
 }
 
 // A route that moves keeps its rule in the tunnel it leaves until its
@@ -662,6 +663,72 @@ func TestAJoiningNodeThatWouldMoveTooMuchStaysJoining(t *testing.T) {
 	require.Equal(t, store.NodeJoining, entryOf(t, w.env, "pve3").State)
 	require.True(t, hasProblem(st, "node pve3 stays joining"), st.Problems)
 	w.requireNothingWithdrawn(t, hosts3...)
+}
+
+// Nodes that come back joining while coverage is lost are not given the
+// shared route of a guest on another node, so they never report it: it
+// counts as a route they do not reach, moves to its guest's node, and they
+// are admitted. While they join they run no connector of the shared tunnel
+// and keep none of its token.
+func TestJoiningNodesWithoutCoverageAreAdmittedAndRunNoSharedConnector(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	joining := []string{"pve2", "pve3"}
+	for _, node := range joining {
+		w.acts[node].noWatch = true
+		// Started again, the agents have not applied a snapshot of this
+		// epoch yet.
+		w.acts[node].edit = func(st *agentproto.Status) { st.EpochSeen, st.Targets = agentproto.Epoch{}, nil }
+		n := entryOf(t, w.env, node)
+		n.State, n.StateSince = store.NodeJoining, w.clock.now()
+		require.NoError(t, w.store.SaveNode(n))
+	}
+	w.tick(5 * time.Second)
+	for _, node := range joining {
+		w.acts[node].edit = nil
+	}
+
+	pinned1, _ := planner.PinnedTunnelName(testInstall, "pve1")
+	pruned := false
+	admitted := map[string]bool{}
+	for range 60 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+		for _, node := range joining {
+			s, ok := w.r.lastOf(node)
+			if !ok || s.State != agentproto.Joining {
+				continue
+			}
+			for _, tun := range s.Tunnels {
+				require.False(t, tun.Name == tunnelName && (tun.Run || tun.Token.Reveal() != ""), "a joining node runs no shared connector")
+			}
+			if s.Prune && !slices.ContainsFunc(s.Tunnels, func(tun agentproto.Tunnel) bool { return tun.Name == tunnelName }) {
+				pruned = true
+			}
+		}
+		for _, node := range joining {
+			if entryOf(t, w.env, node).State == store.NodeActive && !admitted[node] {
+				admitted[node] = true
+				require.Equal(t, pinned1, w.recordTunnel(t, "www.example.com"), "moved before %s was admitted", node)
+			}
+		}
+	}
+	require.True(t, admitted["pve2"] && admitted["pve3"], "both nodes are admitted: %v", admitted)
+	require.True(t, pruned, "the snapshot of a joining node has a shared connector it still runs removed")
+	requirePlacementReasons(t, w)
+}
+
+// requirePlacementReasons fails the test on a placement event that does not
+// say why the route went where it went.
+func requirePlacementReasons(t *testing.T, w *world) {
+	t.Helper()
+	for _, ev := range w.placementEvents() {
+		if !strings.Contains(ev, " moves from ") && !strings.Contains(ev, " is placed ") {
+			continue
+		}
+		_, why, ok := strings.Cut(ev[strings.Index(ev, ": ")+2:], ": ")
+		require.True(t, ok && strings.TrimSpace(why) != "", "no reason: %s", ev)
+	}
 }
 
 // A pinned guest that moves to another node follows it: a move to the

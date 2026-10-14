@@ -563,6 +563,7 @@ func (e *Engine) dropJoinTokens(name string, res *ForgetResult) {
 // the placement: nothing it reports counts any more.
 func (e *Engine) forgetReports(name string) {
 	delete(e.place.listedAt, name)
+	delete(e.place.withheld, name)
 }
 
 // rotateShared rotates the secret of the shared tunnel in every account the

@@ -65,7 +65,7 @@ func TestTheSnapshotKeepsTheTargetsOfEachTunnel(t *testing.T) {
 	c.install = store.Install{ID: testInstall}
 	shared := []agentproto.Tunnel{{AccountID: testAccount, TunnelID: "t1", Name: tunnelName, Kind: agentproto.TunnelShared}}
 
-	got := c.withVerified(shared, "pve2")
+	got := c.withVerified(shared, "pve2", true)
 
 	require.Len(t, got, 3)
 	require.Equal(t, tunnelName, got[0].Name)
@@ -76,13 +76,17 @@ func TestTheSnapshotKeepsTheTargetsOfEachTunnel(t *testing.T) {
 	require.Equal(t, "acc2", got[2].AccountID)
 
 	for _, node := range []string{"pve1", "pve3"} {
-		got = c.withVerified(shared, node)
+		got = c.withVerified(shared, node, true)
 		require.Len(t, got, 2, node)
 		for _, tun := range got {
 			require.NotEqual(t, pinnedName, tun.Name, node)
 		}
 	}
-	require.Len(t, c.withVerified(shared, ""), 1)
+	require.Len(t, c.withVerified(shared, "", true), 1)
+
+	got = c.withVerified(nil, "pve2", false)
+	require.Len(t, got, 1, "a node that runs no shared connector keeps no shared tunnel")
+	require.Equal(t, pinnedName, got[0].Name)
 }
 
 // A tunnel whose own configuration was never verified keeps no target in the
@@ -97,7 +101,7 @@ func TestATunnelGetsNoTargetsOfAnotherTunnelOfItsAccount(t *testing.T) {
 	got := c.withVerified([]agentproto.Tunnel{
 		{AccountID: testAccount, TunnelID: "t2", Name: pinnedName, Kind: agentproto.TunnelPinned},
 		{AccountID: "acc2", TunnelID: "t3", Name: tunnelName, Kind: agentproto.TunnelShared},
-	}, "")
+	}, "", false)
 
 	require.Len(t, got, 2)
 	for _, tun := range got {

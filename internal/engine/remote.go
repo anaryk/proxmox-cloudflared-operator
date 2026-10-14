@@ -76,17 +76,35 @@ func (c *cycleRun) publishRemote() {
 		s.Endpoints = slices.Clone(endpoints)
 		s.Targets = c.targetsFor(name)
 		s.Guests = c.snapshotGuests(s.Targets)
-		s.Tunnels = c.withVerified(c.remoteTunnels(name), name)
-		s.Prune = c.pruned && len(s.Tunnels) > 0
+		role := c.sharedRole(name)
+		s.Tunnels = c.withVerified(c.remoteTunnels(name, role), name, role != sharedNone)
+		// A node that may run nothing is pruned too, of a shared connector
+		// it still runs, once the cycle hands tokens out.
+		s.Prune = c.pruned && (len(s.Tunnels) > 0 || c.handsTokens())
 		s.Networks = c.networksFor(name)
 		s.Actions = append(c.e.writes.actionsFor(name, c.epoch()), c.e.asks.actionsFor(name, c.epoch())...)
 		s.Guests = c.withWritten(s.Guests, s.Targets, s.Actions)
 		rep := reports[name]
 		c.e.seqs.stamp(&s, rep.Status.EpochSeen, rep.Status.SeqApplied)
-		c.e.place.noteListed(s)
+		c.e.place.noteListed(s, c.withheldFrom(s.Targets))
 		snaps[name] = s
 	}
 	r.Serve(snaps)
+}
+
+// withheldFrom are the hostnames of the shared routes targets leave out.
+func (c *cycleRun) withheldFrom(targets []agentproto.Target) map[string]bool {
+	listed := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		listed[t.Key] = true
+	}
+	out := map[string]bool{}
+	for _, rt := range c.claims.Winners {
+		if p, ok := c.placements[rt.Hostname]; ok && p.Kind == store.PlacementShared && !listed[rt.Hostname] {
+			out[rt.Hostname] = true
+		}
+	}
+	return out
 }
 
 // reportsNow are the reports this cycle goes by, read once.

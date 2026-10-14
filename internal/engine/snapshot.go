@@ -24,7 +24,7 @@ import (
 // pass of the agent begins with.
 func (c *cycleRun) snapshot() agentproto.Snapshot {
 	s := c.desired()
-	s.Tunnels = c.withVerified(nil, c.e.d.Node)
+	s.Tunnels = c.withVerified(nil, c.e.d.Node, true)
 	return s
 }
 
@@ -35,7 +35,7 @@ func (c *cycleRun) snapshot() agentproto.Snapshot {
 // the node keeps.
 func (c *cycleRun) keptSnapshot(tunnels []agentproto.Tunnel, prune bool) agentproto.Snapshot {
 	s := c.desired()
-	s.Tunnels, s.Prune = c.withVerified(tunnels, ""), prune
+	s.Tunnels, s.Prune = c.withVerified(tunnels, "", false), prune
 	return s
 }
 
@@ -350,17 +350,17 @@ func (c *cycleRun) withWritten(guests []model.Guest, targets []agentproto.Target
 // withVerified gives each tunnel the targets of its configuration last
 // verified at Cloudflare, and for a node adds every other tunnel with one
 // that the node may run, which it keeps as it is: the shared tunnel of an
-// account and the one pinned to that node. The egress set keeps what they
-// send a connector to until a configuration without it is verified; a
-// tunnel pinned to another node vouches for nothing on this one. An empty
-// node adds none.
-func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel, node string) []agentproto.Tunnel {
+// account, unless shared says the node runs none, and the one pinned to
+// that node. The egress set keeps what they send a connector to until a
+// configuration without it is verified; a tunnel pinned to another node
+// vouches for nothing on this one. An empty node adds none.
+func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel, node string, shared bool) []agentproto.Tunnel {
 	own := ""
 	if node != "" {
 		own, _ = planner.PinnedTunnelName(c.install.ID, node)
 	}
 	others := func(ref tunnelRef) bool {
-		return node != "" && (ref.name == planner.TunnelName(c.install.ID) || own != "" && ref.name == own)
+		return node != "" && (shared && ref.name == planner.TunnelName(c.install.ID) || own != "" && ref.name == own)
 	}
 	out := make([]agentproto.Tunnel, 0, len(tunnels)+len(c.e.verified))
 	listed := map[tunnelRef]bool{}

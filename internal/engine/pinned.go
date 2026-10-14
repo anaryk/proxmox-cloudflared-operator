@@ -45,23 +45,59 @@ func (c *cycleRun) checkRuleCount() {
 	}
 }
 
+// sharedRole is what the agent of another node does with the shared
+// tunnel.
+type sharedRole int
+
+const (
+	// sharedNone: no connector of it, and one that still runs is pruned.
+	sharedNone sharedRole = iota
+	// sharedKept: a connector of it that runs is kept as it is, and none
+	// is started.
+	sharedKept
+	// sharedRun: a connector of it runs with its token.
+	sharedRun
+)
+
+// sharedRole is what node does with the shared tunnel. A replica runs it.
+// Cloudflare sends a connector of it the requests of every shared route,
+// so no other node runs one: a joining node that does not reach every
+// shared route, a drained one and one outside cluster.replicas have it
+// removed, and none of them is handed its token. A joining node that
+// reaches every shared route keeps a connector that still runs, as after
+// its daemon alone restarted, since it is admitted in the next cycle.
+func (c *cycleRun) sharedRole(node string) sharedRole {
+	switch {
+	case slices.Contains(c.replicas(), node):
+		return sharedRun
+	case c.nodes[node].Node.State == store.NodeJoining && c.joinReaches[node]:
+		return sharedKept
+	}
+	return sharedNone
+}
+
+// handsTokens says whether the cycle hands run tokens to the agents: only
+// an enforcing cycle that ran the connectors of this node and holds nothing
+// does.
+func (c *cycleRun) handsTokens() bool {
+	return c.connected && !c.cfHold && c.mode() == reconcile.Enforce
+}
+
 // remoteTunnels are the tunnels whose connectors the agent of node runs,
-// each with its run token: the shared tunnel of every account while the
-// node is a replica of it, and the tunnel pinned to the node, to a host
-// agent alone. A node of a state the cycle does not know, one that is not
-// served, and an appliance agent get no pinned tunnel; a node outside the
-// replica set gets no shared one. A joining node does get its own pinned
+// each with its run token: the shared tunnel of every account as role
+// says, and the tunnel pinned to the node, to a host agent alone. A node of
+// a state the cycle does not know, one that is not served, and an appliance
+// agent get no pinned tunnel. A joining node does get its own pinned
 // tunnel while the plan has routes there: after a reboot the node comes
 // back joining with its guests, and their pinned routes are served through
 // that tunnel alone, so holding its token until admission would keep them
-// down for as long as the admission takes. Only an enforcing cycle that
-// ran the connectors of this node hands tokens out.
-func (c *cycleRun) remoteTunnels(node string) []agentproto.Tunnel {
+// down for as long as the admission takes. A tunnel whose token cannot be
+// had is listed without one: its connector is kept as it is.
+func (c *cycleRun) remoteTunnels(node string, role sharedRole) []agentproto.Tunnel {
 	n, ok := c.nodes[node]
-	if !ok || !servedState(n.Node.State) || !c.connected || c.cfHold || c.mode() != reconcile.Enforce {
+	if !ok || !servedState(n.Node.State) || !c.handsTokens() {
 		return nil
 	}
-	replica := slices.Contains(c.replicas(), node)
 	own, err := planner.PinnedTunnelName(c.install.ID, node)
 	host := entryKind(n.Node) == string(pki.KindHost)
 	var out []agentproto.Tunnel
@@ -70,15 +106,15 @@ func (c *cycleRun) remoteTunnels(node string) []agentproto.Tunnel {
 			continue
 		}
 		switch {
-		case t.Name == planner.TunnelName(c.install.ID) && replica:
+		case t.Name == planner.TunnelName(c.install.ID) && role == sharedKept:
+			out = append(out, c.snapshotTunnel(t.AccountID, t.ID, t.Name, ""))
+			continue
+		case t.Name == planner.TunnelName(c.install.ID) && role == sharedRun:
 		case err == nil && t.Name == own && host && c.planned(tunnelRef{t.AccountID, own}):
 		default:
 			continue
 		}
-		token, ok := c.tokenFor(t)
-		if !ok {
-			continue
-		}
+		token, _ := c.tokenFor(t)
 		out = append(out, c.snapshotTunnel(t.AccountID, t.ID, t.Name, token))
 	}
 	return out

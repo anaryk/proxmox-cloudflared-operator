@@ -39,6 +39,10 @@ const (
 	whyHosted      = "its guest runs on %s"
 	whyNotEvery    = "not every replica reached it when it was placed"
 	whyJoining     = "node %s joins and does not reach it"
+	whyEvery       = "every replica reaches it"
+	whyNoneReach   = "no replica reaches it, nor a node it could be pinned to"
+	whyPromoted    = "every replica has reached it for %s"
+	whyRevoked     = "node %s it was pinned to is %s"
 )
 
 // reach is how a replica fares with a target in this cycle.
@@ -293,7 +297,7 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 	mem := &c.e.place
 	host := c.hostingNode(routes)
 	if stored && c.revoked(cur) {
-		cur = placed{kind: store.PlacementShared}
+		cur = placed{kind: store.PlacementShared, why: fmt.Sprintf(whyRevoked, cur.node, c.nodes[cur.node].Node.State)}
 	}
 	if c.revoked(placed{kind: store.PlacementPinned, node: host}) {
 		host = ""
@@ -339,7 +343,7 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 		switch {
 		case all:
 			delete(mem.waiting, owner)
-			return placed{kind: store.PlacementShared}, ""
+			return placed{kind: store.PlacementShared, why: whyEvery}, ""
 		case len(unknown) > 0 && c.now.Sub(c.waitingSince(owner)) < waitFor:
 			return placed{}, fmt.Sprintf(reasonWaiting, strings.Join(unknown, ", "))
 		case hostReaches:
@@ -351,7 +355,7 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 			return placed{kind: store.PlacementPinned, node: yes[0], why: whyNotEvery}, ""
 		}
 		delete(mem.waiting, owner)
-		return placed{kind: store.PlacementShared}, ""
+		return placed{kind: store.PlacementShared, why: whyNoneReach}, ""
 	case cur.kind == store.PlacementShared:
 		if all || len(unknown) > 0 || !any {
 			return cur, ""
@@ -382,7 +386,7 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 	}
 	since, ok := mem.reaching[owner]
 	if all && ok && c.now.Sub(since) >= promoteAfter && (!cross || c.cover.promotable) {
-		return placed{kind: store.PlacementShared}, ""
+		return placed{kind: store.PlacementShared, why: fmt.Sprintf(whyPromoted, promoteAfter)}, ""
 	}
 	if cur.why == "" {
 		cur.why = c.storedWhy(routes)
@@ -729,7 +733,9 @@ func (c *cycleRun) savePlacements() {
 		return
 	}
 	next := map[string]store.Placement{}
+	why := map[string]string{}
 	for _, rt := range c.claims.Winners {
+		why[rt.Hostname] = p.decided[rt.Owner()].record.why
 		in, ok := p.inputs[rt.Hostname]
 		if !ok {
 			if s, kept := c.placements[rt.Hostname]; kept {
@@ -769,8 +775,11 @@ func (c *cycleRun) savePlacements() {
 	}
 	for host, pl := range next {
 		if old, ok := c.placements[host]; ok && (old.Kind != pl.Kind || old.Node != pl.Node) {
-			c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: host, Route: host,
-				Message: fmt.Sprintf("%s is placed %s, was %s", host, placed{kind: pl.Kind, node: pl.Node}, placed{kind: old.Kind, node: old.Node})})
+			msg := fmt.Sprintf("%s is placed %s, was %s", host, placed{kind: pl.Kind, node: pl.Node}, placed{kind: old.Kind, node: old.Node})
+			if why[host] != "" {
+				msg += ": " + why[host]
+			}
+			c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: host, Route: host, Message: msg})
 		}
 	}
 	c.placements = next
