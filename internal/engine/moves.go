@@ -341,13 +341,17 @@ func (c *cycleRun) recordPending(m store.Move) (host, why string) {
 }
 
 // notSwitched says that pco leaves the record of a hostname as it is: the
-// DNS run found it in conflict, its marker not lost, or its adoption waits.
+// DNS run found it in conflict or its adoption waits. A record whose marker
+// is lost may still point at the tunnel being left, so it is waited for
+// either way.
 func (c *cycleRun) notSwitched(host string) bool {
-	if _, waits := c.adoptWaits[host]; waits {
+	if slices.ContainsFunc(c.st.Lost, func(name string) bool { return strings.EqualFold(name, host) }) {
+		return false
+	}
+	if _, waits := c.adoptWaits[strings.ToLower(host)]; waits {
 		return true
 	}
-	lost := slices.ContainsFunc(c.st.Lost, func(name string) bool { return strings.EqualFold(name, host) })
-	return !lost && slices.ContainsFunc(c.st.Conflicts, func(x reconcile.Conflict) bool { return strings.EqualFold(x.Name, host) })
+	return slices.ContainsFunc(c.st.Conflicts, func(x reconcile.Conflict) bool { return strings.EqualFold(x.Name, host) })
 }
 
 // moveView is a move under way as the state shows it.

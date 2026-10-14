@@ -335,3 +335,20 @@ func TestAMoveThatWaitsLongForARecordSaysSo(t *testing.T) {
 	require.True(t, hasProblem(st, "the move of qemu/102 from "+tunnelName), st.Problems)
 	require.True(t, hasProblem(st, "db.example.com"), st.Problems)
 }
+
+// A record whose marker is lost may still point at the tunnel a move leaves,
+// so it is waited for even while its adoption waits; a record in conflict or
+// waiting for adoption alone is not pco's to switch, whatever its case.
+func TestARecordWithItsMarkerLostHoldsAMove(t *testing.T) {
+	c := &cycleRun{adoptWaits: map[string]string{"www.example.com": "the tunnel is not ready"}}
+	require.True(t, c.notSwitched("WWW.example.com"))
+
+	c.st.Lost = []string{"www.example.com"}
+	require.False(t, c.notSwitched("www.example.com"))
+
+	c = &cycleRun{}
+	c.st.Conflicts = []reconcile.Conflict{{Name: "web2.example.com"}}
+	require.True(t, c.notSwitched("web2.example.com"))
+	c.st.Lost = []string{"web2.example.com"}
+	require.False(t, c.notSwitched("web2.example.com"))
+}
