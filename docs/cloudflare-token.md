@@ -67,7 +67,9 @@ The token is asked for without being shown. In a script, `--token-file <file>` r
 from a file (pco warns when the file can be read by others) or standard input does. It is
 never taken from an argument or from the environment, which other users could read. A
 token that a stored credential already has is refused, because two credentials with one
-token would see the same zones.
+token would see the same zones. A token is 20 to 256 characters of `A-Z a-z 0-9 _ -`, and
+anything else is refused before Cloudflare is asked, with the same words from `pco credential
+add`, `pco setup` and `pco appliance install`.
 
 `pco setup` accepts a token as well, while the daemon is stopped; see
 [Quickstart](quickstart.md).

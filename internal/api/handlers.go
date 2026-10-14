@@ -10,17 +10,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
-const (
-	minTokenLength = 20
-	maxTokenLength = 256
-)
-
 var (
-	errBadToken   = &httpError{http.StatusBadRequest, codeInvalid, "the token is not a Cloudflare API token: it has 20 to 256 characters, all of A-Z a-z 0-9 _ -", false}
+	errBadToken   = &httpError{http.StatusBadRequest, codeInvalid, credentials.ErrBadToken.Error(), false}
 	errBadSince   = &httpError{http.StatusBadRequest, codeInvalid, "since must be a time in RFC 3339 format", false}
 	errBadUntil   = &httpError{http.StatusBadRequest, codeInvalid, "until must be a time in RFC 3339 format", false}
 	errBadAfter   = &httpError{http.StatusBadRequest, codeInvalid, "after must be the seq of an event, a whole number", false}
@@ -320,7 +316,7 @@ func (s *Server) postCredential(c *gin.Context) {
 		return
 	}
 	token := strings.TrimSpace(req.Token)
-	if !validToken(token) {
+	if !credentials.ValidToken(token) {
 		s.fail(c, errBadToken)
 		return
 	}
@@ -335,23 +331,6 @@ func (s *Server) postCredential(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, view)
-}
-
-// validToken tells whether token has the shape of a Cloudflare API token. It
-// keeps junk away from the engine and from Cloudflare, and keeps the scrubbing
-// of messages from ever working on a one-letter secret.
-func validToken(token string) bool {
-	if len(token) < minTokenLength || len(token) > maxTokenLength {
-		return false
-	}
-	for i := range len(token) {
-		switch b := token[i]; {
-		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9', b == '_', b == '-':
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 func (s *Server) postCredentialCheck(c *gin.Context) {

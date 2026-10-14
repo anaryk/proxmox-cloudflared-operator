@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -262,8 +263,8 @@ func checkSecrets(b *Bootstrap, f bootstrapFile) error {
 		return errors.New("pveToken.secret is empty")
 	case strings.ContainsFunc(f.PVEToken.Secret, isSpace):
 		return errors.New("pveToken.secret holds white space")
-	case strings.ContainsFunc(f.CloudflareToken, isSpace):
-		return errors.New("cloudflareToken holds white space")
+	case f.CloudflareToken != "" && !credentials.ValidToken(f.CloudflareToken):
+		return fmt.Errorf("cloudflareToken: %w", credentials.ErrBadToken)
 	case b.Mode == ModeRecover && f.CloudflareToken == "":
 		return errors.New("mode recover needs cloudflareToken, to find the install with")
 	}

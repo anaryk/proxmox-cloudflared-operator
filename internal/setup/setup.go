@@ -29,6 +29,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -128,6 +129,8 @@ func (o Options) check() error {
 		return errors.New("--repair and --recover do not go together")
 	case o.Repair && o.CloudflareToken != "":
 		return errors.New("--repair does not store a Cloudflare token: add it with pco credential add")
+	case o.CloudflareToken != "" && !credentials.ValidToken(strings.TrimSpace(o.CloudflareToken)):
+		return credentials.ErrBadToken
 	case o.NewInstall && (o.Repair || o.Recover):
 		return errors.New("--new-install goes with neither --repair nor --recover")
 	case o.InstallID != "" && !o.Recover:

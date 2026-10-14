@@ -59,6 +59,10 @@ func (r *run) addCredential(ctx context.Context) error {
 			r.ask.Info("credentials: skipped; " + addLater)
 			return nil
 		}
+		if err := credentials.CheckToken(r.token); err != nil {
+			r.ask.Warn("credentials: %v; it is not stored, %s", err, addLater)
+			return nil
+		}
 		if known(creds, r.token) {
 			r.ask.Info("credentials: the token is stored already, nothing needed")
 			return nil

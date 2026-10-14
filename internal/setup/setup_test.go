@@ -803,7 +803,7 @@ func TestNoTokenIsShown(t *testing.T) {
 		e.installUnit("pco.service")
 		e.script(freshInstall()...)
 
-		require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: "another " + cfToken, Node: testNode}))
+		require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: "another-" + cfToken, Node: testNode}))
 		e.requireNoSecret()
 	})
 }
@@ -819,4 +819,34 @@ func TestInstallIDsAndNonces(t *testing.T) {
 		require.Regexp(t, regexp.MustCompile(`^[a-z0-9]{8}$`), nonce)
 		require.NoError(t, planner.Writer{InstallID: id, Generation: 1, Nonce: nonce}.Validate())
 	}
+}
+
+// A token of the wrong shape is refused as pco credential add refuses it,
+// before anything on the node is touched; one typed at the prompt is not
+// stored, and setup goes on without it.
+func TestSetupRefusesATokenOfTheWrongShape(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit("pco.service")
+
+	err := e.setup(Options{Yes: true, CloudflareToken: "short-token", Node: testNode})
+
+	require.ErrorIs(t, err, credentials.ErrBadToken)
+	require.Empty(t, e.run.ran, "nothing on the node is touched")
+	require.NoFileExists(t, filepath.Join(e.paths.Local, manifestName))
+	e.done()
+}
+
+func TestSetupDoesNotStoreATokenOfTheWrongShapeTypedAtThePrompt(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit("pco.service")
+	e.ask.answers = []answer{{"cf-tunnel", true}, {"cloudflared", true}}
+	e.ask.secrets = []string{"short-token"}
+	e.script(freshInstall()...)
+
+	require.NoError(t, e.setup(Options{Node: testNode}))
+	e.done()
+
+	require.Empty(t, e.credentials())
+	e.requireShown("warn: credentials: " + credentials.ErrBadToken.Error() + "; it is not stored, " + addLater)
+	require.NotContains(t, e.ask.text(), "short-token")
 }
