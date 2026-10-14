@@ -125,30 +125,36 @@ type TunnelResult struct {
 // without connectors. It deletes no other tunnel. An account is swept at most
 // every ten minutes, the first time by the first enforcing run.
 func (r *TunnelReconciler) Run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
-	return r.run(ctx, plans, known, mode, heldObserve, false)
+	return r.run(ctx, plans, known, mode, heldObserve, nil)
 }
 
-// RunAddOnly runs as Run does, but withdraws nothing: a tunnel is written
-// with the rules of its plan and every rule it serves now that the plan
-// leaves out or would answer 503 for, and a tunnel without a plan is not
-// emptied. The state of each tunnel says the rules it kept beyond its plan.
-// Pinned tunnels are read in such a run, whatever was last seen of them.
-func (r *TunnelReconciler) RunAddOnly(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
-	return r.run(ctx, plans, known, mode, heldObserve, true)
+// RunAddOnly runs as Run does, but withdraws nothing of the caller's: a
+// tunnel is written with the rules of its plan and every rule it serves now
+// for a hostname keep accepts that the plan leaves out or would answer 503
+// for. Only a configuration that carries a sentinel of this install, which
+// pco wrote, keeps anything: a rule someone else put into a tunnel is never
+// written again under this writer's sentinel. The state of each tunnel says
+// the rules it kept beyond its plan. Pinned tunnels are read in such a run,
+// whatever was last seen of them.
+func (r *TunnelReconciler) RunAddOnly(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode, keep func(host string) bool) TunnelResult {
+	if keep == nil {
+		keep = func(string) bool { return false }
+	}
+	return r.run(ctx, plans, known, mode, heldObserve, keep)
 }
 
 // RunHeld runs as Run does in Observe mode, and gives why as the reason of
 // every write it holds: a run whose writes the caller holds for a reason of
 // its own still finds out what each tunnel holds.
 func (r *TunnelReconciler) RunHeld(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, why string) TunnelResult {
-	return r.run(ctx, plans, known, Observe, why, false)
+	return r.run(ctx, plans, known, Observe, why, nil)
 }
 
-func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode, held string, addOnly bool) TunnelResult {
+func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode, held string, keep func(string) bool) TunnelResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	run := &tunnelRun{r: r, mode: mode, held: held, addOnly: addOnly, hint: r.hint, listedNow: make(map[string]bool)}
+	run := &tunnelRun{r: r, mode: mode, held: held, keep: keep, hint: r.hint, listedNow: make(map[string]bool)}
 	goOn := run.start()
 	if goOn {
 		run.listPinned(ctx, plans, known)
@@ -170,7 +176,7 @@ func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, 
 		}
 		st, ok := run.lastSeen(t)
 		switch {
-		case run.addOnly:
+		case run.keep != nil:
 			st, goOn = run.reconcile(ctx, t)
 		case !ok:
 			st, goOn = run.reconcile(ctx, t)
@@ -278,11 +284,11 @@ func emptyRules(us planner.Writer) []planner.IngressRule {
 type tunnelRun struct {
 	r         *TunnelReconciler
 	mode      Mode
-	held      string          // why a write is held in Observe mode
-	addOnly   bool            // every rule a tunnel serves that its plan drops or blocks is kept
-	hint      string          // what a foreign verdict says to do, as SetRecoverHint set it
-	us        planner.Writer  // set once start has validated it
-	listedNow map[string]bool // accounts whose pinned tunnels this run listed
+	held      string            // why a write is held in Observe mode
+	keep      func(string) bool // in a run that only adds, the hostnames whose served rules are kept
+	hint      string            // what a foreign verdict says to do, as SetRecoverHint set it
+	us        planner.Writer    // set once start has validated it
+	listedNow map[string]bool   // accounts whose pinned tunnels this run listed
 	res       TunnelResult
 }
 
@@ -513,8 +519,8 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 		return true
 	}
 	st.Version = remote.Version
-	if run.addOnly {
-		t.rules, st.Kept = keepServed(t.rules, remote.Ingress)
+	if run.keep != nil && run.wrote(remote.Ingress) {
+		t.rules, st.Kept = keepServed(t.rules, remote.Ingress, run.keep)
 	}
 	if EqualIngress(remote.Ingress, t.rules) && !remote.Foreign {
 		st.Verified = true

@@ -12,7 +12,7 @@ import (
 // planned leaves out or answers 503 for, in the order the planner gives
 // rules, and the rules it took from remote. The sentinels of remote are not
 // taken: planned carries the one of this writer.
-func keepServed(planned, remote []planner.IngressRule) (rules, kept []planner.IngressRule) {
+func keepServed(planned, remote []planner.IngressRule, keep func(host string) bool) (rules, kept []planner.IngressRule) {
 	at := map[string]int{}
 	var body, tail []planner.IngressRule
 	for _, r := range planned {
@@ -24,7 +24,7 @@ func keepServed(planned, remote []planner.IngressRule) (rules, kept []planner.In
 		body = append(body, r)
 	}
 	for _, r := range remote {
-		if !servesHost(r) || r.Service == planner.BlockedService {
+		if !servesHost(r) || r.Service == planner.BlockedService || !keep(r.Hostname) {
 			continue
 		}
 		host := strings.ToLower(r.Hostname)
@@ -45,6 +45,17 @@ func keepServed(planned, remote []planner.IngressRule) (rules, kept []planner.In
 	}
 	slices.SortStableFunc(body, func(x, y planner.IngressRule) int { return hostname.Compare(x.Hostname, y.Hostname) })
 	return append(body, tail...), kept
+}
+
+// wrote says whether rules carry a sentinel of the install of this run's
+// writer, of its generation or an earlier one: pco wrote them.
+func (run *tunnelRun) wrote(rules []planner.IngressRule) bool {
+	for _, r := range rules {
+		if w, ok := planner.ParseSentinel(r.Hostname); ok && w.InstallID == run.us.InstallID && w.Generation <= run.us.Generation {
+			return true
+		}
+	}
+	return false
 }
 
 // servesHost says whether a rule is one of a hostname: not the catch-all,

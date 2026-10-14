@@ -21,7 +21,7 @@ func TestARunThatMayOnlyAddKeepsWhatTheTunnelServes(t *testing.T) {
 	added := planner.IngressRule{Hostname: "new.example.com", Service: "http://10.0.0.7:80"}
 
 	res := newReconciler(Clients{"cred1": f}, &clock{t0}).
-		RunAddOnly(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", added, blocked)}, nil, Enforce)
+		RunAddOnly(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", added, blocked)}, nil, Enforce, anyHost)
 
 	require.Empty(t, res.Problems)
 	require.Equal(t, WriterProceed, res.Verdict)
@@ -33,6 +33,45 @@ func TestARunThatMayOnlyAddKeepsWhatTheTunnelServes(t *testing.T) {
 	require.Equal(t, []planner.IngressRule{app, web}, res.Tunnels[0].Kept)
 }
 
+func anyHost(string) bool { return true }
+
+// A run that may only add keeps nothing the caller does not name as its own,
+// and nothing of a configuration pco did not write: a rule someone put into
+// the tunnel is not written again under this writer's sentinel.
+func TestARunThatMayOnlyAddKeepsOnlyWhatPcoServed(t *testing.T) {
+	stranger := planner.IngressRule{Hostname: "evil.example.com", Service: "http://10.9.9.9:22"}
+	tests := []struct {
+		name   string
+		remote []planner.IngressRule
+		keep   func(string) bool
+	}{
+		{"a hostname the caller does not own", rulesOf(writerAt(4, "n4"), app, stranger), func(h string) bool { return h == app.Hostname }},
+		{"no sentinel of this install", []planner.IngressRule{app, stranger, catchAll}, anyHost},
+		{"a sentinel of another install", rulesOf(planner.Writer{InstallID: "zzz", Generation: 1, Nonce: "x"}, app, stranger), anyHost},
+		{"a sentinel of a later generation", rulesOf(writerAt(9, "n9"), app, stranger), anyHost},
+		{"no filter", rulesOf(writerAt(4, "n4"), app, stranger), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake("acct1")
+			f.SeedTunnel("acct1", testTunnel, tt.remote)
+
+			res := newReconciler(Clients{"cred1": f}, &clock{t0}).
+				RunAddOnly(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", web)}, nil, Enforce, tt.keep)
+
+			for _, st := range res.Tunnels {
+				require.NotContains(t, st.Kept, stranger)
+			}
+			for _, call := range callsTo(f, "PutTunnelConfig") {
+				require.NotContains(t, call, "evil")
+			}
+			if len(callsTo(f, "PutTunnelConfig")) > 0 {
+				require.NotContains(t, configIn(t, f, "acct1").Ingress, stranger)
+			}
+		})
+	}
+}
+
 // A run that may only add leaves a tunnel without a plan as it is, where a
 // run would empty it.
 func TestARunThatMayOnlyAddEmptiesNoTunnel(t *testing.T) {
@@ -40,7 +79,7 @@ func TestARunThatMayOnlyAddEmptiesNoTunnel(t *testing.T) {
 	f.SeedTunnel("acct1", testTunnel, rulesOf(ours, app))
 
 	res := newReconciler(Clients{"cred1": f}, &clock{t0}).
-		RunAddOnly(context.Background(), nil, map[string]string{"acct1": "cred1"}, Enforce)
+		RunAddOnly(context.Background(), nil, map[string]string{"acct1": "cred1"}, Enforce, anyHost)
 
 	require.Empty(t, res.Problems)
 	require.Empty(t, callsTo(f, "PutTunnelConfig"))
