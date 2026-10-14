@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
+
+// maxDoctorAnswer bounds the findings the controller reads of one agent's
+// answer, as the agent bounds what it sends.
+const maxDoctorAnswer = 256 << 10
 
 // doctorCluster is what the doctor reads of the cluster on a host node: the
 // agent of this node, the members and corosync files, the install's CA and
@@ -71,7 +76,11 @@ func (d doctorCluster) Ask(ctx context.Context, nodes []string, wait time.Durati
 	out := map[string]doctor.AgentAnswer{}
 	for node, res := range d.eng.AskDoctor(ctx, nodes, wait) {
 		a := doctor.AgentAnswer{Answered: true, Err: res.Error}
-		if res.Error == "" {
+		switch {
+		case res.Error != "":
+		case len(res.Data) > maxDoctorAnswer:
+			a.Err = fmt.Sprintf("its findings are %d bytes, over the %d an answer may carry", len(res.Data), maxDoctorAnswer)
+		default:
 			if err := json.Unmarshal(res.Data, &a.Findings); err != nil {
 				a.Err = "its findings cannot be read: " + err.Error()
 			}

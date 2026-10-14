@@ -496,7 +496,7 @@ as `cloudflared on pve2`, beside the controller's own.
 | `replicas <tunnel> in account <id>` | Of a shared tunnel, one node reports a ready connector (warns: the loss of that node takes the tunnel down), or none does (warns). | `pco node list`; `cluster.replicas` in the settings. |
 | `pinned tunnels` | A tunnel pinned to a node has served no route for more than 10 minutes and is not deleted (warns). | `pco status` lists the problems that say why the delete does not happen. |
 | `cloudflare reach` | The controller's cycles have not got through to Cloudflare for 10 minutes (warns). | `pco status` says why; if another node reaches Cloudflare, `pco cluster handoff` moves the controller. |
-| `answer` | With `--cluster`, named `answer on <node>`: the agent of the node did not answer within 30 seconds (warns) or could not make its checks (fails). | `pco doctor` on that node. |
+| `answer` | With `--cluster`, named `answer on <node>`: the agent of the node did not answer within 30 seconds (warns) or could not make its checks (fails); findings of its answer were left out (warns): one that names another node, as `store on pve3`, and those beyond 64. The controller also clips each text of a finding to 512 bytes and takes a level it does not know as a warning. | `pco doctor` on that node. |
 
 ### Checks of the appliance
 

@@ -3,10 +3,13 @@ package doctor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -239,6 +242,40 @@ func TestTheChecksOfAClusterSayWhatTheyCouldNotRead(t *testing.T) {
 // pco doctor --cluster asks the other Active nodes, waits 30 seconds for
 // them, and names their findings with the node; an agent that does not
 // answer is listed.
+// What an agent answers is its own word: bounded in number and length, of
+// the three levels, and naming no other node.
+func TestTheAnswerOfAnAgentIsBounded(t *testing.T) {
+	st, env := healthyCluster()
+	long := strings.Repeat("é", 400)
+	findings := []Finding{
+		{Check: "cloudflared", Level: "fine", Detail: long, Fix: long},
+		{Check: "store on pve3", Level: LevelFail, Detail: "a word about another node"},
+	}
+	for i := range maxAnswerFindings + 5 {
+		findings = append(findings, Finding{Check: fmt.Sprintf("extra %d", i), Level: LevelOK})
+	}
+	env.answers = map[string]AgentAnswer{"pve2": {Answered: true, Findings: findings}}
+
+	got := RunWith(t.Context(), st, env, Options{Cluster: true})
+
+	var mine []Finding
+	for _, f := range got {
+		if strings.HasSuffix(f.Check, " on pve2") && !strings.HasPrefix(f.Check, "answer") {
+			mine = append(mine, f)
+		}
+	}
+	require.Len(t, mine, maxAnswerFindings)
+	first := clusterFindings(got)["cloudflared on pve2"]
+	require.Equal(t, LevelWarn, first.Level, "a level it does not know")
+	require.LessOrEqual(t, len(first.Detail), maxAnswerText)
+	require.True(t, utf8.ValidString(first.Detail))
+	require.LessOrEqual(t, len(first.Fix), maxAnswerText)
+	require.NotContains(t, clusterFindings(got), "store on pve3 on pve2")
+	answer := clusterFindings(got)["answer on pve2"]
+	require.Equal(t, LevelWarn, answer.Level)
+	require.Equal(t, "the agent answered with 71 findings; 7 were left out: 1 named another node, 6 over the 64 an answer may carry", answer.Detail)
+}
+
 func TestTheClusterRunAsksTheOtherAgents(t *testing.T) {
 	st, env := healthyCluster()
 	st.Nodes[2].State = store.NodeDraining

@@ -18,6 +18,11 @@ import (
 
 // The bounds the checks of a cluster go by.
 const (
+	// maxAnswerFindings and maxAnswerText bound what the answer of an
+	// agent adds to the controller's findings, which is that agent's word.
+	maxAnswerFindings = 64
+	maxAnswerText     = 512
+
 	// AnswerWait is how long pco doctor --cluster waits for the agents of
 	// the other nodes to answer with their checks.
 	AnswerWait = 30 * time.Second
@@ -502,14 +507,60 @@ func askAgents(ctx context.Context, st engine.State, src ClusterSource) []Findin
 		case a.Err != "":
 			f = fail(check, "the agent could not make its checks: "+a.Err, "pco doctor on "+node)
 		default:
-			for _, got := range a.Findings {
+			kept, named, over := boundAnswer(a.Findings)
+			for _, got := range kept {
 				got.Check += " on " + node
 				out = append(out, got)
 			}
-			f = ok(check, fmt.Sprintf("the agent answered with %s", count(len(a.Findings), "finding", "findings")))
+			detail := fmt.Sprintf("the agent answered with %s", count(len(a.Findings), "finding", "findings"))
+			if named+over == 0 {
+				f = ok(check, detail)
+				break
+			}
+			var why []string
+			if named > 0 {
+				why = append(why, fmt.Sprintf("%d named another node", named))
+			}
+			if over > 0 {
+				why = append(why, fmt.Sprintf("%d over the %d an answer may carry", over, maxAnswerFindings))
+			}
+			f = warn(check, fmt.Sprintf("%s; %d were left out: %s", detail, named+over, strings.Join(why, ", ")), "pco doctor on "+node)
 		}
 		f.Check += " on " + node
 		out = append(out, f)
 	}
 	return out
+}
+
+// boundAnswer is what the controller takes of the findings an agent
+// answered with: none that names another node, as "store on pve3" would, at
+// most maxAnswerFindings, each text clipped to maxAnswerText bytes and each
+// level one of the three. named and over count those left out.
+func boundAnswer(findings []Finding) (kept []Finding, named, over int) {
+	for _, f := range findings {
+		if strings.Contains(f.Check, " on ") {
+			named++
+			continue
+		}
+		if len(kept) == maxAnswerFindings {
+			over++
+			continue
+		}
+		switch f.Level {
+		case LevelOK, LevelWarn, LevelFail:
+		default:
+			f.Level = LevelWarn
+		}
+		f.Check, f.Detail, f.Fix = clipText(f.Check), clipText(f.Detail), clipText(f.Fix)
+		kept = append(kept, f)
+	}
+	return kept, named, over
+}
+
+// clipText cuts s to maxAnswerText bytes, at a whole character.
+func clipText(s string) string {
+	if len(s) <= maxAnswerText {
+		return s
+	}
+	return strings.ToValidUTF8(s[:maxAnswerText], "")
 }
