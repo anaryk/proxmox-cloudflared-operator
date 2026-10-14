@@ -11,14 +11,16 @@ import (
 // Cloudflare documents no limit.
 func TestATunnelWithTooManyRulesIsNamed(t *testing.T) {
 	e := newEnv(t)
-	e.inv.set(snapshot(many(maxIngressRules + 1)...))
+	e.eng.ruleLimit = 10
+	e.inv.set(snapshot(many(11)...))
 
 	st := e.cycle()
 
-	require.True(t, hasProblem(st, "tunnel "+tunnelName+" in account "+testAccount+" has 1001 ingress rules"), st.Problems)
+	require.True(t, hasProblem(st, "tunnel "+tunnelName+" in account "+testAccount+" has 11 ingress rules, more than the 10"), st.Problems)
 
 	e = newEnv(t)
-	e.inv.set(snapshot(many(maxIngressRules)...))
+	e.eng.ruleLimit = 10
+	e.inv.set(snapshot(many(10)...))
 	st = e.cycle()
 	require.False(t, hasProblem(st, "ingress rules, more than"), st.Problems)
 }

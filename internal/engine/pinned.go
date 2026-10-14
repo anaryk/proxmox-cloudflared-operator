@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -19,10 +20,11 @@ import (
 const pinnedEmptyFor = 10 * time.Minute
 
 // maxIngressRules is the most rules of hostnames pco keeps a tunnel
-// under. Cloudflare documents no limit; a tunnel above it is named, as the
-// blocks of an account go into every tunnel of it, and a cluster with many
-// pinned tunnels multiplies them.
-const maxIngressRules = 1000
+// under, well above the routes it is measured with. Cloudflare documents no
+// limit; a tunnel above it is named, as the blocks of an account go into
+// every tunnel of it, and a cluster with many pinned tunnels multiplies
+// them.
+const maxIngressRules = 5000
 
 const problemTooManyRules = "tunnel %s in account %s has %d ingress rules, more than the %d pco keeps a tunnel under; " +
 	"Cloudflare may refuse its configuration"
@@ -37,8 +39,8 @@ func (c *cycleRun) checkRuleCount() {
 				n++
 			}
 		}
-		if n > maxIngressRules {
-			c.problem(problemTooManyRules, p.Name, p.AccountID, n, maxIngressRules)
+		if limit := cmp.Or(c.e.ruleLimit, maxIngressRules); n > limit {
+			c.problem(problemTooManyRules, p.Name, p.AccountID, n, limit)
 		}
 	}
 }

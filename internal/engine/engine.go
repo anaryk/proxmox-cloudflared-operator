@@ -378,6 +378,9 @@ type Engine struct {
 	// place is what the placement of routes keeps between cycles, guarded
 	// by the cycle lock.
 	place placementMemory
+	// ruleLimit is the most rules of hostnames a tunnel is kept under;
+	// zero is maxIngressRules. Tests lower it.
+	ruleLimit int
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.
