@@ -142,6 +142,7 @@ func (c *cycleRun) clusterView() *ClusterView {
 		v.Quorate, _ = q()
 	}
 	v.Blocks = c.blockViews()
+	v.CARotation = c.rotationView()
 	return v
 }
 

@@ -37,6 +37,23 @@ type fakeLease struct {
 	// leader.json.
 	next  planner.Writer
 	saved func(w planner.Writer) error
+	// handedTo are the nodes the lease was handed off to, and handoffErr
+	// what a hand-off fails with.
+	handedTo   []string
+	handoffErr error
+}
+
+// Handoff records the node the lease was handed to and ends the tenure.
+func (f *fakeLease) Handoff(_ context.Context, to string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.handoffErr != nil {
+		return f.handoffErr
+	}
+	f.handedTo = append(f.handedTo, to)
+	f.st.Holder, f.st.Valid = false, false
+	f.st.Record.ReleasedAt = t0
+	return nil
 }
 
 // holding is a lease this node holds, valid, for w.

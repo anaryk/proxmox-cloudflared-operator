@@ -182,6 +182,7 @@ func (c *cycleRun) observeNode(n *store.NodeEntry, rep NodeReport, heard bool, m
 	if joined && (self || fresh && !rep.ReceivedAt.Before(c.since())) && c.admits(n, rep, self) {
 		if c.giveIndex(n, entries) {
 			c.transition(n, registry.EventAdmitted)
+			delete(c.e.nodes.admitted, n.Name)
 		}
 	}
 	if (n.State == store.NodeActive || n.State == store.NodeDraining) && n.Index == nil {
@@ -220,7 +221,12 @@ func (c *cycleRun) admits(n *store.NodeEntry, rep NodeReport, self bool) bool {
 		c.problem("node %s stays joining: it has not reported %d of the shared routes yet", n.Name, missing)
 		return false
 	}
-	moves, wait, why := registry.Admit(n.Name, failing, failing, c.settings.Cluster.MaxMoves())
+	maxMoves := c.settings.Cluster.MaxMoves()
+	if c.e.adminAdmitted(n.Name) {
+		// The admin let every route the node fails move.
+		maxMoves = max(maxMoves, len(failing))
+	}
+	moves, wait, why := registry.Admit(n.Name, failing, failing, maxMoves)
 	if len(moves) > 0 {
 		if c.joining == nil {
 			c.joining = map[string]string{}

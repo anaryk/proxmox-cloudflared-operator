@@ -216,6 +216,7 @@ func (c *cycleRun) run() State {
 		c.advanceMoves()
 		c.savePlacements()
 		c.retirePinned()
+		c.rotationStep()
 		c.publishRemote()
 	}
 	c.watchTunnels()

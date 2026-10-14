@@ -331,6 +331,11 @@ type CARotation struct {
 	// Done are the steps finished, in their order.
 	Done       []string  `json:"done,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitzero"`
+	// PVESecretSHA256 is the hash of the Proxmox token's secret as the
+	// rotation began: the token has a new one once it differs.
+	PVESecretSHA256 string `json:"pveSecretSHA256,omitempty"`
+	// Rotated are the ids of the tunnels whose secret was rotated so far.
+	Rotated []string `json:"rotated,omitempty"`
 }
 
 // CARotation returns the rotation under way or last made.

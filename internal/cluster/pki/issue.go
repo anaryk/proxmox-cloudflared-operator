@@ -84,7 +84,7 @@ func (ca CA) IssueServer(pub *ecdsa.PublicKey, names []string, now time.Time, ra
 	if err != nil {
 		return nil, err
 	}
-	id, err := ca.installID()
+	id, err := ca.InstallID()
 	if err != nil {
 		return nil, err
 	}

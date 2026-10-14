@@ -165,6 +165,17 @@ type Deps struct {
 	// on; nil where it falls back on none.
 	Fallbacks   func() []string
 	Maintenance func(ctx context.Context) (map[string]pve.Maintenance, error)
+
+	// nodes: Close ends the connections of a node's agent, which a node
+	// that was forgotten loses before anything is rotated; Corosync reads
+	// corosync.conf, by which a node still in the cluster is told; Endpoints
+	// names where this controller answers the agents, which a join token
+	// carries; Reissue has this node issue its certificates again from the
+	// current CA, at once. Each nil where the daemon has none.
+	Close     func(node string)
+	Corosync  func() (members.Corosync, error)
+	Endpoints func() []string
+	Reissue   func(ctx context.Context) error
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -378,6 +389,9 @@ type Engine struct {
 	// place is what the placement of routes keeps between cycles, guarded
 	// by the cycle lock.
 	place placementMemory
+	// nodes is what the admin's decisions about the nodes keep between
+	// cycles, guarded by the cycle lock.
+	nodes nodeMemory
 	// ruleLimit is the most rules of hostnames a tunnel is kept under;
 	// zero is maxIngressRules. Tests lower it.
 	ruleLimit int

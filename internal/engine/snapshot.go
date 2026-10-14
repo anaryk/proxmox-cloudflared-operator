@@ -173,10 +173,11 @@ func (c *cycleRun) tunnelIDsOf(rt model.Route) []string {
 }
 
 // resolverOf is the node that resolves the target of a route: the node the
-// guest runs on while its agent reports fresh and is served, else this one.
+// guest runs on while its agent reports fresh and is served, else this one;
+// a manual route's is this node unless it is drained.
 func (c *cycleRun) resolverOf(rt model.Route) string {
 	if rt.Guest == nil {
-		return c.e.d.Node
+		return c.manualResolver()
 	}
 	g, ok := c.snap.Guest(*rt.Guest)
 	if !ok || g.Node == "" {

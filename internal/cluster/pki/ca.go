@@ -42,8 +42,8 @@ type CA struct {
 // caNamePrefix starts the common name of a CA, which the install id ends.
 const caNamePrefix = "pco CA "
 
-// installID is the install a CA is of, as NewCA named it.
-func (ca CA) installID() (string, error) {
+// InstallID is the install a CA is of, as NewCA named it.
+func (ca CA) InstallID() (string, error) {
 	id, ok := strings.CutPrefix(ca.Cert.Subject.CommonName, caNamePrefix)
 	if !ok || checkInstallID(id) != nil {
 		return "", fmt.Errorf("the CA %q is not one pco made for an install", ca.Cert.Subject.CommonName)

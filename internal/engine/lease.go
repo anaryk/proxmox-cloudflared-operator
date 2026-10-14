@@ -25,6 +25,9 @@ type Lease interface {
 	FirstWrite()
 	// Promote draws an epoch above seed, explicitly.
 	Promote(ctx context.Context, seed int) error
+	// Handoff releases the lease for to, which alone may take it for a
+	// while; to empty hands it to whichever node comes first.
+	Handoff(ctx context.Context, to string) error
 }
 
 const (

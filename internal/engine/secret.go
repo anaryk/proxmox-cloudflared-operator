@@ -165,7 +165,7 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 	if s.ObserveOnly {
 		return TunnelRotation{}, fmt.Errorf("%w: %s", ErrRefused, ObserveOnlyRefusal)
 	}
-	inst, found, err := e.d.Store.Install()
+	_, found, err := e.d.Store.Install()
 	switch {
 	case err != nil:
 		return TunnelRotation{}, fmt.Errorf("reading the install identity: %w", err)
@@ -177,25 +177,39 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 		return TunnelRotation{}, err
 	}
 	t := v.TunnelState
+	res := TunnelRotation{Tunnel: t.Name, TunnelID: t.ID, Account: t.AccountID}
+	if err := e.rotateSecret(ctx, t); err != nil {
+		return res, err
+	}
+	e.adminEvent(ctx, t.Name, fmt.Sprintf("the secret of tunnel %s in account %s was rotated: every connector of the tunnel was disconnected, "+
+		"and the one on this node restarts with the new token", t.Name, t.AccountID))
+	return res, nil
+}
+
+// rotateSecret gives a tunnel a new secret at Cloudflare, ends the
+// connections of its connectors and restarts the one on this node with the
+// new token, when the node runs one; the other nodes take the new token up
+// through their next snapshot. The caller holds the cycle lock.
+func (e *Engine) rotateSecret(ctx context.Context, t reconcile.TunnelState) error {
 	api := e.clients[t.CredentialID]
 	if api == nil {
-		return TunnelRotation{}, fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+		return fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
 	}
-	res := TunnelRotation{Tunnel: t.Name, TunnelID: t.ID, Account: t.AccountID}
 	what := fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID)
-
 	secret := make([]byte, cfapi.MinTunnelSecret)
 	if _, err := rand.Read(secret); err != nil {
-		return res, fmt.Errorf("making a secret: %w", err)
+		return fmt.Errorf("making a secret: %w", err)
 	}
 	if err := api.RotateTunnelSecret(ctx, t.AccountID, t.ID, secret); err != nil {
-		return res, fmt.Errorf("rotating the secret of %s: %w", what, err)
+		return fmt.Errorf("rotating the secret of %s: %w", what, err)
 	}
 	cleanErr := api.CleanUpConnections(ctx, t.AccountID, t.ID)
 	// The connectors are listed in the next cycle: the rollout to the one
-	// restarted, and whether any other came back.
+	// restarted, and whether any other came back. The other nodes get the
+	// token read anew.
 	delete(e.rolledOut, t.ID)
 	delete(e.asked, t.ID)
+	delete(e.place.tokens, t.ID)
 	defer e.Trigger()
 	token, err := api.TunnelToken(ctx, t.AccountID, t.ID)
 	if err == nil && strings.TrimSpace(token) == "" {
@@ -203,25 +217,31 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 	}
 	if err != nil {
 		e.retries[t.ID] = tokenRetry{at: e.d.Now(), why: err.Error()}
-		return res, fmt.Errorf("the secret of %s was rotated, but its new token could not be read: %w; "+
+		return fmt.Errorf("the secret of %s was rotated, but its new token could not be read: %w; "+
 			"its connector on this node takes it up when Cloudflare refuses the old one", what, err)
 	}
-	a, err := e.fleet.agentOf(inst)
-	if err != nil {
-		return res, fmt.Errorf("the secret of %s was rotated, but the agent of this node does not run to restart its connector: %w; "+
-			"it takes the new token up when Cloudflare refuses the old one", what, err)
-	}
-	if err := a.Restart(ctx, t.ID, token); err != nil {
-		return res, fmt.Errorf("the secret of %s was rotated, but its connector on this node could not be restarted: %s", what, redact(err.Error(), token))
+	if e.runsHere(t) {
+		a := e.fleet.current()
+		if a == nil {
+			return fmt.Errorf("the secret of %s was rotated, but the agent of this node does not run to restart its connector; "+
+				"it takes the new token up when Cloudflare refuses the old one", what)
+		}
+		if err := a.Restart(ctx, t.ID, token); err != nil {
+			return fmt.Errorf("the secret of %s was rotated, but its connector on this node could not be restarted: %s", what, redact(err.Error(), token))
+		}
 	}
 	if cleanErr != nil {
-		return res, fmt.Errorf("the secret of %s was rotated and its connector on this node restarts with the new token, "+
+		return fmt.Errorf("the secret of %s was rotated and its connector on this node restarts with the new token, "+
 			"but the connections of the tunnel could not be ended: %w; a connector elsewhere keeps its session until it reconnects: "+
 			"run pco tunnel rotate again", what, cleanErr)
 	}
-	e.adminEvent(ctx, t.Name, fmt.Sprintf("the secret of %s was rotated: every connector of the tunnel was disconnected, "+
-		"and the one on this node restarts with the new token", what))
-	return res, nil
+	return nil
+}
+
+// runsHere says whether this node runs a connector of a tunnel: the shared
+// one, and the one pinned to this node.
+func (e *Engine) runsHere(t reconcile.TunnelState) bool {
+	return t.Kind != TunnelPinned || t.Node == e.d.Node
 }
 
 // RotationTarget returns the tunnel a rotation is of among the tunnels of a

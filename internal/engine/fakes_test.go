@@ -708,6 +708,16 @@ func (h hookedAPI) Records(ctx context.Context, zoneID string, f cfapi.RecordFil
 	return h.API.Records(ctx, zoneID, f)
 }
 
+func (h hookedAPI) RotateTunnelSecret(ctx context.Context, account, id string, secret []byte) error {
+	h.before("RotateTunnelSecret")
+	return h.API.RotateTunnelSecret(ctx, account, id, secret)
+}
+
+func (h hookedAPI) CleanUpConnections(ctx context.Context, account, id string) error {
+	h.before("CleanUpConnections")
+	return h.API.CleanUpConnections(ctx, account, id)
+}
+
 // zoneView changes what Zones lists of the API it wraps: zones it hides are
 // left out, and a zone can be given another status.
 type zoneView struct {
@@ -852,6 +862,12 @@ type env struct {
 	members     func() members.Members
 	maintenance func(context.Context) (map[string]pve.Maintenance, error)
 	fallbacks   func() []string
+	// What the lifecycle of the nodes asks of the daemon: each read when it
+	// is called, so that a test sets it after the engine was made.
+	closeNode func(node string)
+	corosync  func() (members.Corosync, error)
+	endpoints func() []string
+	reissue   func(context.Context) error
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -942,6 +958,29 @@ func (e *env) newEngineWith(conns agent.Connectors) *Engine {
 		Members:     e.members,
 		Maintenance: e.maintenance,
 		Fallbacks:   e.fallbacks,
+		Close: func(node string) {
+			if e.closeNode != nil {
+				e.closeNode(node)
+			}
+		},
+		Corosync: func() (members.Corosync, error) {
+			if e.corosync != nil {
+				return e.corosync()
+			}
+			return members.Corosync{}, nil
+		},
+		Endpoints: func() []string {
+			if e.endpoints != nil {
+				return e.endpoints()
+			}
+			return []string{"10.0.0.2:8644"}
+		},
+		Reissue: func(ctx context.Context) error {
+			if e.reissue != nil {
+				return e.reissue(ctx)
+			}
+			return nil
+		},
 	}
 	if e.acc != nil {
 		d.Access = e.acc
