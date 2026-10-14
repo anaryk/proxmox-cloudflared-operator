@@ -235,6 +235,33 @@ func TestTheOtherNodesGoOnlyOnceTheUninstallIsConfirmed(t *testing.T) {
 	})
 }
 
+// The agents of the other nodes learn of their removal from the registry
+// and the controller within seconds; the store they read it from must last
+// that long, and their connectors must be stopped before the tunnels go.
+func TestTheOtherNodesAreGivenTimeToStandDown(t *testing.T) {
+	e := newTestEnv(t)
+	e.joinedNode()
+	others := func(context.Context) error {
+		n := e.node(firstNode)
+		n.State = string(agentproto.Removed)
+		return e.st.SaveNode(n)
+	}
+	e.s.host.sleep = func(_ context.Context, d time.Duration) error {
+		e.events = append(e.events, "sleep "+d.String())
+		return nil
+	}
+	e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen(), serviceStopped(), connectorsPruned())
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true, RemoveOthers: others}))
+	e.done()
+
+	waited := slices.Index(e.events, "sleep "+othersStandDown.String())
+	require.GreaterOrEqual(t, waited, 0, "the uninstall waits for the agents of the other nodes")
+	require.Less(t, waited, slices.Index(e.events, "run systemctl disable --now pco.service"))
+	e.requireShown("waiting " + othersStandDown.String() + " for the agents of the other nodes to stand down")
+	e.requireStoreGone()
+}
+
 func TestTheOnlyActiveNodeIsNotRemovedWithoutForce(t *testing.T) {
 	e := newTestEnv(t)
 	e.joinedNode()

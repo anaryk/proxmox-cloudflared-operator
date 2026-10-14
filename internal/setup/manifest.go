@@ -35,6 +35,9 @@ type Manifest struct {
 	// AddedKeyring is true when setup downloaded the key of the apt source,
 	// which may have been there before the source was.
 	AddedKeyring bool `json:"addedKeyring"`
+	// CreatedDatacenterCfg is true when the registration of the tags made
+	// /etc/pve/datacenter.cfg, which a new cluster does not have.
+	CreatedDatacenterCfg bool `json:"createdDatacenterCfg,omitempty"`
 	// WebEnabled is true when setup enabled pco-web.service, WebEnv when it
 	// wrote /etc/default/pco-web. WebCert is the mode of the certificate the
 	// web interface serves: ca, own or pveproxy. WebTLS lists the files, links

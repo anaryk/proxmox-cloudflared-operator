@@ -56,6 +56,26 @@ type fakeHost struct {
 
 	userAttrs  map[string]any // more fields of pco@pve in the user list
 	tokenAttrs map[string]any // more fields of its token in the token list
+
+	// datacenter is the file the cluster options are kept in, which a
+	// change of them writes, as pmxcfs does, with the lines of the admin in
+	// datacenterLines first; empty: none is written.
+	datacenter      string
+	datacenterLines string
+}
+
+// writeDatacenter writes the cluster options as Proxmox does after a change:
+// the file stays, empty when no option is left.
+func (h *fakeHost) writeDatacenter() {
+	if h.datacenter == "" {
+		return
+	}
+	text := h.datacenterLines
+	if len(h.tags) > 0 {
+		text += "registered-tags: " + strings.Join(h.tags, ";") + "\n"
+	}
+	require.NoError(h.t, os.MkdirAll(filepath.Dir(h.datacenter), 0o755))
+	require.NoError(h.t, os.WriteFile(h.datacenter, []byte(text), 0o640))
 }
 
 // fakeIPSet is an ipset of the datacenter firewall with its entries.
@@ -251,9 +271,11 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		return asJSON(map[string]any{"enable": map[bool]int{true: 1}[h.firewall], "policy_in": "DROP"}), nil
 	case cmd == "pvesh set /cluster/options --delete registered-tags":
 		h.tags = nil
+		h.writeDatacenter()
 		return "", nil
 	case name == "pvesh" && flag(args, "--registered-tags") != "":
 		h.tags = strings.Split(flag(args, "--registered-tags"), ";")
+		h.writeDatacenter()
 		return "", nil
 	case name == "pvesh" && strings.HasPrefix(args[1], "/cluster/firewall/"):
 		return h.firewallAPI(args)

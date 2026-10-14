@@ -187,6 +187,11 @@ func (r recordingAPI) DeleteTunnel(ctx context.Context, accountID, tunnelID stri
 	return r.API.DeleteTunnel(ctx, accountID, tunnelID)
 }
 
+func (r recordingAPI) CleanUpConnections(ctx context.Context, accountID, tunnelID string) error {
+	*r.events = append(*r.events, "cf CleanUpConnections "+accountID+" "+tunnelID)
+	return r.API.CleanUpConnections(ctx, accountID, tunnelID)
+}
+
 // unreadableConfig is a Cloudflare that cannot show the configuration of a
 // tunnel.
 type unreadableConfig struct{ cfapi.API }
@@ -261,6 +266,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Cleanup(e.verify)
 	e.s.host = host{
 		pveDir:        "/etc/pve",
+		datacenterCfg: filepath.Join(base, "pve", "datacenter.cfg"),
 		members:       filepath.Join(base, "pve", ".members"),
 		corosync:      filepath.Join(base, "pve", "corosync.conf"),
 		localCorosync: filepath.Join(base, "corosync", "corosync.conf"),

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -273,10 +275,14 @@ type Objects struct {
 	// before the command that creates it runs: if the object is there later,
 	// it is pco's, also when the run is killed right after making it.
 	Record func(change func(*Manifest)) error
+	// DatacenterCfg is the file of the options of the cluster, which a
+	// registration of the tags makes when there is none; empty where it is
+	// not looked at.
+	DatacenterCfg string
 }
 
 func (r *run) objects() Objects {
-	return Objects{Run: r.run, Ask: r.ask, Version: r.version, Record: r.record}
+	return Objects{Run: r.run, Ask: r.ask, Version: r.version, Record: r.record, DatacenterCfg: r.host.datacenterCfg}
 }
 
 func (r *run) ensureRole(ctx context.Context) error { return r.objects().EnsureRole(ctx) }
@@ -533,7 +539,14 @@ func (o Objects) EnsureTags(ctx context.Context, gate string, register bool) err
 	if missing := without(wanted, tags); len(missing) == 0 {
 		o.Ask.Info("registered tags: nothing needed")
 	} else {
-		if err := o.Record(func(m *Manifest) { m.addTags(missing) }); err != nil {
+		made, err := o.makesDatacenterCfg()
+		if err != nil {
+			return err
+		}
+		if err := o.Record(func(m *Manifest) {
+			m.addTags(missing)
+			m.CreatedDatacenterCfg = m.CreatedDatacenterCfg || made
+		}); err != nil {
 			return err
 		}
 		if err := SetRegisteredTags(ctx, o.Run, append(tags, missing...)); err != nil {
@@ -549,6 +562,22 @@ func (o Objects) EnsureTags(ctx context.Context, gate string, register bool) err
 	}
 	o.Ask.Info("note: clones and restores of a guest keep its tags, so the clone of a published guest asks to be published too")
 	return nil
+}
+
+// makesDatacenterCfg says whether a write of the options of the cluster
+// makes the file they are kept in.
+func (o Objects) makesDatacenterCfg() (bool, error) {
+	if o.DatacenterCfg == "" {
+		return false, nil
+	}
+	_, err := os.Stat(o.DatacenterCfg)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("looking for %s: %w", o.DatacenterCfg, err)
+	}
+	return false, nil
 }
 
 // warnOpenGate says what a declined registration leaves open: with the gate

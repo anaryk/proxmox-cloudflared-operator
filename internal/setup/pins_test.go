@@ -64,11 +64,59 @@ func TestUninstallKeepsTheTagsAnAdminRegistered(t *testing.T) {
 	require.Equal(t, []string{"a", "cf-tunnel"}, h.tags)
 }
 
+// Registering the tags writes /etc/pve/datacenter.cfg, which a fresh
+// cluster does not have: the uninstall removes the file it made when nothing
+// but what pco put there was in it.
+func TestUninstallRemovesTheDatacenterFileTheTagsMade(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		before string // the file before setup; empty: none
+		added  string // what an admin added after setup
+		stays  bool
+	}{
+		{name: "made by setup", stays: false},
+		{name: "made by setup, then an admin set an option", added: "keyboard: de\n", stays: true},
+		{name: "there before setup", before: "keyboard: en-us\n", stays: true},
+		{name: "there before setup, empty", before: "\n", stays: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit(serviceUnit)
+			h := newFakeHost(t)
+			h.tags = nil
+			h.datacenter = e.s.host.datacenterCfg
+			if tt.before != "" {
+				h.datacenterLines = tt.before
+				h.writeDatacenter()
+			}
+			e.onHost(h)
+			require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+			require.FileExists(t, h.datacenter)
+			require.Equal(t, tt.before == "", e.manifest().CreatedDatacenterCfg)
+			h.datacenterLines += tt.added
+
+			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true}))
+
+			require.Empty(t, h.tags)
+			if !tt.stays {
+				require.NoFileExists(t, h.datacenter)
+				e.requireShown("removed " + h.datacenter)
+				return
+			}
+			require.FileExists(t, h.datacenter)
+			got, err := os.ReadFile(h.datacenter)
+			require.NoError(t, err)
+			require.Equal(t, tt.before+tt.added, string(got))
+		})
+	}
+}
+
 func TestPurgeDeletesOnlyTheTunnelsOfTheInstall(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(Manifest{})
 	e.atCloudflare()
 	e.cf.SeedTunnel(testAccount, "pco-"+testInstall+"-pve2", nil)
+	e.cf.SeedTunnel(testAccount, "pco-"+testInstall+"-Pve2", nil)
 	e.cf.SeedTunnel(testAccount, "pco-"+testInstall+"_probe_abc123", nil)
 	e.cf.SeedTunnel(testAccount, "pco-"+testInstall+"_probe_ABC", nil)
 	e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned())
@@ -76,8 +124,8 @@ func TestPurgeDeletesOnlyTheTunnelsOfTheInstall(t *testing.T) {
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
 	e.done()
 
-	require.Equal(t, []string{"pco-ba9876543210", "pco-" + testInstall + "-pve2", "pco-" + testInstall + "_probe_ABC"},
-		e.tunnelNames(), "the tunnel of the install and its probe go; a tunnel of another name stays")
+	require.Equal(t, []string{"pco-ba9876543210", "pco-" + testInstall + "-Pve2", "pco-" + testInstall + "_probe_ABC"},
+		e.tunnelNames(), "the tunnels of the install, pinned ones included, and its probe go; a tunnel of another name stays")
 }
 
 func TestUninstallRemovesOfCloudflaredOnlyWhatTheManifestLists(t *testing.T) {

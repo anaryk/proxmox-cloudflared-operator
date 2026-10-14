@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -153,6 +154,9 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 		if err := o.RemoveOthers(ctx); err != nil {
 			return err
 		}
+		if len(others) > 0 {
+			u.waitForOthers(ctx)
+		}
 	}
 	if err := u.handoff(ctx); err != nil {
 		return err
@@ -283,6 +287,22 @@ func (u *uninstall) refuseToLeaveAlone() error {
 	}
 	return fmt.Errorf("no other node of the install is active (%s), so the connectors of this node may be the only ones serving "+
 		"the shared tunnel; nothing was removed. Admit or undrain another node first, or pass --force", strings.Join(states, ", "))
+}
+
+// othersStandDown is how long an uninstall of the whole install waits once
+// the other nodes are removed: their agents read the registry every two
+// seconds and are refused by the controller at their next request, and
+// stand down then, stopping their connectors. The registry must still be
+// there, and their connectors gone before the tunnels are deleted.
+const othersStandDown = 10 * time.Second
+
+// waitForOthers gives the agents of the nodes just removed the time to
+// stand down.
+func (u *uninstall) waitForOthers(ctx context.Context) {
+	u.ask.Info("waiting %s for the agents of the other nodes to stand down", othersStandDown)
+	if err := u.host.sleep(ctx, othersStandDown); err != nil {
+		u.ask.Warn("the wait for the other nodes ended early: %v", err)
+	}
 }
 
 // handoff asks the daemon to hand the lease off while this node holds it:

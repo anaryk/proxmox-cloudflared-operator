@@ -265,6 +265,9 @@ func (u *uninstall) describeProxmox() {
 	if tags := without(m.RegisteredTags, without(m.RegisteredTags, s.tags)); len(tags) > 0 {
 		u.ask.Info("  the registered tags %s", strings.Join(tags, ", "))
 	}
+	if m.CreatedDatacenterCfg && len(m.RegisteredTags) > 0 {
+		u.ask.Info("  %s, which the tags made, if nothing else is left in it", u.host.datacenterCfg)
+	}
 }
 
 // describeManaged lists the managed cards that go first and the objects of

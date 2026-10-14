@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -179,13 +180,20 @@ func (u *uninstall) listTunnels(ctx context.Context, credID string, api cfapi.AP
 		}
 		for _, t := range tunnels {
 			key := "tunnel " + t.ID
-			if (t.Name == name || planner.IsProbeTunnel(u.installID, t.Name)) && !seen[key] {
+			if ours(u.installID, t.Name) && !seen[key] {
 				seen[key] = true
 				found.tunnels = append(found.tunnels, cfTunnel{api: api, account: account, tunnel: t})
 			}
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ours says whether a tunnel is one of the install: its shared tunnel, one
+// pinned to a node, or a probe a credential check left.
+func ours(installID, name string) bool {
+	_, pinned := planner.PinnedTunnelNode(installID, name)
+	return name == planner.TunnelName(installID) || pinned || planner.IsProbeTunnel(installID, name)
 }
 
 // showCloudflare lists what the install has at Cloudflare, as the survey
@@ -227,11 +235,41 @@ func (u *uninstall) deleteRecords(ctx context.Context) {
 // Cloudflare refuses to delete a tunnel while it still counts a connection.
 func (u *uninstall) deleteTunnels(ctx context.Context) {
 	for _, t := range u.found.cloudflare.tunnels {
-		err := t.api.DeleteTunnel(ctx, t.account, t.tunnel.ID)
-		if err != nil && !cfapi.IsNotFound(err) {
+		if err := u.deleteTunnel(ctx, t); err != nil {
 			u.fail("tunnel %s (%s) in account %s was not deleted: %v", t.tunnel.Name, t.tunnel.ID, t.account, err)
 			continue
 		}
 		u.ask.Info("Cloudflare: deleted tunnel %s (%s)", t.tunnel.Name, t.tunnel.ID)
+	}
+}
+
+// deleteTries bounds the deletes of one tunnel, and deleteWait is the wait
+// between two: the agents of the other nodes of a cluster that is
+// uninstalled whole stand down within a few seconds of their removal, and
+// their connectors connect again until they did.
+const (
+	deleteTries = 6
+	deleteWait  = 5 * time.Second
+)
+
+// deleteTunnel ends the connections of a tunnel, which Cloudflare may still
+// count after the connectors stopped, and deletes it. While Cloudflare says
+// it has connections, both are tried again, a few times. A tunnel that is
+// gone is deleted.
+func (u *uninstall) deleteTunnel(ctx context.Context, t cfTunnel) error {
+	for try := 1; ; try++ {
+		err := t.api.CleanUpConnections(ctx, t.account, t.tunnel.ID)
+		if err == nil {
+			err = t.api.DeleteTunnel(ctx, t.account, t.tunnel.ID)
+		}
+		switch {
+		case err == nil || cfapi.IsNotFound(err):
+			return nil
+		case !cfapi.HasConnections(err) || try == deleteTries:
+			return err
+		}
+		if err := u.host.sleep(ctx, deleteWait); err != nil {
+			return err
+		}
 	}
 }

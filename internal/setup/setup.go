@@ -180,6 +180,9 @@ type Setup struct {
 // host is where setup finds the parts of the node it works on.
 type host struct {
 	pveDir string // the mount point of the cluster filesystem
+	// datacenterCfg is the file the options of the cluster are kept in,
+	// the registered tags among them.
+	datacenterCfg string
 	// members lists the nodes of the cluster as pmxcfs sees them, corosync
 	// and localCorosync are the cluster's corosync.conf and the node's own
 	// copy, which a node that stands alone has neither of, and pveRootCA is
@@ -225,6 +228,7 @@ type host struct {
 func nodeHost() host {
 	return host{
 		pveDir:        "/etc/pve",
+		datacenterCfg: "/etc/pve/datacenter.cfg",
 		members:       members.MembersFile,
 		corosync:      members.CorosyncFile,
 		localCorosync: members.CorosyncLocalFile,

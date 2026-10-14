@@ -306,8 +306,10 @@ func TestASecondUninstallFinishesTheRest(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(setupsUser)
 	e.atCloudflare()
-	// Cloudflare still sees the connector when the tunnel is deleted.
-	e.cf.SetConnectors(testAccount, tunnelID, []cfapi.Connector{{ID: "conn-1", Connections: 4}})
+	// A connector somewhere keeps connecting again, for longer than the
+	// uninstall waits.
+	back := &connectingAgain{fake: e.cf, times: deleteTries}
+	e.api = func(api cfapi.API) cfapi.API { back.API = api; return back }
 	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	err := e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true})

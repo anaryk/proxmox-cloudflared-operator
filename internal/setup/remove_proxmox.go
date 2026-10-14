@@ -2,6 +2,9 @@ package setup
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 )
@@ -109,9 +112,33 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 	if granted && bothGo {
 		u.checkGrantGone(ctx)
 	}
-	if len(m.RegisteredTags) > 0 {
-		u.removeTags(ctx, s.tags)
+	if len(m.RegisteredTags) > 0 && u.removeTags(ctx, s.tags) && m.CreatedDatacenterCfg {
+		u.removeDatacenterCfg()
 	}
+}
+
+// removeDatacenterCfg removes the file of the options of the cluster, which
+// the registration of the tags made, once nothing is left in it: Proxmox
+// keeps it, empty, when its last option goes. One an admin wrote an option
+// into since stays.
+func (u *uninstall) removeDatacenterCfg() {
+	path := u.host.datacenterCfg
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return
+	case err != nil:
+		u.fail("reading %s: %v", path, err)
+		return
+	case strings.TrimSpace(string(b)) != "":
+		u.ask.Info("%s: kept, it holds options pco did not set", path)
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		u.fail("removing %s: %v", path, err)
+		return
+	}
+	u.ask.Info("removed %s, which the registration of the tags made", path)
 }
 
 // revokeGrant revokes setup's grant and reports whether it did.
@@ -200,16 +227,17 @@ func (u *uninstall) removeRole(ctx context.Context, role *pveRole, goes bool, wh
 }
 
 // removeTags removes from the registered tags the ones setup added, and keeps
-// the others in their order.
-func (u *uninstall) removeTags(ctx context.Context, tags []string) {
+// the others in their order. It reports whether none of setup's is left.
+func (u *uninstall) removeTags(ctx context.Context, tags []string) bool {
 	keep := without(tags, u.manifest.RegisteredTags)
 	if len(keep) == len(tags) {
 		u.ask.Info("registered tags: nothing needed")
-		return
+		return true
 	}
 	if err := u.setRegisteredTags(ctx, keep); err != nil {
 		u.fail("%v", err)
-		return
+		return false
 	}
 	u.ask.Info("registered tags: removed %s", strings.Join(without(tags, keep), ", "))
+	return true
 }
