@@ -1,0 +1,143 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+// lostView is what Cloudflare lists of a tunnel's connectors, told apart by
+// who may run them.
+type lostView struct {
+	listed int
+	// lost are the connectors the nodes that are gone may run.
+	lost []string
+	// unsure says that a node still in the install that runs a connector of
+	// the tunnel reported none: a connector it runs looks like a lost one.
+	unsure bool
+}
+
+// lostConnectors lists the connectors of a tunnel the nodes that are gone
+// may run: those of ids, and every other one no node still in the install
+// owns, unless Cloudflare says it started after since, when the secret was
+// given: such a one runs with the new token, which no node that is gone got.
+func (e *Engine) lostConnectors(ctx context.Context, t reconcile.TunnelState, ids []string, since time.Time) (lostView, error) {
+	api := e.clients[t.CredentialID]
+	if api == nil {
+		return lostView{}, fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+	}
+	listed, err := api.Connectors(ctx, t.AccountID, t.ID)
+	if err != nil {
+		return lostView{}, err
+	}
+	owned, sure, err := e.ownedConnectors(t)
+	if err != nil {
+		return lostView{}, err
+	}
+	v := lostView{listed: len(listed), unsure: !sure}
+	for _, c := range listed {
+		switch {
+		case slices.Contains(ids, c.ID):
+		case owned[c.ID]:
+			continue
+		case !since.IsZero() && c.RunAt.After(since):
+			continue
+		}
+		v.lost = append(v.lost, c.ID)
+	}
+	return v, nil
+}
+
+// dropLost ends the connections of the connectors of a tunnel the nodes that
+// are gone may run, as lostConnectors finds them. When that cannot be done
+// connector by connector, because the listing failed or shows nothing, a
+// node still in the install cannot be told from the ones that are gone, or a
+// connector cannot be dropped, the connections of every connector of the
+// tunnel are ended: a session of a gone node must not outlive the rotation,
+// and the replicas connect again with the new token.
+func (e *Engine) dropLost(ctx context.Context, t reconcile.TunnelState, ids []string, since time.Time) error {
+	api := e.clients[t.CredentialID]
+	if api == nil {
+		return fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+	}
+	v, err := e.lostConnectors(ctx, t, ids, since)
+	switch {
+	case err != nil:
+	case v.listed == 0:
+		// A listing may lag a connection: nothing in it tells that the
+		// nodes keep none.
+		err = errors.New("no connector is listed to tell the nodes' from")
+	case v.unsure && len(v.lost) > 0:
+		err = errors.New("a node still in the install reported no connector, so its own cannot be told from the lost ones")
+	default:
+		for _, id := range v.lost {
+			if err = api.CleanUpConnector(ctx, t.AccountID, t.ID, id); err != nil {
+				err = fmt.Errorf("connector %s: %w", id, err)
+				break
+			}
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	if cleanErr := api.CleanUpConnections(ctx, t.AccountID, t.ID); cleanErr != nil {
+		return fmt.Errorf("the secret of tunnel %s in account %s was rotated, but the connectors of the nodes that are gone could not be dropped: %w; "+
+			"nor could every connection of the tunnel be ended: %w", t.Name, t.AccountID, err, cleanErr)
+	}
+	return nil
+}
+
+// ownedConnectors are the ids of the connectors of a tunnel that this node
+// runs, as the last state shows them, or that the agent of a node still
+// served reported as its own, and whether every node that runs one was
+// heard of: the replicas for the shared tunnel, the node of a pinned one.
+func (e *Engine) ownedConnectors(t reconcile.TunnelState) (map[string]bool, bool, error) {
+	nodes, err := e.d.Store.Nodes()
+	if err != nil {
+		return nil, false, fmt.Errorf("reading the node registry: %w", err)
+	}
+	s, err := e.d.Store.Settings()
+	if err != nil {
+		return nil, false, fmt.Errorf("reading the settings: %w", err)
+	}
+	owned := map[string]bool{}
+	sure := true
+	for _, st := range e.State().Connectors {
+		if st.TunnelID == t.ID && st.ConnectorID != "" {
+			owned[st.ConnectorID] = true
+		}
+	}
+	if e.runsHere(t) && len(owned) == 0 && runsConnector(store.NodeEntry{Name: e.d.Node, State: store.NodeActive}, t, s) {
+		sure = false
+	}
+	for _, n := range nodes {
+		if n.Name == e.d.Node || !servedState(n.State) {
+			continue
+		}
+		ids := e.place.ids[n.Name][t.ID]
+		for id := range ids {
+			owned[id] = true
+		}
+		if len(ids) == 0 && runsConnector(n, t, s) {
+			sure = false
+		}
+	}
+	return owned, sure, nil
+}
+
+// runsConnector says whether a node runs a connector of a tunnel: an active,
+// undrained replica the shared one, its node a pinned one.
+func runsConnector(n store.NodeEntry, t reconcile.TunnelState, s store.Settings) bool {
+	if t.Kind == TunnelPinned {
+		return t.Node == n.Name
+	}
+	if list := s.Cluster.Replicas; len(list) > 0 && !slices.Contains(list, n.Name) {
+		return false
+	}
+	return n.State == store.NodeActive && n.Drained == nil
+}

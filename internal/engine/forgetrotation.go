@@ -33,23 +33,23 @@ func (c *cycleRun) forgetRotations() {
 }
 
 // noLostConnection says that Cloudflare lists no connector of a shared
-// tunnel the forgotten node may still run: none of its ids, and, when they
-// are not known, none that no node still in the install owns. One that is
-// listed is dropped again, and the rotation stays until a later listing
-// shows none.
+// tunnel the forgotten node may still run: none of its ids, and none that
+// no node still in the install owns and that started before the secret was
+// given. One that is listed is dropped again, and the rotation stays until
+// a later listing shows none.
 func (c *cycleRun) noLostConnection(name string, rot store.ForgetRotation) bool {
 	clean := true
 	for _, t := range c.tunnels {
 		if t.Kind == TunnelPinned || !t.Exists || t.ID == "" {
 			continue
 		}
-		lost, err := c.e.lostConnectors(c.ctx, t, rot.Connectors[t.ID])
-		if err == nil && len(lost) == 0 {
+		v, err := c.e.lostConnectors(c.ctx, t, rot.Connectors[t.ID], rot.At)
+		if err == nil && len(v.lost) == 0 {
 			continue
 		}
 		clean = false
 		if err == nil {
-			err = c.e.dropLost(c.ctx, t, lost)
+			err = c.e.dropLost(c.ctx, t, v.lost, rot.At)
 		}
 		if err != nil {
 			c.problem(problemForgetRotation, name, t.Name, t.AccountID, err)

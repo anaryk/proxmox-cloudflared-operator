@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
@@ -423,6 +424,9 @@ func TestTheConnectionsOfTheOldSecretEndAfterTheRollout(t *testing.T) {
 	w, _ := compromisedWorld(t)
 	id := w.tunnelID(t, tunnelName)
 	require.Equal(t, []string{"pve3-" + id}, w.rotationRecord(t).Connectors[id])
+	w.conn.setConnectorID(id, "c-pve1")
+	w.cf.SetConnectors(testAccount, id, []cfapi.Connector{{ID: "c-pve1"}, {ID: "pve2-" + id}, {ID: "pve3-" + id}})
+	w.tick(time.Second)
 	require.NoError(t, w.store.DeleteCredential(testCred))
 	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
 	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))

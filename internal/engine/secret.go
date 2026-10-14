@@ -263,109 +263,6 @@ func (e *Engine) takeUpSecret(ctx context.Context, t reconcile.TunnelState) erro
 	return nil
 }
 
-// dropLost ends the connections of the connectors of a tunnel that the nodes
-// that are gone ran: those of ids, or, when they are not known, every one
-// Cloudflare lists that no node still in the install reported as its own.
-// When that cannot be done connector by connector, the connections of every
-// connector of the tunnel are ended: a session of a gone node must not
-// outlive the rotation, and the replicas connect again with the new token.
-func (e *Engine) dropLost(ctx context.Context, t reconcile.TunnelState, ids []string) error {
-	api := e.clients[t.CredentialID]
-	if api == nil {
-		return fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
-	}
-	err := e.dropConnectors(ctx, api, t, ids)
-	if err == nil {
-		return nil
-	}
-	if cleanErr := api.CleanUpConnections(ctx, t.AccountID, t.ID); cleanErr != nil {
-		return fmt.Errorf("the secret of tunnel %s in account %s was rotated, but the connectors of the nodes that are gone could not be dropped: %w; "+
-			"nor could every connection of the tunnel be ended: %w", t.Name, t.AccountID, err, cleanErr)
-	}
-	return nil
-}
-
-// dropConnectors ends the connections of the connectors of ids one by one,
-// or, without ids, of those no node still in the install owns.
-func (e *Engine) dropConnectors(ctx context.Context, api cfapi.API, t reconcile.TunnelState, ids []string) error {
-	if len(ids) == 0 {
-		listed, err := api.Connectors(ctx, t.AccountID, t.ID)
-		switch {
-		case err != nil:
-			return err
-		case len(listed) == 0:
-			// A listing may lag a connection: nothing in it tells that the
-			// nodes keep none.
-			return errors.New("no connector is listed to tell the nodes' from")
-		}
-		owned, err := e.ownedConnectors(t.ID)
-		if err != nil {
-			return err
-		}
-		for _, c := range listed {
-			if !owned[c.ID] {
-				ids = append(ids, c.ID)
-			}
-		}
-	}
-	for _, id := range ids {
-		if err := api.CleanUpConnector(ctx, t.AccountID, t.ID, id); err != nil {
-			return fmt.Errorf("connector %s: %w", id, err)
-		}
-	}
-	return nil
-}
-
-// lostConnectors are the connectors Cloudflare lists of a tunnel that nodes
-// that are gone may run: those of ids, or, without ids, every one no node
-// still in the install owns.
-func (e *Engine) lostConnectors(ctx context.Context, t reconcile.TunnelState, ids []string) ([]string, error) {
-	api := e.clients[t.CredentialID]
-	if api == nil {
-		return nil, fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
-	}
-	listed, err := api.Connectors(ctx, t.AccountID, t.ID)
-	if err != nil {
-		return nil, err
-	}
-	owned, err := e.ownedConnectors(t.ID)
-	if err != nil {
-		return nil, err
-	}
-	var lost []string
-	for _, c := range listed {
-		if len(ids) > 0 && slices.Contains(ids, c.ID) || len(ids) == 0 && !owned[c.ID] {
-			lost = append(lost, c.ID)
-		}
-	}
-	return lost, nil
-}
-
-// ownedConnectors are the ids of the connectors of a tunnel that this node
-// runs, as the last state shows them, or that the agent of a node still
-// served reported as its own.
-func (e *Engine) ownedConnectors(tunnelID string) (map[string]bool, error) {
-	nodes, err := e.d.Store.Nodes()
-	if err != nil {
-		return nil, fmt.Errorf("reading the node registry: %w", err)
-	}
-	owned := map[string]bool{}
-	for _, st := range e.State().Connectors {
-		if st.TunnelID == tunnelID && st.ConnectorID != "" {
-			owned[st.ConnectorID] = true
-		}
-	}
-	for _, n := range nodes {
-		if n.Name == e.d.Node || !servedState(n.State) {
-			continue
-		}
-		for id := range e.place.ids[n.Name][tunnelID] {
-			owned[id] = true
-		}
-	}
-	return owned, nil
-}
-
 // rotateFor rotates the secret of a tunnel for nodes that are gone, as far
 // as r shows it not done: the secret once, and then, until it succeeds,
 // what follows it: the connectors that remain take the new token up, and
@@ -387,7 +284,7 @@ func (e *Engine) rotateFor(ctx context.Context, t reconcile.TunnelState, r *stor
 	if err := e.takeUpSecret(ctx, t); err != nil {
 		return err
 	}
-	if err := e.dropLost(ctx, t, r.Connectors[t.ID]); err != nil {
+	if err := e.dropLost(ctx, t, r.Connectors[t.ID], r.At); err != nil {
 		return err
 	}
 	r.TakenUp = append(r.TakenUp, t.ID)
