@@ -273,21 +273,25 @@ func (s *suite) editSettings(t testing.TB, edit func(*store.Settings)) {
 	require.NoError(t, st.SaveSettings(settings))
 }
 
-// fakeListen is where the fake listens: on the node's loopback, or on the
-// node's address on the bridge of the run, which the appliance reaches.
+// fakeListen is where the fake listens: on the node's loopback, on the
+// node's address on the bridge of the run, which the appliance reaches, or on
+// the address a cluster names the node by, which every node reaches.
 func (s *suite) fakeListen() string {
-	if s.lay.isAppliance() {
+	switch {
+	case s.lay.fakeHost != "":
+		return s.lay.fakeHost + ":0"
+	case s.lay.isAppliance():
 		return s.lay.nodeAddr + ":0"
 	}
 	return "127.0.0.1:0"
 }
 
 // apiURL is the Cloudflare API of the fake as pco reaches it: on the node at
-// the fake's own address; in the appliance at the relay on its loopback,
-// which takes the place of the fake there, as pco accepts the override for a
-// loopback address only.
+// the fake's own address; in the appliance and on the nodes of a cluster at
+// the relay on the loopback, which takes the place of the fake there, as pco
+// accepts the override for a loopback address only.
 func (s *suite) apiURL() string {
-	if s.lay.isAppliance() {
+	if s.lay.relayed() {
 		return relayURL
 	}
 	return s.fake.url()

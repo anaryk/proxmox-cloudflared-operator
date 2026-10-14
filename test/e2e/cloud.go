@@ -47,6 +47,9 @@ const (
 	fakeZoneID  = "zone-e2e"
 	fakeZone    = "example.test"
 	fakeToken   = "e2e-dummy-token-0123456789"
+	// fakeSecondToken is the token an admin replaces fakeToken with, as
+	// the rotation after a compromised node asks for.
+	fakeSecondToken = "e2e-dummy-token-9876543210"
 
 	// foreignComment is the comment of the record the suite makes itself,
 	// by which it finds it again.
@@ -65,7 +68,7 @@ func newFakeCloud(listen string) (*fakeCloud, error) {
 	f := cffake.New()
 	f.AddAccount(fakeAccount, "e2e")
 	f.AddZone(fakeZoneID, fakeZone, fakeAccount)
-	srv := &fakeServer{addr: listen, handler: cffake.Handler(f, cffake.WithToken(fakeToken))}
+	srv := &fakeServer{addr: listen, handler: cffake.Handler(f, cffake.WithToken(fakeToken), cffake.WithToken(fakeSecondToken))}
 	if err := srv.start(); err != nil {
 		return nil, err
 	}
@@ -101,8 +104,13 @@ func (c *fakeCloud) Ingress(t testing.TB, tunnelID string) []planner.IngressRule
 	return cfg.Ingress
 }
 
-func (c *fakeCloud) RunToken(_ testing.TB, tunnelID string) string {
-	return cffake.RunToken(fakeAccount, tunnelID)
+// RunToken is the token the fake hands out for the tunnel now, made of the
+// secret a rotation gave it, if one did.
+func (c *fakeCloud) RunToken(t testing.TB, tunnelID string) string {
+	t.Helper()
+	token, err := c.f.TunnelToken(context.Background(), fakeAccount, tunnelID)
+	require.NoError(t, err)
+	return token
 }
 
 func (c *fakeCloud) Foreign(t testing.TB, zone, name, content string) cfapi.Record {
@@ -139,7 +147,22 @@ type fakeServer struct {
 	addr string // with port 0 until the first start
 	srv  *http.Server
 	held *heldRequest
+	// served are the requests answered, in the order they ended, with the
+	// address they came from: on a cluster, the node whose relay passed
+	// them on.
+	served []servedRequest
 }
+
+// servedRequest is a request the fake answered: when it came and when its
+// answer was written, from where, and what it asked.
+type servedRequest struct {
+	At, Done     time.Time
+	From         string
+	Method, Path string
+}
+
+// write says whether the request asked to change something.
+func (r servedRequest) write() bool { return r.Method != http.MethodGet && r.Method != http.MethodHead }
 
 // heldRequest is a request that is made to wait: the first one that match
 // says yes to.
@@ -175,6 +198,13 @@ func (s *fakeServer) start() error {
 }
 
 func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
+	at := time.Now()
+	from, _, _ := net.SplitHostPort(r.RemoteAddr)
+	defer func() {
+		s.mu.Lock()
+		s.served = append(s.served, servedRequest{At: at, Done: time.Now(), From: from, Method: r.Method, Path: r.URL.Path})
+		s.mu.Unlock()
+	}()
 	s.mu.Lock()
 	h := s.held
 	if h != nil && h.match(r) {
@@ -221,6 +251,15 @@ func (s *fakeServer) stop() {
 		_ = s.srv.Close()
 		s.srv = nil
 	}
+}
+
+// requests returns the requests answered from the index from on, and the
+// index the next one will have.
+func (s *fakeServer) requests(from int) ([]servedRequest, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	from = min(from, len(s.served))
+	return slices.Clone(s.served[from:]), len(s.served)
 }
 
 func (s *fakeServer) address() string {

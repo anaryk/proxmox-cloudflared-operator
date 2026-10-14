@@ -7,11 +7,13 @@ loopback port, or the real API with a zone of yours.
 
 It changes the node it runs on, so run it on a test node only.
 
-It runs in one of two profiles: `host` (the default), pco installed on the node as
+It runs in one of four profiles: `host` (the default), pco installed on the node as
 described below, or `appliance`, pco in a container of the node as
 `pco appliance install` makes it; [The appliance profile](#the-appliance-profile) says
 what that one needs and does. `-profile appliance` on the command line or
-`PCO_E2E_PROFILE=appliance` chooses it.
+`PCO_E2E_PROFILE=appliance` chooses it. The profiles `cluster` and `appliance-cluster`
+run on the nodes of a Proxmox VE cluster instead: [The cluster profile](#the-cluster-profile)
+and [The appliance on a cluster](#the-appliance-on-a-cluster) say what they need and do.
 
 ## What it needs
 
@@ -339,6 +341,172 @@ with `ssh -R`. With the networks attached and the managed network enabled, note
   `pco events --kind network --since <boot>` has no allocation;
 - against the real API, `https://<hostname>/` answers through the leg as before.
 
+## The cluster profile
+
+The cluster profile, `TestCluster`, sets pco up on every node of a cluster of three nodes
+or more, and runs the scenarios of a cluster against that one install: placement and the
+moves of routes, the controller's failover, drain, forget and the rotation after a
+compromised node, networking on every node, an upgrade node by node, `pco doctor
+--cluster`, and the uninstall of a node and of the whole cluster. It runs on one node of
+the cluster, the driver, and reaches the others with ssh as root, as the nodes of a
+cluster reach each other. The driver is never powered off, rebooted, suspended or cut off:
+a scenario that does so to the controller first hands the lease to another node.
+
+The fake Cloudflare stays in the suite's process on the driver and listens on the
+driver's address in the cluster (the `ip` of `/etc/pve/.members`). pco accepts the API
+of tests on a loopback address only, so every node, the driver too, gets the suite's
+relay as the unit `e2e-relay.service` on `127.0.0.1:8787`, which forwards to the fake and
+outlives a reboot of the node, and the drop-in `pco.service.d/e2e.conf` that points the
+daemon at it. The fake logs which node each request came from, by the address the relay
+of that node dials from, which is how the failover scenarios tell a write of the old
+controller from one of the new.
+
+With the fake, no connector connects, so the suite asks what Cloudflare would answer
+from what the fake holds: a hostname is served while its record leads to a tunnel whose
+rule for it sends it to a service and not to a status. A visitor asks that every second
+for the hostnames a scenario keeps serving, and the scenario fails on any answer that
+would not have been served. What a connector on a node would reach, it fetches on that
+node with `curl`. Against the real API the visitor fetches the hostnames through
+Cloudflare instead.
+
+### What the cluster profile needs
+
+- Proxmox VE 8.4 or later on three nodes or more of one cluster, every node online, the
+  suite run as root on one of them; root on that node reaches every other node with ssh,
+  as a cluster sets it up.
+- pco installed from the same package on every node, and not set up: no `/etc/pve/pco`.
+- An SDN vnet that spans the nodes for the guests, `labx` or the one
+  `PCO_E2E_CLUSTER_BRIDGE` names, with an IPv4 address of each node in one /24 of it. The
+  guests take the addresses 100 to 149 of that /24, which nothing may answer.
+- No guest with an id from 9500 to 9549 on any node, and no guest tagged `cf-tunnel`.
+- The Alpine template and the storage of the host profile on every node.
+- For the scenarios that power a node off, suspend it or take it out of the cluster: a
+  command that does so, named by `PCO_E2E_POWER`. The suite runs it on the driver as
+  `<command> off|on|suspend|resume <node>`; for nodes that are virtual machines of a host
+  the suite cannot reach, it is the way to that host. Without it those scenarios are
+  skipped.
+- `e2e-relay` beside the suite, or named by `PCO_E2E_RELAY`.
+
+### Running the cluster profile
+
+Build the package and the suite as for the host profile, install the package on every
+node, copy `bin/e2e.test`, `bin/e2e-relay` and `test/e2e/cleanup-cluster.sh` to the
+driver, then there:
+
+    PCO_E2E_PROFILE=cluster PCO_E2E_POWER=/root/power ./e2e.test -test.v -test.run TestCluster \
+        -test.timeout 600m 2>&1 | tee e2e-cluster.log
+    ./cleanup-cluster.sh
+
+A full run takes several hours: ten power losses of the controller, half an hour without
+a controller and the waits of ten minutes of coverage and blocks are most of it.
+`-test.run 'TestCluster/C2_'` runs one scenario; the scenarios make the guests they look
+at when the run does not have them yet. More of the environment:
+
+| Variable | What it does |
+|---|---|
+| `PCO_E2E_POWER_RUNS` | how often C21 powers the controller's node off, 10 by default |
+| `PCO_E2E_FLAP` | how long C4 restarts an agent every 50 seconds, `10m` by default |
+| `PCO_E2E_ABSENT` | how long C20 runs without a controller, `30m` by default |
+| `PCO_E2E_UPGRADE_DEB` | the package of a later build, which C26 installs node by node; without it C26 is skipped |
+| `PCO_E2E_CLOUD_IMAGE` | the cloud image of the host profile, for the machine C23 migrates; without it C23 is skipped |
+| `PCO_E2E_COMPROMISE` | a node C25 takes out of the cluster for good with `pvecm delnode`, to rotate every secret after it; without it C25 checks only the refusal. The node is not set up again: make a new one afterwards |
+| `PCO_E2E_CF_NEW_TOKEN_FILE` | against the real API, the token C25 replaces the first one with |
+
+Against the real API, name the token and the zone as for the host profile; every node
+then needs `/usr/bin/cloudflared`. The suite publishes names below `e2e-*.<zone>` alone,
+and purges the install's tunnels, the pinned ones too, at the end.
+
+### What the cluster profile does to the nodes
+
+- Sets pco up on the driver and has the other nodes join it (`pco setup --yes`, which adds
+  the datacenter firewall rule of the agent channel and the ipset `pco-nodes`), and
+  uninstalls it from every node at the end.
+- Installs the relay and the drop-in on every node, and removes them at the end.
+- Makes guests 9500 to 9549 named `e2e-<vmid>` on the nodes, migrates some of them between
+  nodes, and destroys them at the end.
+- Stops, restarts, kills (`SIGKILL`), stops with `SIGSTOP` and continues `pco.service`
+  on the nodes; turns its watchdog off on one node for a while with the drop-in
+  `pco.service.d/e2e-watchdog.conf`; reboots nodes; restarts `corosync` on every node at
+  once.
+- Loads the table `inet pco_e2e_cut` on a node for a while: it drops corosync's traffic
+  (UDP 5405 to 5412) to take the node's quorum, or TCP 8644 to cut its agent off.
+- Changes the registry with pco's own store code to let the nodes hold the lease again
+  after C20, and puts back `leader.json` of an earlier generation in C19.
+- Makes the runtime bridges `pcotc1` and `pcotci` on the nodes for C7 and C8, attaches
+  the first as a network and enables the managed network (SDN zone `pco`, vnet `pconet`),
+  registering `cf-tunnel-managed` until the end.
+- With `PCO_E2E_UPGRADE_DEB`, installs that package on every node; the nodes keep it.
+- With `PCO_E2E_COMPROMISE`, powers that node off and removes it from the cluster.
+
+It records the nodes, the install and the mode of the run in `/var/lib/pco-e2e/cluster` on
+the driver. `cleanup-cluster.sh`, run on the driver, removes what a run that was cut off
+left: it removes the cuts and continues a stopped daemon, uninstalls pco from every node
+while the store still names the run's install, destroys the run's guests wherever they
+are, removes the relays, the drop-ins, the runtime bridges and the files the run copied,
+and puts the registered tags back. A node that does not answer keeps what the run left
+on it, and the script exits 1 until it is run again with the node back.
+
+### Scenarios of the cluster
+
+The guests of most scenarios are one Alpine container on each of three nodes, `c-1` to
+`c-3`, whose routes every node serves while every agent runs.
+
+| Id | What is checked |
+|---|---|
+| C1 | Every node active with an index of its own, one controller with a valid lease, every agent following its epoch and hearing it; `pco node list` and `pco cluster status`; a node that is not the controller sends `pco sync` to it. |
+| C2 | Each guest's route active on the shared tunnel, at `port` on its own node and at `port (attested)` by it on the others, in every node's egress set, reached from every node; every node covered. |
+| C3 | An agent stopped for longer than the grace: the routes of the other nodes' guests are pinned to their nodes and their records follow, no record is deleted, the problem line and doctor say why; a guest migrated while pinned moves to the new node's tunnel and the rule in the old one goes five minutes later; the agent back, the routes are shared again after ten minutes. The visitor sees no failure. |
+| C4 | An agent restarted every 50 seconds for ten minutes: no route moves more than once, and they are shared again afterwards. |
+| C5 | `pco node drain`: the node leaves the shared tunnel's replicas, its guest's route is pinned to it; `undrain` brings it back. |
+| C6 | A container with the MAC of a published guest started on another node: the guest's address leaves every node's egress set within two seconds of the cloning node's forwarding table learning the MAC, the block names that node, and holds for nine minutes after the clone is gone; `pco cluster unblock` ends it. |
+| C7 | A bridge without an uplink attached as a network on every node: a segment of each node, legs up, two guests with the same address on two nodes each reached through its own node's service address and pinned to it, two mappings in `nodesvcaddrs`. |
+| C8 | The managed network: a consenting guest on a node that is not the controller gets its card, its route is served through it from its node and pinned there. |
+| C9 | The agent endpoint answers a registered node with its own certificate, drops another address of the node before TLS, and refuses a node's certificate from another node's address with `other-source`. |
+| C10 | `pco doctor --cluster`: every agent answers, the checks of the cluster pass; an agent stopped fails `agent channel` and warns in `coverage`; TCP 8644 cut on a node fails its `agent dial` and the controller's `agent channel`. |
+| C11 | `pco cluster handoff --to`: the named node holds the lease within 30 seconds, one generation up, with its sentinel written. |
+| C12 | The controller's daemon killed with `SIGKILL`: the same node finishes a cycle within 30 seconds with the same generation and nonce, no other node takes the lease, no configuration is written again. |
+| C13 | The controller's node rebooted: another node finishes an enforcing cycle within 20 seconds. |
+| C14 | An agent stopped, then the controller: the new controller says it waits for that agent, and no rule, record or tunnel is withdrawn for its first 90 seconds. |
+| C15 | `corosync` restarted on every node at once: the controller keeps its epoch, no takeover hold, no sentinel written again. |
+| C16 | The controller's daemon stopped with `SIGSTOP`: systemd's watchdog restarts it within 90 seconds and a restart, no other node takes the lease, the epoch stays. |
+| C17 | The controller's node cut off from corosync: it shows the quorum line, writes nothing at Cloudflare later than five seconds after its `.members` says it is not quorate, and the quorate nodes take over. |
+| C18 | The controller stopped with `SIGSTOP` past the lock's expiry, with the watchdog off: no request of it reaches Cloudflare after the new epoch's first write, also after `SIGCONT`. |
+| C19 | `leader.json` of two generations back put back: a node says it is behind, nothing is written until `pco promote`, and after it and `pco apply` a sentinel above both is. |
+| C20 | No node may hold the lease (`pco node set --controller-eligible=false`) for half an hour: nothing written at Cloudflare, every node keeps its egress set; a node rebooted in that time serves the shared routes after its boot. |
+| C21 | The controller's node powered off, ten times: the new epoch's sentinel within 150 seconds each time. |
+| C22 | The controller's node suspended past the expiry and resumed: no request of it reaches Cloudflare later than five seconds after the resume, and the new controller's sentinel stands. |
+| C23 | A machine on the driver migrated live under requests from every node: none fails from the other nodes, and those from the driver fail for three seconds at most. |
+| C24 | A node powered off and forgotten: the shared tunnel's secret rotated, the remaining replicas run the new token, the node's pinned tunnel deleted, no hostname of the others fails; powered on, the node stands down as removed and runs no connector; then it joins again. |
+| C25 | `pco node forget --compromised` is refused while the node is in the cluster, with the `pvecm delnode` line. With `PCO_E2E_COMPROMISE`: after `pvecm delnode`, a new Cloudflare token and `pco setup --repair`, the rotation finishes with every tunnel's secret, the CA and every remaining agent's certificate new, and a certificate of the old CA refused. |
+| C26 | The package of a later build installed node by node, the controller last: every node active on the new build, the epoch kept while other nodes upgrade, `finish-upgrade` refused while nodes run the earlier build, no hostname fails. |
+| C27 | One node uninstalled: it leaves the registry and is as it was before setup; then `pco uninstall --cluster` on the controller and on the others: nothing of the install at Cloudflare, every node as before, no install in the store. |
+
+## The appliance on a cluster
+
+The profile `appliance-cluster`, `TestApplianceCluster`, installs a controller container
+on the driver and an agent container on two other nodes, from the package and the
+template of a build, as the appliance profile does on one node. It needs what the
+cluster profile needs except the package installed on the nodes, and what the appliance
+profile needs: no user `pco@pve` and no pool `pco` in the cluster, the build's package,
+template, checksums and relay in the working directory or named. The containers sit on
+the bridge of the guests at the offsets 40 (the controller) and 43 and 44 (the agents),
+and the fake listens on the driver's address there.
+
+    PCO_E2E_PROFILE=appliance-cluster ./e2e.test -test.v -test.run TestApplianceCluster \
+        -test.timeout 120m 2>&1 | tee e2e-appliance-cluster.log
+
+After a run that was cut off, run `PCO_E2E_PROFILE=appliance ./cleanup.sh` on each node
+with an agent container first, then on the driver: each node has the record of its
+container under `/var/lib/pco-e2e`.
+
+| Id | What is checked |
+|---|---|
+| A-C1 | The controller container active in its own registry, enforcing, its agent endpoint on its own address only, its firewall rule for TCP 8644 from `pco-agents`. |
+| A-C2 | An agent installed with `--join-file` waits as joining without connectors; admission with seven hex digits of its fingerprint and with a wrong prefix is refused, with twelve right ones it is active and hears the controller. |
+| A-C3 | A guest on each agent's node, once the segment is acknowledged: active at `observed` on that node, pinned to its tunnel, no attestation of an appliance agent taken, the target in the agent's egress set. |
+| A-C4 | The join tokens are in no argument of any process of the agent's node while it installs (read every second), in no journal of the nodes and the containers, no event and no doctor answer. |
+| A-C5 | An agent's node forgotten, then an agent there installed with the used token of another node: refused, with a security event; with a token of its own it joins again. |
+
 ## Wording the suite depends on
 
 Where pco exports the text, the suite uses it (`reconcile.HeldByGuard`). These it
@@ -391,3 +559,20 @@ In the appliance profile also:
 - `Before an upgrade, take a snapshot of this appliance on the node` in `pco upgrade`;
 - `nftables: 1`, `the datacenter firewall is off` and `pve-firewall is` in the refusal
   of the managed network, and `needs-firewall-confirmation` in the reason a guest waits.
+
+In the profiles of a cluster also:
+
+- `this node is not the controller; run it on <node>` in the refusal of a node that is
+  not the controller, and `is active` in the node event of a node that joined;
+- `node <node> has no pco agent with a running watch; routes of other nodes' guests are
+  pinned to their nodes`, the problem line of lost coverage;
+- `waiting for the agents of <node> to report to this controller`, in the problem line
+  or the hold of a takeover;
+- `the cluster is not quorate; nothing is written`, the problem line of a node without
+  quorum;
+- `Node <node> is forgotten.` in `pco node forget`, `pvecm delnode <node>` in its refusal
+  of a node still in the cluster, and `removed` in the reason an agent stood down;
+- `other-source` in the agent endpoint's refusal of a certificate from another node's
+  address;
+- the check names `answer on <node>`, `agent channel`, `agent dial`, `coverage` and the
+  other checks of the cluster in `pco doctor --json`.

@@ -57,15 +57,15 @@ func skipWithoutImage(t *testing.T) string {
 	return image
 }
 
-// sshKey makes the key of the run once and returns the paths of its private
-// and public halves.
-func (s *suite) sshKey(t testing.TB) (private, public string) {
+// sshKey makes the key of the run once and returns the path of its public
+// half; the private one is beside it without the suffix.
+func (s *suite) sshKey(t testing.TB) string {
 	t.Helper()
-	private = filepath.Join(s.dir, "e2e_key")
+	private := filepath.Join(s.dir, "e2e_key")
 	if _, err := os.Stat(private); err != nil {
 		s.must(t, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "pco-e2e", "-f", private)
 	}
-	return private, private + ".pub"
+	return private + ".pub"
 }
 
 // createVM makes the machine from the image, with cloud-init giving it its
@@ -90,7 +90,7 @@ func (s *suite) createVM(t testing.TB, v vm, image string) {
 	s.must(t, "qm", "set", id, "--scsi0", storage+":0,import-from="+image)
 	// On the command line qm reads the keys from a file; the API takes
 	// their text.
-	_, public := s.sshKey(t)
+	public := s.sshKey(t)
 	s.must(t, "qm", "set", id, "--ide2", storage+":cloudinit", "--boot", "order=scsi0",
 		"--ciuser", vmUser, "--sshkeys", public,
 		"--ipconfig0", "ip="+v.addr+"/24,gw="+s.lay.nodeAddr)

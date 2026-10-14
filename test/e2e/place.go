@@ -7,19 +7,24 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// place is where pco runs: on the node itself, or in the appliance, which
-// the node reaches with pct exec. What concerns pco's side goes through it:
+// place is where pco runs: on the node itself, in the appliance, which the
+// node reaches with pct exec, or on another node of a cluster, which it
+// reaches with ssh as root, as the nodes of a cluster reach each other. What concerns pco's side goes through it:
 // the pco command line, the units of pco and its connectors, nftables, the
 // neighbour table pco watches and the files under /var/lib/pco. What concerns
 // the node, pct, pvesh, pveum and pveproxy, does not.
 type place struct {
 	// vmid is the appliance's, 0 on the node.
 	vmid int
+	// node and remote are the name and the address of another node of the
+	// cluster; remote is empty for the node the suite runs on.
+	node, remote string
 	// pco is the path of pco there.
 	pco string
 	// env is what a pco command there is run with: the override of the
@@ -29,20 +34,46 @@ type place struct {
 }
 
 // argv is the command line that runs name with args where pco runs. In the
-// appliance pct exec passes none of the node's environment.
+// appliance pct exec passes none of the node's environment, and neither does
+// ssh to another node.
 func (p place) argv(name string, args ...string) []string {
-	if p.vmid == 0 {
-		return append([]string{name}, args...)
+	cmd := append([]string{name}, args...)
+	if p.vmid != 0 {
+		cmd = append([]string{"pct", "exec", strconv.Itoa(p.vmid), "--keep-env", "0", "--"}, cmd...)
 	}
-	return append([]string{"pct", "exec", strconv.Itoa(p.vmid), "--keep-env", "0", "--", name}, args...)
+	if p.remote == "" {
+		return cmd
+	}
+	return append(sshArgv(p.node, p.remote), shellLine(cmd))
 }
 
 // pcoArgv is the command line of a pco command where pco runs.
 func (p place) pcoArgv(args ...string) []string {
-	if p.vmid == 0 || len(p.env) == 0 {
+	if p.local() || len(p.env) == 0 {
 		return p.argv(p.pco, args...)
 	}
 	return p.argv("env", append(append(append([]string{}, p.env...), p.pco), args...)...)
+}
+
+// local says whether the place is the node the suite runs on itself.
+func (p place) local() bool { return p.vmid == 0 && p.remote == "" }
+
+// sshArgv is ssh to root on another node of the cluster. The host key is
+// looked up under the node's name, which the cluster records it by, whatever
+// address the node is reached at.
+func sshArgv(node, addr string) []string {
+	return []string{"ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4", "-o", "HostKeyAlias=" + node, "-o", "LogLevel=ERROR", "root@" + addr, "--"}
+}
+
+// shellLine is a command line as the remote shell reads it back into the
+// same words.
+func shellLine(words []string) string {
+	quoted := make([]string, len(words))
+	for i, w := range words {
+		quoted[i] = "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
 }
 
 // here runs a command where pco runs and returns its stdout.
@@ -89,7 +120,7 @@ func (s *suite) hereCommand(ctx context.Context, name string, args ...string) *e
 
 // readHere reads a file where pco runs.
 func (s *suite) readHere(path string) (string, error) {
-	if s.at.vmid == 0 {
+	if s.at.local() {
 		raw, err := os.ReadFile(path)
 		return string(raw), err
 	}

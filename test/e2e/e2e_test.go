@@ -29,6 +29,9 @@ type scenario struct {
 // makes guests of its own; the ones that look at the whole node use those of
 // the others.
 func TestEndToEnd(t *testing.T) {
+	if p, err := chooseProfile(); err == nil && clusterProfile(p) {
+		t.Skipf("the profile %s runs in TestCluster and TestApplianceCluster", p)
+	}
 	s := newSuite(t)
 	run := hostScenarios
 	if s.lay.isAppliance() {

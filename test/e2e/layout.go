@@ -10,14 +10,17 @@ import (
 	"strings"
 )
 
-// The profiles the suite runs in: pco installed on the node, or the appliance
-// in a container of the node.
+// The profiles the suite runs in: pco installed on the node, the appliance in
+// a container of the node, pco installed on every node of a cluster, or a
+// controller container and agent containers on the nodes of a cluster.
 const (
-	profileHost      = "host"
-	profileAppliance = "appliance"
+	profileHost             = "host"
+	profileAppliance        = "appliance"
+	profileCluster          = "cluster"
+	profileApplianceCluster = "appliance-cluster"
 )
 
-var profileFlag = flag.String("profile", "", "host or appliance (default: PCO_E2E_PROFILE, else host)")
+var profileFlag = flag.String("profile", "", "host, appliance, cluster or appliance-cluster (default: PCO_E2E_PROFILE, else host)")
 
 // layout is where the run puts things: the ids and addresses of its guests,
 // the node's address on the bridge of the run and, in the appliance profile,
@@ -43,6 +46,10 @@ type layout struct {
 	// guestBase the last octet of offset 0.
 	guestNet  string
 	guestBase int
+	// fakeHost is the address the fake Cloudflare listens on in the
+	// profiles of a cluster, which every node reaches: the node's own
+	// address in the cluster.
+	fakeHost string
 }
 
 // The second segment of the appliance (A-S13): a runtime bridge with an
@@ -59,11 +66,15 @@ func chooseProfile() (string, error) {
 		p = envOr("PCO_E2E_PROFILE", profileHost)
 	}
 	switch p {
-	case profileHost, profileAppliance:
+	case profileHost, profileAppliance, profileCluster, profileApplianceCluster:
 		return p, nil
 	}
-	return "", fmt.Errorf("the profile %q is neither %s nor %s", p, profileHost, profileAppliance)
+	return "", fmt.Errorf("the profile %q is none of %s, %s, %s and %s", p, profileHost, profileAppliance, profileCluster, profileApplianceCluster)
 }
+
+// clusterProfile says whether a profile runs on the nodes of a cluster,
+// which TestCluster and TestApplianceCluster run, and TestEndToEnd does not.
+func clusterProfile(p string) bool { return p == profileCluster || p == profileApplianceCluster }
 
 func layoutFor(profile string) (layout, error) {
 	if profile == profileHost {
@@ -103,6 +114,10 @@ func usedOffset(n int) bool {
 }
 
 func (l layout) isAppliance() bool { return l.profile == profileAppliance }
+
+// relayed says whether pco reaches the fake through the suite's relay on its
+// loopback: in the appliance, and on every node of a cluster.
+func (l layout) relayed() bool { return l.profile != profileHost }
 
 // vmid is the id of the guest at offset n.
 func (l layout) vmid(n int) int { return l.first + n }
