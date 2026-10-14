@@ -37,6 +37,11 @@ type UninstallOptions struct {
 	// it off, or whose connectors may be the only ones serving the shared
 	// tunnel.
 	Force bool
+	// RemoveOthers, on the controller, takes every other node out of the
+	// install, which then goes with this node as the last one. It runs once
+	// the checks of this node passed and the questions were answered, and
+	// before anything is removed here.
+	RemoveOthers func(ctx context.Context) error
 }
 
 func (o UninstallOptions) check() error {
@@ -107,6 +112,12 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if err != nil {
 		return err
 	}
+	others := u.others
+	if o.RemoveOthers != nil {
+		// The whole install goes: this node is the last one once the
+		// others are removed, and is checked as such before they are.
+		u.others, u.last = nil, true
+	}
 	if err := u.refuseToOrphan(); err != nil {
 		return err
 	}
@@ -118,6 +129,9 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	}
 	u.survey(ctx)
 	u.describe()
+	if o.RemoveOthers != nil && len(others) > 0 {
+		u.ask.Info("before that, every other node is taken out of the install: %s", strings.Join(others, ", "))
+	}
 	if !o.Yes {
 		ok, err := u.ask.Confirm("Remove pco from this node?", false)
 		if err != nil {
@@ -134,6 +148,11 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	removeCloudflared, err := u.decideCloudflared()
 	if err != nil {
 		return err
+	}
+	if o.RemoveOthers != nil {
+		if err := o.RemoveOthers(ctx); err != nil {
+			return err
+		}
 	}
 	if err := u.handoff(ctx); err != nil {
 		return err

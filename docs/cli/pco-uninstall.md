@@ -17,10 +17,11 @@ the bridge away from every node. `--detach-managed` removes the cards pco attach
 the daemon stopped and waits, bounded, for the configurations to drop them; a VM without
 network hotplug drops its card when it restarts.
 
-With `--cluster`, on the controller, the whole install goes: every other node is removed from it
-first, so that its agent stands down and stops its connectors, and the lines to run on each
-later are printed; then this node is uninstalled as the last one, with the offers of the last
-node. A node that is not online holds it unless `--force`.
+With `--cluster`, on the controller, the whole install goes: once this node's checks passed and
+the questions were answered, every other node is removed from it, so that its agent stands
+down and stops its connectors, and the lines to run on each later are printed; then this node
+is uninstalled as the last one, with the offers of the last node. A node that is not online
+holds it unless `--force`.
 
 On a node of a cluster that other nodes keep the install running on, the node leaves it:
 it hands the lease off when it holds it, stops and removes its connectors, the egress filter,

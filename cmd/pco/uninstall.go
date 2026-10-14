@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
@@ -27,10 +29,11 @@ func (a *app) uninstallCmd() *cobra.Command {
 			"the bridge away from every node. --detach-managed removes the cards pco attached right after\n" +
 			"the daemon stopped and waits, bounded, for the configurations to drop them; a VM without\n" +
 			"network hotplug drops its card when it restarts.\n\n" +
-			"With --cluster, on the controller, the whole install goes: every other node is removed from it\n" +
-			"first, so that its agent stands down and stops its connectors, and the lines to run on each\n" +
-			"later are printed; then this node is uninstalled as the last one, with the offers of the last\n" +
-			"node. A node that is not online holds it unless --force.\n\n" +
+			"With --cluster, on the controller, the whole install goes: once this node's checks passed and\n" +
+			"the questions were answered, every other node is removed from it, so that its agent stands\n" +
+			"down and stops its connectors, and the lines to run on each later are printed; then this node\n" +
+			"is uninstalled as the last one, with the offers of the last node. A node that is not online\n" +
+			"holds it unless --force.\n\n" +
 			"On a node of a cluster that other nodes keep the install running on, the node leaves it:\n" +
 			"it hands the lease off when it holds it, stops and removes its connectors, the egress filter,\n" +
 			"the web interface, its address in the firewall ipset pco-nodes and its local state, and its\n" +
@@ -62,9 +65,9 @@ func (a *app) uninstallCmd() *cobra.Command {
 				return err
 			}
 			if cluster {
-				if err := a.uninstallCluster(cmd, o.Force); err != nil {
-					return err
-				}
+				// Only after this node's checks and the questions: the
+				// other nodes are not removed for an uninstall that stops.
+				o.RemoveOthers = func(context.Context) error { return a.uninstallCluster(cmd, o.Force) }
 			}
 			return s.Uninstall(cmd.Context(), o)
 		},

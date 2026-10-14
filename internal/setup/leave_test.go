@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -186,6 +187,52 @@ func TestAHolderWhoseDaemonIsStoppedHandsNothingOff(t *testing.T) {
 
 	require.Empty(t, e.daemon.calls)
 	e.requireLeft()
+}
+
+// The other nodes of an install that goes whole are removed only once this
+// node's own checks passed and the question was answered yes: an uninstall
+// that stops, or is refused here, leaves them in the install.
+func TestTheOtherNodesGoOnlyOnceTheUninstallIsConfirmed(t *testing.T) {
+	removed := 0
+	others := func(context.Context) error { removed++; return errors.New("the other nodes went") }
+
+	t.Run("not root", func(t *testing.T) {
+		e := newTestEnv(t)
+		e.joinedNode()
+		e.s.host.euid = func() int { return 1000 }
+		require.ErrorContains(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true, RemoveOthers: others}), "root")
+		require.Zero(t, removed)
+	})
+	t.Run("not confirmed", func(t *testing.T) {
+		e := newTestEnv(t)
+		e.joinedNode()
+		first := e.node(firstNode)
+		first.State = string(agentproto.Joining)
+		require.NoError(t, e.st.SaveNode(first))
+		e.ask.answers = []answer{{"Remove pco", false}}
+		e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen())
+
+		require.ErrorIs(t, e.uninstall(UninstallOptions{KeepCloudflare: true, RemoveOthers: others}), ErrAborted)
+		e.done()
+
+		require.Zero(t, removed)
+		e.requireShown("every other node is taken out of the install: " + firstNode)
+		require.Equal(t, string(agentproto.Active), e.node(testNode).State)
+	})
+	t.Run("a removal that fails", func(t *testing.T) {
+		e := newTestEnv(t)
+		e.joinedNode()
+		e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen())
+		err := e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true, RemoveOthers: func(context.Context) error {
+			return errors.New("node pve1 is not online")
+		}})
+		e.done()
+		require.EqualError(t, err, "node pve1 is not online")
+		for _, command := range e.run.ran {
+			require.True(t, isRead(command), "nothing is removed here: %s", command)
+		}
+		e.requireStoreKept()
+	})
 }
 
 func TestTheOnlyActiveNodeIsNotRemovedWithoutForce(t *testing.T) {
