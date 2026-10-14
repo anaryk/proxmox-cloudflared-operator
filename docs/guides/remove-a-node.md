@@ -85,9 +85,15 @@ A node that cannot run `pco uninstall` is forgotten from the controller.
    `pco doctor --cluster`: its check `cluster members` fails while the registry holds a node
    that is not a member, and passes once it is forgotten.
 
-Should the node come back with its disk as it was, its agent is told it was removed and stands
-down: it stops and disables its connectors, empties its egress filter and deletes its run
-tokens, and says `this node was removed from install 7f3a9c0d41b2 at <time>; ...`. `pco uninstall` on it then
+With `cluster.rotateOnForget` off the node's run token keeps working; the controller then drops
+at Cloudflare, by their ids, the connectors the node reported as its own whenever a listing
+shows them connected again, and counts none of them as the install's.
+
+Should the node come back with its disk as it was, its agent stands down: the controller takes
+no connection from it any more, and the agent reads its entry, `removed`, in the registry every
+two seconds. It stops and disables its connectors, empties its egress filter and deletes its
+run tokens, and `pco agent status` says `this node was removed from install 7f3a9c0d41b2 at
+<time>; ...`. `pco uninstall` on it then
 removes the rest, and `pco setup` would enrol it again.
 
 ## Steps: an appliance agent container

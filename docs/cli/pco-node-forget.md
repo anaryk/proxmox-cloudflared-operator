@@ -4,10 +4,13 @@ Remove a node that is gone from the install: its entry becomes removed, so that 
 refused from its next request, its connections are closed, its pinned tunnels are deleted and
 the shared tunnel's secret is rotated (cluster.rotateOnForget), so that the run token the node
 keeps stops working, and its connector is dropped at Cloudflare; the remaining replicas keep
-their connections until each restarts with the new token. What cannot be done at once, the
-next cycles finish; in observe-only mode they wait for pco apply. Replacing a node with
-the same name: forget it, pvecm delnode and pvecm add for the new machine, then pco setup on
-it, or a new join token.
+their connections until each restarts with the new token. With cluster.rotateOnForget off
+the token keeps working, and the connectors the node reported are dropped at Cloudflare by
+their ids whenever they connect again. A host agent that comes back reads its removed entry
+in the registry and stands down: it stops its connectors and serves nothing. What cannot
+be done at once, the next cycles finish; in observe-only mode they wait for pco apply.
+Replacing a node with the same name: forget it, pvecm delnode and pvecm add for the new
+machine, then pco setup on it, or a new join token.
 
 `--compromised` is for a node whose disk is out of your hands: it held every credential of the
 install. It is refused while the node is still in the Proxmox cluster, which would hand it

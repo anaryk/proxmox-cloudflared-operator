@@ -233,10 +233,13 @@ func (a *app) nodeForgetCmd() *cobra.Command {
 			"refused from its next request, its connections are closed, its pinned tunnels are deleted and\n" +
 			"the shared tunnel's secret is rotated (cluster.rotateOnForget), so that the run token the node\n" +
 			"keeps stops working, and its connector is dropped at Cloudflare; the remaining replicas keep\n" +
-			"their connections until each restarts with the new token. What cannot be done at once, the\n" +
-			"next cycles finish; in observe-only mode they wait for pco apply. Replacing a node with\n" +
-			"the same name: forget it, pvecm delnode and pvecm add for the new machine, then pco setup on\n" +
-			"it, or a new join token.\n\n" +
+			"their connections until each restarts with the new token. With cluster.rotateOnForget off\n" +
+			"the token keeps working, and the connectors the node reported are dropped at Cloudflare by\n" +
+			"their ids whenever they connect again. A host agent that comes back reads its removed entry\n" +
+			"in the registry and stands down: it stops its connectors and serves nothing. What cannot\n" +
+			"be done at once, the next cycles finish; in observe-only mode they wait for pco apply.\n" +
+			"Replacing a node with the same name: forget it, pvecm delnode and pvecm add for the new\n" +
+			"machine, then pco setup on it, or a new join token.\n\n" +
 			"--compromised is for a node whose disk is out of your hands: it held every credential of the\n" +
 			"install. It is refused while the node is still in the Proxmox cluster, which would hand it\n" +
 			"every new secret: pvecm delnode first. Then every secret is rotated, step by step, in the\n" +

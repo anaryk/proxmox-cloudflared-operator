@@ -699,7 +699,9 @@ whose connector runs on that one node: the route of a guest to the node that run
 target of a network that only one node reaches, as on the managed network or an isolated bridge,
 to that node always, and a manual route with `allowNode` to the node whose address it names. A
 pinned tunnel is made when the first route is placed on its node, and deleted once it served no
-route for ten minutes, or its node was removed.
+route for ten minutes, or its node was removed. Its node stops the tunnel's connector as soon
+as the tunnel serves nothing, and the controller ends the tunnel's connections before the
+delete: Cloudflare deletes no tunnel that has a connection.
 
 ```mermaid
 flowchart LR

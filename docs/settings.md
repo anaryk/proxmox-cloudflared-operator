@@ -293,7 +293,10 @@ the object, as that release would refuse it: `pco cluster finish-upgrade` comes 
 - `followMaintenance`: whether a node that Proxmox puts in maintenance is drained, and taken
   back when it leaves maintenance.
 - `rotateOnForget`: whether forgetting a node rotates the secret of the shared tunnel, which
-  the forgotten node's connector held.
+  the forgotten node's connector held. Off, the run token on the node's disk keeps working:
+  the controller drops the connectors the node reported at Cloudflare, by their ids, and the
+  node's agent stands down once it reads its removal, but a copy of the token taken elsewhere
+  goes on working.
 - `admissionMaxMoves`: how many routes may move to admit a node for routing. A node whose
   admission would move more stays joining until an admin admits it.
 

@@ -67,8 +67,13 @@ A script that removes everything looks like this:
    install made it, is stopped and disabled and its files in `/var/lib/pco/tunnels` are
    removed. They stop before their tunnels are deleted, because Cloudflare refuses to delete
    a tunnel that still has a connection. The tunnel of another install stays at Cloudflare.
-4. **Tunnels at Cloudflare** (with purge): the tunnel `pco-<install id>`, and any test tunnel
-   that a credential check left behind.
+4. **Tunnels at Cloudflare** (with purge): the tunnel `pco-<install id>`, the tunnels
+   `pco-<install id>-<node>` pinned to the nodes of a cluster, and any test tunnel that a
+   credential check left behind. The connections of each are ended right before its delete,
+   since Cloudflare may still count a connector that stopped a moment ago; while it says the
+   tunnel has connections, as when the connector of another node still connects, both are
+   tried again every five seconds, six times at most, before the tunnel is reported not
+   deleted.
 5. **The gateway**, where a network was attached: it disables `pco-netns.service` and runs
    `pco netns down --uninstall`, which removes the legs from the bridges, the namespace `pco`
    with its tables, the guard on `pconet` and the routes of the service prefix on the node;
@@ -92,7 +97,9 @@ A script that removes everything looks like this:
      and nobody else holds it. If you added a privilege or took one away, or gave the role to
      another user, group or token, the role stays and the command says why;
    - the registered tags that setup added, `cf-tunnel` and `cf-tunnel-managed`. Tags that
-     were registered before stay in their order;
+     were registered before stay in their order. Registering them made
+     `/etc/pve/datacenter.cfg` on a cluster that had none; that file goes as well when nothing
+     is left in it, and stays with any option set there since;
    - the SDN zone `pco` and the vnet `pconet` of the managed network, where `pco setup
      --managed` or `pco network managed enable` made them, after `cloudflared` below and just
      before the store, and only once no guest of the cluster has a card on `pconet`: the
@@ -172,9 +179,14 @@ forgotten on the controller:
 Its entry becomes `removed`, so that its agent is refused should it come back, its connections
 are closed, its pinned tunnels are deleted, and the secret of the shared tunnel is rotated in
 every account while `cluster.rotateOnForget` is on, so that the run token on its disk stops
-working. Should the node come back with its disk as it was, its agent is told it was removed and
-stands down: it stops and disables its connectors, empties its egress filter and deletes its run
-tokens. `pco uninstall` on it then removes the rest.
+working. With `cluster.rotateOnForget` off the token keeps working, and the controller drops
+at Cloudflare, by their ids, the connectors the node reported as its own, as often as a listing
+shows them connected again; none of them counts as a connector of the install. Should the node
+come back with its disk as it was, its agent stands down: it reads its entry in the registry,
+`removed`, every two seconds, as the controller no longer takes a connection from it, then
+stops and disables its connectors, empties its egress filter, deletes its run tokens and says
+`this node was removed from install <id> at <time>` in `pco agent status`. `pco uninstall` on
+it then removes the rest.
 
 ### The whole cluster
 
@@ -190,9 +202,12 @@ for each the line to run on it later:
       - node2: pco uninstall --yes --keep-cloudflare removes what pco keeps on the node
       - node3: pco uninstall --yes --keep-cloudflare removes what pco keeps on the node
 
-Last it uninstalls this node as the last one, with the offers of the last node: the records
-and tunnels at Cloudflare, what setup made in Proxmox, the SDN zone of the managed network and
-the store, as [above](#what-it-removes-and-in-which-order). A node that is not online refuses
+It waits ten seconds then, for the agents to read their removal and stop their connectors:
+the registry they read it from goes with the store, and a tunnel is deleted only once its
+connections are gone. Last it uninstalls this node as the last one, with the offers of the
+last node: the records and tunnels at Cloudflare, the pinned ones of every node among them,
+what setup made in Proxmox, the SDN zone of the managed network and the store, as
+[above](#what-it-removes-and-in-which-order). A node that is not online refuses
 it, since its agent cannot be told to stand down; `--force` goes on without it, and that node's
 agent stands down when it comes back and finds its entry removed.
 
