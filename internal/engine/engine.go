@@ -400,6 +400,8 @@ type Engine struct {
 	// ruleLimit is the most rules of hostnames a tunnel is kept under;
 	// zero is maxIngressRules. Tests lower it.
 	ruleLimit int
+	// audit writes the audit trail of this node to the cluster root.
+	audit *auditTrail
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.
@@ -459,6 +461,8 @@ func New(d Deps) (*Engine, error) {
 		tried:        make(map[string]checkTry),
 	}
 	e.events.boot, e.events.sent = e.boot, e.notify.events
+	e.audit = newAuditTrail(d.Node, d.Store.AppendSecurityEvent, d.Log)
+	e.events.audit = e.audit.add
 	e.interval.Store(int64(defaultPollInterval))
 	e.unchecked.Store(true)
 	// The reconciler keeps the time of its last write per tunnel, so it lives
@@ -566,6 +570,13 @@ func (e *Engine) Run(ctx context.Context) error {
 	var checks sync.WaitGroup
 	defer checks.Wait()
 	defer e.moving.Wait()
+	trail, stopTrail := context.WithCancel(context.WithoutCancel(ctx))
+	var audit sync.WaitGroup
+	audit.Go(func() { e.audit.run(trail, e.after) })
+	// The audit trail of the last cycle is written after it, also when the
+	// engine was told to stop.
+	defer audit.Wait()
+	defer stopTrail()
 	e.progress.due(e.d.Now())
 	for {
 		// The first checks of the credentials have a deadline of their own.

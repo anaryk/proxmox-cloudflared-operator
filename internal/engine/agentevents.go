@@ -74,9 +74,7 @@ func (e *Engine) TakeAgentEvents(node string, st agentproto.Status, epoch agentp
 	}
 	t.nodes[node] = had
 	t.mu.Unlock()
-	if len(events) > 0 {
-		e.events.add(events...)
-	}
+	e.events.addTaken(events...)
 	return st.EventCursor
 }
 

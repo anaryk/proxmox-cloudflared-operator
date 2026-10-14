@@ -244,14 +244,10 @@ func (c *clusterPart) startListener(ctx context.Context) {
 	chk := &clusterapi.Checker{
 		InstallID: inst.ID, Store: c.st, Allow: allow, Now: c.now,
 		ObserveOnly: c.observe.window,
-		Record: func(e store.SecurityEvent) {
-			e.Node = c.node
-			if err := c.st.AppendSecurityEvent(c.node, e); err != nil {
-				c.log.Warn().Err(err).Msg("recording a security event failed")
-			}
-			c.eng.NoteEnrol(e.Subject, e.Message)
-		},
-		Log: c.log,
+		// The engine's audit trail writes it to this node's file of the
+		// cluster root and to the journal.
+		Record: func(e store.SecurityEvent) { c.eng.NoteEnrol(e.Subject, e.Message) },
+		Log:    c.log,
 	}
 	srv := clusterapi.New(c.remote, chk, creds.ServerTLS(), chk.Pool, c.log)
 	srv.OnEvent(c.eng.NoteNode)

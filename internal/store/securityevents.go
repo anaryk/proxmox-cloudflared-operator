@@ -21,6 +21,7 @@ const MaxSecurityEvents = 500
 // the trail survives the loss of the node that held the lease.
 type SecurityEvent struct {
 	At      time.Time `json:"at"`
+	Level   string    `json:"level,omitempty"` // info, warn or error; empty is info
 	Kind    string    `json:"kind"`
 	Subject string    `json:"subject,omitempty"`
 	Message string    `json:"message"`

@@ -65,7 +65,8 @@ func (q EventQuery) Match(ev Event) bool {
 // QueryEvents returns the newest events that pass the query, at most its
 // limit, oldest first. They come from the ring, and with History also from
 // the newest 10 MiB of events.log.1 and events.log, where a line that is not
-// an event is skipped.
+// an event is skipped. A query of the kind KindSecurity alone gets the audit
+// trail of every node from the cluster root instead, whatever After says.
 func (e *Engine) QueryEvents(q EventQuery) ([]Event, error) {
 	limit := q.Limit
 	switch {
@@ -73,6 +74,9 @@ func (e *Engine) QueryEvents(q EventQuery) ([]Event, error) {
 		limit = defaultEventLimit
 	case limit > MaxEventLimit:
 		limit = MaxEventLimit
+	}
+	if slices.Equal(q.Kind, []string{KindSecurity}) {
+		return e.auditEvents(q, limit)
 	}
 	after := q.After
 	if q.Boot != "" && q.Boot != e.boot {

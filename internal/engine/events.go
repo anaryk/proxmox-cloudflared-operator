@@ -89,6 +89,9 @@ type eventLog struct {
 	// sent is given every batch once it is numbered, under the lock, so
 	// that the stream has the batches in the order of their numbers.
 	sent func([]Event)
+	// audit is given every batch this node made, after the lock, for the
+	// audit trail; the events taken from other nodes' agents are theirs.
+	audit func([]Event)
 }
 
 func newEventLog(dir string, log zerolog.Logger) *eventLog {
@@ -99,9 +102,21 @@ func newEventLog(dir string, log zerolog.Logger) *eventLog {
 	return l
 }
 
+// add keeps events this node made.
 func (l *eventLog) add(events ...Event) {
+	if events = l.keep(events, true); l.audit != nil && len(events) > 0 {
+		l.audit(events)
+	}
+}
+
+// addTaken keeps events the agent of another node made, which are not of
+// this node's audit trail whatever they say they are.
+func (l *eventLog) addTaken(events ...Event) { l.keep(events, false) }
+
+// keep numbers events and keeps them, and returns them numbered.
+func (l *eventLog) keep(events []Event, own bool) []Event {
 	if len(events) == 0 {
-		return
+		return nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -111,7 +126,7 @@ func (l *eventLog) add(events ...Event) {
 		events[i].Seq, events[i].Boot = l.seq, l.boot
 	}
 	for _, ev := range events {
-		l.logEvent(ev)
+		l.logEvent(ev, own && audited(ev))
 	}
 	l.ring = append(l.ring, events...)
 	if n := len(l.ring) - maxEvents; n > 0 {
@@ -121,15 +136,18 @@ func (l *eventLog) add(events ...Event) {
 		l.sent(events)
 	}
 	if l.path == "" {
-		return
+		return events
 	}
 	if err := l.append(events); err != nil {
 		l.log.Warn().Err(err).Str("file", l.path).Msg("could not write the event log")
 	}
+	return events
 }
 
-// logEvent logs an event at its level, with what it is about as fields.
-func (l *eventLog) logEvent(ev Event) {
+// logEvent logs an event at its level, with what it is about as fields. An
+// event of the audit trail this node made says so, so that the journal of
+// the node that acted is its record.
+func (l *eventLog) logEvent(ev Event, security bool) {
 	level := zerolog.InfoLevel
 	switch ev.Level {
 	case levelWarn:
@@ -140,10 +158,14 @@ func (l *eventLog) logEvent(ev Event) {
 	line := l.log.WithLevel(level).Str("event", ev.Kind).Uint64("seq", ev.Seq)
 	for _, f := range [...]struct{ key, value string }{
 		{"subject", ev.Subject}, {"route", ev.Route}, {"guest", ev.Guest}, {"tunnel", ev.Tunnel}, {"account", ev.Account},
+		{"node", ev.Node}, {"actor", ev.Actor},
 	} {
 		if f.value != "" {
 			line = line.Str(f.key, f.value)
 		}
+	}
+	if security {
+		line = line.Bool("security", true)
 	}
 	line.Msg(ev.Message)
 }
