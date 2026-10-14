@@ -180,6 +180,13 @@ restored install observes until `pco apply`, and its `leader.json` is the one of
 the daemon writes nothing until `pco promote` draws an epoch above every sentinel at Cloudflare
 and every epoch an agent remembers.
 
+- Every node runs the same build of pco before you restore: install the package of one release
+  everywhere first. What a restore records travels in the store, and a node of an earlier build
+  would not read it.
+- Restore a bundle once. A second `pco import` of the same bundle, or of another, into a cluster
+  where the first is restored is refused, as the store holds an install; restoring one bundle
+  into two clusters makes two writers of one install, which undo each other at Cloudflare.
+
 **The store lost, the cluster kept**, as after `/etc/pve/pco` was removed by mistake:
 
 1. Stop pco on every node; the connectors run on:
@@ -290,6 +297,13 @@ hold is trusted after that, and every other node enrols again.
    new CA, and the controller admits them. A node set up before the promotion is refused, and
    nothing is changed on it: `... and node pve1 took it into this cluster: run pco promote on pve1
    first, then pco setup here`.
+
+   If the node that took the store is lost before its promotion, take it out of the cluster
+   (`pvecm delnode <node>`), or leave it powered off: once it is no online member, `pco setup` on
+   another node takes its claim over, after the same look at Cloudflare, and does the take-over
+   again under a new CA. `pco promote` there records it as a security event: `node <node> took
+   the restored store into this cluster over the claim of node <lost>, which was not an online
+   member of it`.
 
 6. `pco credential add` for each token the bundle did not carry, then read `pco plan`, and
    `pco apply`. The first cycle after it gives every tunnel of the install, shared and pinned, a
