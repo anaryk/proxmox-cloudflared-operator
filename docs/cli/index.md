@@ -135,6 +135,7 @@ pco help route manual add
 ## Lifecycle
 
 - [pco appliance](pco-appliance.md): Commands of the pco appliance
+  - [pco appliance convert](pco-appliance-convert.md): Make a combined appliance the controller of a cluster
   - [pco appliance grant-network](pco-appliance-grant-network.md): Grant the appliance a bridge or vnet to attach cards to
   - [pco appliance init](pco-appliance-init.md): Make the store of this appliance from the bootstrap the installer pushed
   - [pco appliance install](pco-appliance-install.md): Install the pco appliance on this node

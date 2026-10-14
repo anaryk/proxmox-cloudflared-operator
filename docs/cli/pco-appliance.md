@@ -1,7 +1,7 @@
 # pco appliance
 
 Commands of the pco appliance, the container that runs pco and its connectors on a
-Proxmox VE node in place of the host install. Of its commands, install, repair, uninstall,
+Proxmox VE node in place of the host install. Of its commands, install, repair, uninstall, convert,
 grant-network, revoke-network, network allow and managed enable run as root on the node,
 and init and recover as root inside the appliance.
 
@@ -24,6 +24,7 @@ pco appliance recover
 
 ## Commands
 
+- [pco appliance convert](pco-appliance-convert.md): Make a combined appliance the controller of a cluster
 - [pco appliance grant-network](pco-appliance-grant-network.md): Grant the appliance a bridge or vnet to attach cards to
 - [pco appliance init](pco-appliance-init.md): Make the store of this appliance from the bootstrap the installer pushed
 - [pco appliance install](pco-appliance-install.md): Install the pco appliance on this node

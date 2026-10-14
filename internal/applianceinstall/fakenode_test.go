@@ -164,6 +164,7 @@ type fakeNode struct {
 	sharedStorage bool
 	replication   []map[string]any
 	ha            []string
+	converted     []int // the containers pco appliance convert ran in
 
 	pcoVersion string // of the template's pco
 	secrets    int
@@ -1173,7 +1174,7 @@ func (f *fakeNode) create(id int, args []string) (string, error) {
 func (f *fakeNode) set(ct *fakeCT, id int, args []string) (string, error) {
 	for i := 0; i+1 < len(args); i += 2 {
 		switch key := strings.TrimPrefix(args[i], "--"); key {
-		case "protection", "description":
+		case "protection", "description", "tags":
 			ct.cfg[key] = args[i+1]
 		case "mp0":
 			if ct.running {
@@ -1250,6 +1251,9 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 	case line == "systemctl enable --now pco-web.service":
 		ct.web = true
 		return "", nil
+	case line == "pco appliance convert":
+		f.converted = append(f.converted, id)
+		return "kind: controller; pco.service restarted\n", nil
 	case line == "pco appliance purge --list":
 		return strings.Join(f.cfObjects, "\n"), nil
 	case line == "pco appliance attachments":

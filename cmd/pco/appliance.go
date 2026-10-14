@@ -23,7 +23,7 @@ func (a *app) applianceCmd() *cobra.Command {
 		Use:   "appliance",
 		Short: "Commands of the pco appliance",
 		Long: "Commands of the pco appliance, the container that runs pco and its connectors on a\n" +
-			"Proxmox VE node in place of the host install. Of its commands, install, repair, uninstall,\n" +
+			"Proxmox VE node in place of the host install. Of its commands, install, repair, uninstall, convert,\n" +
 			"grant-network, revoke-network, network allow and managed enable run as root on the node,\n" +
 			"and init and recover as root inside the appliance.",
 		Example: "  # On the node: install the appliance\n" +

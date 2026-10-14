@@ -274,12 +274,24 @@ func (r *run) endpointRule(ctx context.Context) error {
 		!strings.Contains(err.Error(), "already exists") {
 		return fmt.Errorf("making ipset %s of lxc/%d: %w", agentsIPSet, r.j.VMID, err)
 	}
+	var rules []firewallRule
+	if err := pvesh(ctx, r.r, &rules, base+"/rules"); err != nil {
+		return fmt.Errorf("reading the firewall rules of lxc/%d: %w", r.j.VMID, err)
+	}
+	if slices.ContainsFunc(rules, func(rule firewallRule) bool { return rule.Comment == agentsComment }) {
+		return nil
+	}
 	if _, err := r.r.Run(ctx, "pvesh", "create", base+"/rules", "--type", "in", "--action", "ACCEPT", "--proto", "tcp",
 		"--dport", strconv.Itoa(clusterapi.Port), "--source", "+"+agentsIPSet, "--enable", "1", "--comment", agentsComment); err != nil {
 		return fmt.Errorf("adding the rule of the agent endpoint to lxc/%d: %w", r.j.VMID, err)
 	}
 	r.ask.Info("firewall: lxc/%d takes tcp/%d from ipset %s alone, which each agent's install fills", r.j.VMID, clusterapi.Port, agentsIPSet)
 	return nil
+}
+
+// firewallRule is a rule of a guest's firewall, known by its comment.
+type firewallRule struct {
+	Comment string `json:"comment"`
 }
 
 // storageFacts records where the controller's state volume is, and lets its

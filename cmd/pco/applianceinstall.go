@@ -31,6 +31,7 @@ func (a *app) applianceNodeCmds() []*cobra.Command {
 		a.appliancePurgeCmd(),
 		a.applianceManifestCmd(),
 		a.applianceAttachmentsCmd(),
+		a.applianceConvertCmd(),
 	}
 }
 
