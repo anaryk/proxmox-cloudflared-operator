@@ -269,7 +269,7 @@ const portJoinedQueue = 64
 // watchPorts gives the port of a managed guest its sticky entry as soon as
 // it joins the managed bridge, until ctx ends. A watch that fails is started
 // again after a while; until then the keeper's checks give the entries.
-func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string)) error,
+func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string), skipped func(error)) error,
 	sleep func(context.Context, time.Duration) error,
 ) {
 	joined := make(chan string, portJoinedQueue)
@@ -292,6 +292,12 @@ func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Con
 		}
 	}()
 	defer func() { <-done }()
+	var told sync.Once
+	skipped := func(err error) {
+		told.Do(func() {
+			g.log.Info().Err(err).Msg("the watch of the ports of the managed bridge skipped a netlink message and goes on; further ones are not logged")
+		})
+	}
 	for {
 		err := watch(ctx, netns.None(), gateway.ManagedBridge, func(port string) {
 			select {
@@ -299,7 +305,7 @@ func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Con
 			default:
 				g.markDirty()
 			}
-		})
+		}, skipped)
 		if ctx.Err() != nil {
 			return
 		}

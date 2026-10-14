@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -136,12 +137,34 @@ func TestNoEntryIsGivenWhileTheGatewayMayNotChange(t *testing.T) {
 	require.Zero(t, r.appliedCount())
 }
 
+// A netlink message the port watch skips ends nothing, and is said once.
+func TestAPortWatchThatSkipsAMessageGoesOn(t *testing.T) {
+	r := newStickyRig(t, true)
+	var logs strings.Builder
+	r.g.log = zerolog.New(&logs)
+	ctx, cancel := context.WithCancel(t.Context())
+	watches := 0
+	watch := func(ctx context.Context, _ netns.NsHandle, _ string, _ func(string), skipped func(error)) error {
+		watches++
+		for range 3 {
+			skipped(errors.New("Wrong sender portid 4242, expected 0"))
+		}
+		cancel()
+		<-ctx.Done()
+		return nil
+	}
+	r.g.watchPorts(ctx, watch, sleepContext)
+	require.Equal(t, 1, watches)
+	require.Equal(t, 1, strings.Count(logs.String(), "skipped a netlink message"), logs.String())
+	require.NotContains(t, logs.String(), "failed")
+}
+
 func TestThePortWatchGivesTheEntries(t *testing.T) {
 	r := newStickyRig(t, true)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	watched := make(chan string, 1)
-	watch := func(ctx context.Context, _ netns.NsHandle, bridge string, joined func(string)) error {
+	watch := func(ctx context.Context, _ netns.NsHandle, bridge string, joined func(string), _ func(error)) error {
 		watched <- bridge
 		joined("veth101i1")
 		<-ctx.Done()
@@ -355,7 +378,7 @@ func TestASlowApplyDoesNotHoldUpThePortWatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	called := make(chan struct{})
-	watch := func(ctx context.Context, _ netns.NsHandle, _ string, joined func(string)) error {
+	watch := func(ctx context.Context, _ netns.NsHandle, _ string, joined func(string), _ func(error)) error {
 		for range 10 * portJoinedQueue {
 			joined("veth101i1")
 		}
@@ -426,7 +449,7 @@ func TestAFullPortQueueMarksTheEntriesDirty(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	called := make(chan struct{})
-	watch := func(ctx context.Context, _ netns.NsHandle, _ string, joined func(string)) error {
+	watch := func(ctx context.Context, _ netns.NsHandle, _ string, joined func(string), _ func(error)) error {
 		// The first port is taken up and its apply holds; what the check
 		// took as dirty is taken before that, so the flood that follows
 		// is the only thing that can mark the entries dirty.

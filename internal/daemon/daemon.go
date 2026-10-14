@@ -125,7 +125,7 @@ type Deps struct {
 	// managed bridge, on the host; WatchSources listens on the managed leg
 	// for frames of cards no lease knows. Defaults: netlink and a packet
 	// socket.
-	WatchPorts   func(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string)) error
+	WatchPorts   func(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string), skipped func(error)) error
 	WatchSources func(ctx context.Context, w gateway.SourceWatch, ns netns.NsHandle, dev string) error
 	// Namespace runs pco-netns.service, which the daemon starts for a probe,
 	// enables with the first network attached and disables when the last is

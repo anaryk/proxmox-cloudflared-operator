@@ -113,7 +113,7 @@ func TestLinuxThePortWatchNamesTheGuestPortsOfTheBridge(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			seen = append(seen, port)
-		})
+		}, nil)
 	}()
 	require.Eventually(t, func() bool { return saw("veth9301i1") }, 2*time.Second, 10*time.Millisecond, "a port there at the start")
 

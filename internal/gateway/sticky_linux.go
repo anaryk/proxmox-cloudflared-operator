@@ -19,7 +19,7 @@ import (
 // is to be given again right then. It returns an error when it cannot
 // subscribe, or when the subscription ends; a message the library skips
 // ends nothing.
-func WatchGuestPorts(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string)) error {
+func WatchGuestPorts(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string), skipped func(error)) error {
 	h, err := netlink.NewHandleAt(ns)
 	if err != nil {
 		return fmt.Errorf("opening a netlink handle: %w", err)
@@ -29,8 +29,8 @@ func WatchGuestPorts(ctx context.Context, ns netns.NsHandle, bridge string, join
 	done := make(chan struct{})
 	defer close(done)
 	// A message the library skips, as one from a sender other than the
-	// kernel, ends nothing.
-	errs := NewSubscriptionErrors(nil)
+	// kernel, ends nothing; skipped is told of the first.
+	errs := NewSubscriptionErrors(skipped)
 	opts := netlink.LinkSubscribeOptions{ListExisting: true, ErrorCallback: errs.Report}
 	if ns.IsOpen() {
 		opts.Namespace = &ns

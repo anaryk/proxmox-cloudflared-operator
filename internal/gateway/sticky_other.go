@@ -9,4 +9,6 @@ import (
 )
 
 // WatchGuestPorts needs Linux.
-func WatchGuestPorts(context.Context, netns.NsHandle, string, func(string)) error { return errNotLinux }
+func WatchGuestPorts(context.Context, netns.NsHandle, string, func(string), func(error)) error {
+	return errNotLinux
+}
