@@ -745,6 +745,105 @@ func TestJoiningNodesWithoutCoverageAreAdmittedAndRunNoSharedConnector(t *testin
 	requirePlacementReasons(t, w)
 }
 
+// sharedIn is the shared tunnel as the snapshot of node lists it, and
+// whether it does.
+func sharedIn(s agentproto.Snapshot) (agentproto.Tunnel, bool) {
+	i := slices.IndexFunc(s.Tunnels, func(tun agentproto.Tunnel) bool { return tun.Name == tunnelName })
+	if i < 0 {
+		return agentproto.Tunnel{}, false
+	}
+	return s.Tunnels[i], true
+}
+
+// A replica whose daemon alone restarted comes back joining with its shared
+// connector still running: it keeps it, without a token, from the first
+// cycle it joins in to its admission, which hands it the token again.
+func TestARestartedReplicaKeepsItsSharedConnectorWhileItJoins(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].started = w.clock.now()
+
+	joined := false
+	for range 10 {
+		w.tick(5 * time.Second)
+		s, ok := w.r.lastOf("pve3")
+		require.True(t, ok)
+		tun, listed := sharedIn(s)
+		require.True(t, listed, "the shared connector is never removed: %s", s.State)
+		if s.State == agentproto.Joining {
+			joined = true
+			require.False(t, tun.Run)
+			require.Empty(t, tun.Token.Reveal())
+		}
+	}
+	require.True(t, joined, "the node came back joining")
+	require.Equal(t, store.NodeActive, entryOf(t, w.env, "pve3").State)
+	s, _ := w.r.lastOf("pve3")
+	tun, _ := sharedIn(s)
+	require.True(t, tun.Run)
+}
+
+// A node that turns joining before it reported anything of this epoch is
+// judged by its last word: a replica a moment ago that reached every shared
+// route keeps its connector; one that failed a route has it removed.
+func TestAJoiningNodeWithoutWordOfThisEpochKeepsItsConnectorOnlyIfItReachedEverything(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail map[string]string
+		kept bool
+	}{
+		{name: "reached every route", kept: true},
+		{name: "failed a route", fail: map[string]string{"www.example.com": "not reached"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := threeNodes(t)
+			w.settle()
+			act := w.acts["pve3"]
+			act.started, act.fail = w.clock.now(), tc.fail
+			act.edit = func(st *agentproto.Status) { st.EpochSeen = agentproto.Epoch{} }
+
+			for range 5 {
+				w.tick(5 * time.Second)
+				s, _ := w.r.lastOf("pve3")
+				if s.State != agentproto.Joining {
+					continue
+				}
+				tun, listed := sharedIn(s)
+				require.Equal(t, tc.kept, listed)
+				require.False(t, tun.Run)
+				if !tc.kept {
+					require.True(t, s.Prune, "the connector that still runs is removed")
+				}
+				return
+			}
+			t.Fatal("pve3 never joined")
+		})
+	}
+}
+
+// What a snapshot withheld from a joining node while coverage was lost
+// says nothing once coverage holds again: the route is not moved for it,
+// and the node is admitted once it reported the route.
+func TestAWithheldRouteMovesNothingOnceCoverageIsBack(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	n := entryOf(t, w.env, "pve3")
+	n.State, n.StateSince = store.NodeJoining, w.clock.now()
+	require.NoError(t, w.store.SaveNode(n))
+	w.eng.place.withheld["pve3"] = map[string]uint64{"www.example.com": 1}
+
+	st := w.tick(5 * time.Second)
+	require.False(t, hasProblem(st, "pve3 fails"), st.Problems)
+	for range 5 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+	require.Equal(t, store.NodeActive, entryOf(t, w.env, "pve3").State)
+	for _, ev := range w.placementEvents() {
+		require.NotContains(t, ev, " moves from ")
+	}
+}
+
 // requirePlacementReasons fails the test on a placement event that does not
 // say why the route went where it went.
 func requirePlacementReasons(t *testing.T, w *world) {

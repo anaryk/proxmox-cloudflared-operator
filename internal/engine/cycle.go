@@ -198,9 +198,12 @@ type cycleRun struct {
 	// shared route: the route moves to its guest.s node before the node
 	// is admitted.
 	joining map[string]string
-	// joinReaches are the joining nodes this cycle judged, and whether each
-	// reaches every shared route.
-	joinReaches map[string]bool
+	// joinKeeps are the joining nodes that keep a shared connector that
+	// still runs, as judged before the agents are served; joiningWithheld
+	// are the hostnames of joining that move because a snapshot withheld
+	// them.
+	joinKeeps       map[string]bool
+	joiningWithheld map[string]bool
 	// caHeld says why the rotation of a compromised node's secrets holds
 	// its CA step in this cycle; empty when nothing does.
 	caHeld string

@@ -186,3 +186,25 @@ func TestATunnelOfAReportedAccountIsUnreportedByItsName(t *testing.T) {
 	require.Len(t, got, 1)
 	require.Equal(t, pinnedName, got[0].Name)
 }
+
+// A tunnel the cycle leaves as it is, as the shared tunnel of a frozen
+// account, is listed for a node that may run it, without a token, so that
+// a prune of the node's connectors keeps it; a node that runs no shared
+// connector is not given it.
+func TestATunnelLeftAsItIsStaysInTheKeepListOfANode(t *testing.T) {
+	e := newEnv(t)
+	c := e.eng.newCycle(t.Context())
+	c.install = store.Install{ID: testInstall}
+	c.nodes = map[string]store.NodeRev{"pve2": {Node: store.NodeEntry{Name: "pve2", State: store.NodeActive, Kind: "host"}}}
+	c.connected = true
+	frozen := reconcile.TunnelState{AccountID: "acc2", ID: "t9", Name: tunnelName, Exists: true}
+	c.shown = []reconcile.TunnelState{frozen}
+
+	got := c.remoteTunnels("pve2", sharedRun)
+	require.Len(t, got, 1)
+	require.Equal(t, "t9", got[0].TunnelID)
+	require.False(t, got[0].Run)
+	require.Empty(t, got[0].Token.Reveal())
+
+	require.Empty(t, c.remoteTunnels("pve2", sharedNone))
+}

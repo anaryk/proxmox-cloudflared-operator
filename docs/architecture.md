@@ -758,7 +758,7 @@ The registry of the store holds every node of the install, in one of these state
 
 | State | What it means |
 |---|---|
-| `joining` | Enrolled and not admitted yet, or back after it was `unknown`, `down` or rebooted. Its agent verifies the shared routes and starts no shared connector: one that still runs, as after only the daemon restarted, is kept while the node reaches every shared route and removed otherwise. A shared route a joining node is not given, as one of a guest on another node while coverage is lost, counts as one it does not reach. |
+| `joining` | Enrolled and not admitted yet, or back after it was `unknown`, `down` or rebooted. Its agent verifies the shared routes and starts no shared connector: one that still runs, as after only the daemon restarted, is kept while the node reaches every shared route and removed otherwise, judged by its last report, so a node that has just stopped reaching a route may keep it for one more cycle. A shared route a joining node is not given, as one of a guest on another node while coverage is lost, counts as one it does not reach while coverage stays lost. |
 | `active` | Admitted: it runs a replica of the shared tunnel and its pinned tunnels. |
 | `draining` | Taken out of the shared tunnel by an admin, or by Proxmox's maintenance mode: its shared connector is removed, its pinned tunnels go on. |
 | `unknown` | Its agent sent no status for 30 seconds. Its placements hold, and nothing is withdrawn for it. |

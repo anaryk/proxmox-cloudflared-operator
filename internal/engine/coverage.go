@@ -49,9 +49,12 @@ type placementMemory struct {
 	listedAt map[string]map[string]uint64
 	listedIn agentproto.Epoch
 	// withheld are, by node, the shared routes the last snapshot of the
-	// epoch listedIn did not list for it, as a guest's on another node while
-	// coverage is lost: the node never reports them.
-	withheld map[string]map[string]bool
+	// epoch listedIn served to it did not list, as a guest's on another node
+	// while coverage is lost, with the seq of that snapshot: the node never
+	// reports them. replicasWere is the replica set of the last cycle that
+	// served the agents.
+	withheld     map[string]map[string]uint64
+	replicasWere []string
 	// movesRead says that this process read the moves stored, and gave up
 	// those a controller before it had only added the rules of; addedAt is,
 	// by owner, when this process first saw the rules of its move added.

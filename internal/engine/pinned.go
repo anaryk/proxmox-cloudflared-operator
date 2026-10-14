@@ -70,7 +70,7 @@ func (c *cycleRun) sharedRole(node string) sharedRole {
 	switch {
 	case slices.Contains(c.replicas(), node):
 		return sharedRun
-	case c.nodes[node].Node.State == store.NodeJoining && c.joinReaches[node]:
+	case c.nodes[node].Node.State == store.NodeJoining && c.joinKeeps[node]:
 		return sharedKept
 	}
 	return sharedNone
@@ -116,6 +116,16 @@ func (c *cycleRun) remoteTunnels(node string, role sharedRole) []agentproto.Tunn
 		}
 		token, _ := c.tokenFor(t)
 		out = append(out, c.snapshotTunnel(t.AccountID, t.ID, t.Name, token))
+	}
+	// The tunnels the cycle leaves as they are, as those of a frozen
+	// account, are kept as they are on the node too: listed without a
+	// token, so that a prune keeps their connectors.
+	for _, t := range c.shown {
+		mayRun := t.Name == planner.TunnelName(c.install.ID) && role != sharedNone || err == nil && t.Name == own && host
+		if t.ID == "" || !mayRun || slices.ContainsFunc(out, func(o agentproto.Tunnel) bool { return o.TunnelID == t.ID }) {
+			continue
+		}
+		out = append(out, c.snapshotTunnel(t.AccountID, t.ID, t.Name, ""))
 	}
 	return out
 }

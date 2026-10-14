@@ -351,7 +351,7 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 	}
 	if stored && cur.kind == store.PlacementShared && hostReaches {
 		for _, rt := range routes {
-			if node, ok := c.joining[rt.Hostname]; ok {
+			if node, ok := c.joining[rt.Hostname]; ok && c.joinMoves(rt) {
 				pinHost.why = fmt.Sprintf(whyJoining, node)
 				return pinHost, ""
 			}
@@ -411,6 +411,33 @@ func (c *cycleRun) decide(owner string, routes []model.Route, replicas []string,
 		cur.why = c.storedWhy(routes)
 	}
 	return cur, ""
+}
+
+// joinMoves says whether a route a joining node fails moves for it: one a
+// snapshot withheld from the node moves only while coverage is still lost
+// and the guest's node vouches for the guest, so that a coverage that comes
+// back in a moment moves nothing. This node vouches by its own proof, which
+// the move asks of it anyway; another node by its attestation of a card.
+func (c *cycleRun) joinMoves(rt model.Route) bool {
+	if !c.joiningWithheld[rt.Hostname] {
+		return true
+	}
+	if !c.cover.lost() || rt.Guest == nil {
+		return false
+	}
+	g, ok := c.snap.Guest(*rt.Guest)
+	switch {
+	case !ok:
+		return false
+	case g.Node == c.e.d.Node:
+		return true
+	}
+	for _, mac := range guestMACs(g) {
+		if c.attestation(g.Node, mac) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // waitingSince is when a route without a placement first waited.

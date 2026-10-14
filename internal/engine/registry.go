@@ -142,6 +142,7 @@ func (c *cycleRun) registryStep() {
 	c.noStatus(reports, listed)
 	c.noFallback()
 	c.agentRule(reports, listed)
+	c.judgeJoining(reports)
 }
 
 // observeNode applies what this cycle saw of node n to its entry: Proxmox's
@@ -218,11 +219,7 @@ func (c *cycleRun) admits(n *store.NodeEntry, rep NodeReport, self bool) bool {
 			return false
 		}
 	}
-	failing, missing := c.joinFails(n.Name, rep, self)
-	if c.joinReaches == nil {
-		c.joinReaches = map[string]bool{}
-	}
-	c.joinReaches[n.Name] = !self && len(failing) == 0 && missing == 0
+	failing, withheld, missing := c.joinFails(n.Name, rep, self)
 	if missing > 0 {
 		c.problem("node %s stays joining: it has not reported %d of the shared routes yet", n.Name, missing)
 		return false
@@ -237,8 +234,14 @@ func (c *cycleRun) admits(n *store.NodeEntry, rep NodeReport, self bool) bool {
 		if c.joining == nil {
 			c.joining = map[string]string{}
 		}
+		if c.joiningWithheld == nil {
+			c.joiningWithheld = map[string]bool{}
+		}
 		for _, host := range moves {
 			c.joining[host] = n.Name
+			if slices.Contains(withheld, host) {
+				c.joiningWithheld[host] = true
+			}
 		}
 	}
 	if wait {
@@ -252,13 +255,16 @@ func (c *cycleRun) admits(n *store.NodeEntry, rep NodeReport, self bool) bool {
 // reach in its egress set, of those its report says, and how many it has
 // not reported on: a node is admitted only once it reported every shared
 // route, and those it fails were moved to the tunnels pinned to their
-// nodes. A shared route its snapshot does not list, as a guest's on
-// another node while coverage is lost, it never reports and would not
-// serve: it fails it. This node, which serves its routes itself, has none.
-func (c *cycleRun) joinFails(node string, rep NodeReport, self bool) (failing []string, missing int) {
+// nodes. A shared route the snapshot it applied did not list, as a guest's
+// on another node while coverage is lost, it never reports and would not
+// serve: it fails it, and withheld names it, while coverage is still lost;
+// once coverage holds the route is listed again and missing until the node
+// reports it. This node, which serves its routes itself, has none.
+func (c *cycleRun) joinFails(node string, rep NodeReport, self bool) (failing, withheld []string, missing int) {
 	if self || c.placements == nil {
-		return nil, 0
+		return nil, nil, 0
 	}
+	lost := c.coverageLostNow()
 	reported := map[string]agentproto.TargetReport{}
 	for _, t := range rep.Status.Targets {
 		reported[t.Key] = t
@@ -268,16 +274,75 @@ func (c *cycleRun) joinFails(node string, rep NodeReport, self bool) (failing []
 			continue
 		}
 		t, ok := reported[host]
+		seq, held := c.e.place.withholds(node, host, c.epoch())
 		switch {
-		case c.e.place.withholds(node, host, c.epoch()):
-			failing = append(failing, host)
-		case !ok || rep.Status.EpochSeen != c.epoch():
+		case held && lost && rep.Status.EpochSeen == c.epoch() && rep.Status.SeqApplied >= seq:
+			failing, withheld = append(failing, host), append(withheld, host)
+		case held, !ok || rep.Status.EpochSeen != c.epoch():
 			missing++
 		case !t.OK || !t.InEgressSet:
 			failing = append(failing, host)
 		}
 	}
-	return failing, missing
+	return failing, withheld, missing
+}
+
+// coverageLostNow says whether coverage counts as lost at this moment, by
+// what the last cycle observed of every node: the registry step runs before
+// this cycle's reports are taken.
+func (c *cycleRun) coverageLostNow() bool {
+	mem := &c.e.place
+	if mem.coverage == nil || mem.covered || mem.lost.IsZero() {
+		return false
+	}
+	covered, _ := mem.coverage.Covered(c.now)
+	return !covered
+}
+
+// judgeJoining decides, for every joining node but this one, whether it
+// keeps a shared connector that still runs, before the agents are served:
+// it does when its report of this epoch, fresh, shows every shared route
+// verified in its egress set. Without such a report it does only when it
+// was a replica in the last cycle that served the agents and its last
+// report reached every shared route, as after its daemon alone restarted.
+// The judgement lags a cycle behind the node: one that has just stopped
+// reaching a route may still be sent its requests until the next cycle
+// removes the connector.
+func (c *cycleRun) judgeJoining(reports map[string]NodeReport) {
+	c.joinKeeps = map[string]bool{}
+	for name, nr := range c.nodes {
+		if name == c.e.d.Node || nr.Node.State != store.NodeJoining || c.placements == nil {
+			continue
+		}
+		rep, heard := reports[name]
+		if !heard || rep.Status.Node != name {
+			continue
+		}
+		if c.now.Sub(rep.ReceivedAt) < silentAfter && rep.Status.EpochSeen == c.epoch() {
+			failing, _, missing := c.joinFails(name, rep, false)
+			c.joinKeeps[name] = len(failing) == 0 && missing == 0
+			continue
+		}
+		c.joinKeeps[name] = slices.Contains(c.e.place.replicasWere, name) && reachedShared(c.placements, rep)
+	}
+}
+
+// reachedShared says whether a report shows every shared route verified in
+// the node's egress set, whatever epoch it is of.
+func reachedShared(placements map[string]store.Placement, rep NodeReport) bool {
+	reported := map[string]agentproto.TargetReport{}
+	for _, t := range rep.Status.Targets {
+		reported[t.Key] = t
+	}
+	for host, p := range placements {
+		if p.Kind != store.PlacementShared {
+			continue
+		}
+		if t, ok := reported[host]; !ok || !t.OK || !t.InEgressSet {
+			return false
+		}
+	}
+	return true
 }
 
 // transition moves n by ev. One that leaves it where it is changes nothing,

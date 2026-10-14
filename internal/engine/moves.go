@@ -410,9 +410,13 @@ func (m *placementMemory) listed(node, host string, resolve bool) (uint64, bool)
 }
 
 // withholds says whether the last snapshot of epoch served to node left out
-// the shared route of host.
-func (m *placementMemory) withholds(node, host string, epoch agentproto.Epoch) bool {
-	return m.listedIn == epoch && m.withheld[node][host]
+// the shared route of host, and the seq of that snapshot.
+func (m *placementMemory) withholds(node, host string, epoch agentproto.Epoch) (uint64, bool) {
+	if m.listedIn != epoch {
+		return 0, false
+	}
+	seq, ok := m.withheld[node][host]
+	return seq, ok
 }
 
 func listedKey(host string, resolve bool) string {
@@ -424,17 +428,21 @@ func listedKey(host string, resolve bool) string {
 
 // noteListed keeps, for the snapshot s served to its node, the seq that
 // first listed each of its targets, and the shared routes it withheld.
-func (m *placementMemory) noteListed(s agentproto.Snapshot, withheld map[string]bool) {
+func (m *placementMemory) noteListed(s agentproto.Snapshot, withheld []string) {
 	if m.listedIn != s.Epoch {
-		m.listedAt, m.listedIn, m.withheld = map[string]map[string]uint64{}, s.Epoch, map[string]map[string]bool{}
+		m.listedAt, m.listedIn, m.withheld = map[string]map[string]uint64{}, s.Epoch, map[string]map[string]uint64{}
 	}
 	if m.listedAt == nil {
 		m.listedAt = map[string]map[string]uint64{}
 	}
 	if m.withheld == nil {
-		m.withheld = map[string]map[string]bool{}
+		m.withheld = map[string]map[string]uint64{}
 	}
-	m.withheld[s.Node] = withheld
+	held := make(map[string]uint64, len(withheld))
+	for _, host := range withheld {
+		held[host] = s.Seq
+	}
+	m.withheld[s.Node] = held
 	had := m.listedAt[s.Node]
 	now := make(map[string]uint64, len(s.Targets))
 	for _, t := range s.Targets {

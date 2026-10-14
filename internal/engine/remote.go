@@ -58,6 +58,7 @@ func (c *cycleRun) publishRemote() {
 	reports := c.reportsNow()
 	c.e.writes.note(c.fleet, c.epoch())
 	snaps := map[string]agentproto.Snapshot{}
+	published := false
 	var endpoints []string
 	if c.e.d.Endpoints != nil {
 		endpoints = c.e.d.Endpoints()
@@ -87,21 +88,25 @@ func (c *cycleRun) publishRemote() {
 		rep := reports[name]
 		c.e.seqs.stamp(&s, rep.Status.EpochSeen, rep.Status.SeqApplied)
 		c.e.place.noteListed(s, c.withheldFrom(s.Targets))
+		published = true
 		snaps[name] = s
+	}
+	if published {
+		c.e.place.replicasWere = slices.Clone(c.replicas())
 	}
 	r.Serve(snaps)
 }
 
 // withheldFrom are the hostnames of the shared routes targets leave out.
-func (c *cycleRun) withheldFrom(targets []agentproto.Target) map[string]bool {
+func (c *cycleRun) withheldFrom(targets []agentproto.Target) []string {
 	listed := make(map[string]bool, len(targets))
 	for _, t := range targets {
 		listed[t.Key] = true
 	}
-	out := map[string]bool{}
+	var out []string
 	for _, rt := range c.claims.Winners {
 		if p, ok := c.placements[rt.Hostname]; ok && p.Kind == store.PlacementShared && !listed[rt.Hostname] {
-			out[rt.Hostname] = true
+			out = append(out, rt.Hostname)
 		}
 	}
 	return out
