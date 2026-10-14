@@ -264,9 +264,10 @@ type Engine struct {
 	egress   []egress.Target
 	verified map[tunnelRef][]egress.Target
 	// caughtUp is the epoch whose store catchUp found to give nothing twice,
-	// and cardless, by MAC, the epoch that said a lease has no card.
+	// and saidIn, by what it said it of, the epoch catchUp last said
+	// something in, so that it says it once per epoch.
 	caughtUp agentproto.Epoch
-	cardless map[string]agentproto.Epoch
+	saidIn   map[string]agentproto.Epoch
 	// moving are the verifications of addresses whose MAC moved that the
 	// agent runs, which Run waits for.
 	moving sync.WaitGroup

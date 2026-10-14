@@ -10,6 +10,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -24,6 +25,9 @@ import (
 func (c *cycleRun) catchUp() {
 	if !c.writerRead || !c.clustered() || c.e.caughtUp == c.epoch() {
 		return
+	}
+	if c.e.saidIn == nil {
+		c.e.saidIn = map[string]agentproto.Epoch{}
 	}
 	if c.raisePool() && c.keepCardLeases() && c.allReported() {
 		c.e.caughtUp = c.epoch()
@@ -46,9 +50,14 @@ func (c *cycleRun) allReported() bool {
 	return true
 }
 
+// maxCatchUp is how far past the next address of the pool an address an
+// agent reports may move it: an agent's word can hold back an address the
+// store lost, and never give the pool away.
+const maxCatchUp = 1024
+
 // raisePool moves the pool of service addresses on past the highest service
-// address an agent's gateway maps or a verified configuration names. It
-// reports whether it could tell.
+// address the gateway of an admitted node maps or a verified configuration
+// names. It reports whether it could tell.
 func (c *cycleRun) raisePool() bool {
 	next, _, _, err := c.e.d.Store.ServicePool()
 	if err != nil {
@@ -56,12 +65,7 @@ func (c *cycleRun) raisePool() bool {
 		c.storeHold = true
 		return false
 	}
-	held := map[netip.Addr]bool{}
-	for _, rep := range c.reportsNow() {
-		for _, addr := range rep.Status.ServiceAddrs {
-			held[addr] = true
-		}
-	}
+	held := c.reportedServices(next)
 	for t := range c.e.sentTargets() {
 		held[t.Addr] = true
 	}
@@ -85,6 +89,48 @@ func (c *cycleRun) raisePool() bool {
 	return true
 }
 
+// reportedServices are the service addresses the agents of the admitted
+// nodes report their gateways map, each from the report of the node its
+// certificate names. One of a node that is not Active or Draining, or one
+// past maxCatchUp beyond next, is not taken, and said once per epoch: it
+// would hold back addresses no gateway maps.
+func (c *cycleRun) reportedServices(next netip.Addr) map[netip.Addr]bool {
+	out := map[netip.Addr]bool{}
+	reports := c.reportsNow()
+	for _, name := range slices.Sorted(maps.Keys(reports)) {
+		rep := reports[name]
+		n, known := c.nodes[name]
+		admitted := known && (n.Node.State == store.NodeActive || n.Node.State == store.NodeDraining)
+		if !admitted || rep.Status.Node != name || len(rep.Status.ServiceAddrs) == 0 {
+			continue
+		}
+		limit := next
+		for range maxCatchUp {
+			limit = limit.Next()
+		}
+		for _, addr := range rep.Status.ServiceAddrs {
+			addr = addr.Unmap()
+			if !gateway.ServicePrefix.Contains(addr) {
+				continue
+			}
+			if limit.Less(addr) {
+				c.refuseReported(name, addr, next)
+				continue
+			}
+			out[addr] = true
+		}
+	}
+	return out
+}
+
+// refuseReported says once per epoch that a node reports a service address
+// too far past the pool to be taken.
+func (c *cycleRun) refuseReported(node string, addr, next netip.Addr) {
+	c.saidOnce(node+" "+addr.String(), Event{At: c.now, Level: levelWarn, Kind: kindNetwork, Subject: node,
+		Message: fmt.Sprintf("node %s reports that its gateway maps %s, more than %d past %s, the next address of the pool; it is not taken",
+			node, addr, maxCatchUp, next)})
+}
+
 // keepCardLeases gives every managed card of a guest whose lease is missing
 // its lease again, from its MAC, which carries its address, and says which
 // leases have no card in any guest: they are kept, so that their addresses
@@ -101,9 +147,6 @@ func (c *cycleRun) keepCardLeases() bool {
 		return true
 	}
 	carded := map[string]bool{}
-	if c.e.cardless == nil {
-		c.e.cardless = map[string]agentproto.Epoch{}
-	}
 	leases, err := c.e.d.Store.Leases()
 	if err != nil {
 		c.problem("reading the leases: %v", err)
@@ -119,6 +162,7 @@ func (c *cycleRun) keepCardLeases() bool {
 		// back once its card is gone.
 		carded[strings.ToLower(a.MAC)] = true
 	}
+	owners := cardOwners(c.snap.Guests)
 	for _, g := range c.snap.Guests {
 		for _, nic := range g.NICs {
 			mac, err := net.ParseMAC(nic.MAC)
@@ -128,6 +172,13 @@ func (c *cycleRun) keepCardLeases() bool {
 			text := mac.String()
 			carded[text] = true
 			if _, ok := leases[text]; ok {
+				continue
+			}
+			if others := owners[text]; len(others) > 1 {
+				// Two cards with one MAC: neither is given the address.
+				c.saidOnce("two cards "+text, Event{At: c.now, Level: levelWarn, Kind: kindManaged, Subject: g.Ref.String(), Guest: guestOf(g.Ref.String()),
+					Message: fmt.Sprintf("the managed card %s is a card of %s; its lease, missing from the store, is not saved again for any of them",
+						text, strings.Join(others, " and "))})
 				continue
 			}
 			addr, ok := cardAddr(n.Prefix, mac)
@@ -145,13 +196,37 @@ func (c *cycleRun) keepCardLeases() bool {
 		}
 	}
 	for _, mac := range slices.Sorted(maps.Keys(leases)) {
-		if l := leases[mac]; !carded[strings.ToLower(mac)] && c.e.cardless[mac] != c.epoch() {
-			c.e.cardless[mac] = c.epoch()
-			c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindManaged, Subject: l.Owner, Guest: guestOf(l.Owner),
+		if l := leases[mac]; !carded[strings.ToLower(mac)] {
+			c.saidOnce("no card "+mac, Event{At: c.now, Level: levelWarn, Kind: kindManaged, Subject: l.Owner, Guest: guestOf(l.Owner),
 				Message: fmt.Sprintf("the lease of %s of %s has no card in any guest; its address is kept and not given again until the lease is released", l.Addr, l.Owner)})
 		}
 	}
 	return true
+}
+
+// cardOwners are, by MAC, the guests that have a card of it on the managed
+// network, once each.
+func cardOwners(guests []model.Guest) map[string][]string {
+	out := map[string][]string{}
+	for _, g := range guests {
+		for _, nic := range g.NICs {
+			mac, err := net.ParseMAC(nic.MAC)
+			if err != nil || nic.Bridge != gateway.ManagedBridge || slices.Contains(out[mac.String()], g.Ref.String()) {
+				continue
+			}
+			out[mac.String()] = append(out[mac.String()], g.Ref.String())
+		}
+	}
+	return out
+}
+
+// saidOnce adds ev to the events of the cycle once per epoch and key.
+func (c *cycleRun) saidOnce(key string, ev Event) {
+	if c.e.saidIn[key] == c.epoch() {
+		return
+	}
+	c.e.saidIn[key] = c.epoch()
+	c.events = append(c.events, ev)
 }
 
 // cardAddr is the address a managed card's MAC carries in subnet: pco's
