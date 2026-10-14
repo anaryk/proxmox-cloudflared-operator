@@ -177,10 +177,12 @@ func (s *suite) ifaceOf(t testing.TB, v vm, mac string) string {
 // dhcp asks for an address on an interface of the machine with the client
 // the image has, and returns the address it got. The client is stopped
 // afterwards, so that port 68 is free for the renewal the suite sends
-// itself.
+// itself. The clients live in sbin, which the path of the machine's user
+// does not name.
 func (s *suite) dhcp(t testing.TB, v vm, iface string) string {
 	t.Helper()
 	script := fmt.Sprintf(`set -e
+PATH=$PATH:/usr/sbin:/sbin
 IF=%s
 sudo ip link set "$IF" up
 if command -v dhclient >/dev/null; then sudo timeout 60 dhclient -1 -v "$IF" 2>&1 | tail -3
@@ -233,12 +235,15 @@ sudo python3 /tmp/e2e-renew.py %s %s %s %s`, iface, lease, mac, server)
 	return strings.TrimSpace(out)
 }
 
-// restartVM stops and starts the machine, which applies a card that waited
-// for it, and waits until SSH answers again.
+// restartVM shuts the machine down and starts it, which applies a card that
+// waited for it, and waits until SSH answers again. A machine stopped hard
+// soon after its first boot may lose the host keys cloud-init wrote, and
+// its sshd then does not start: it syncs and shuts down first.
 func (s *suite) restartVM(t testing.TB, v vm) {
 	t.Helper()
 	id := strconv.Itoa(v.vmid)
-	s.must(t, "qm", "stop", id)
+	_, _ = s.ssh(v, "sudo sync")
+	s.must(t, "qm", "shutdown", id, "--timeout", "120", "--forceStop", "1")
 	s.must(t, "qm", "start", id)
 	s.waitSSH(t, v)
 	s.sync(t)
