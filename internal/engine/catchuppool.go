@@ -18,9 +18,10 @@ import (
 const problemReportRefused = "node %s reports that its gateway maps %s, not taken from it: %s"
 
 // maxCatchUp is the most the pool of service addresses moves on in an
-// epoch, whatever moves it. An agent's word alone moves it once in an epoch,
-// and no further than the store has mappings: a node that lies can make the
-// pool skip that many addresses in an epoch, and no more.
+// epoch, whatever moves it, and the furthest an agent's word alone moves it:
+// a node that lies can make the pool skip that many addresses in an epoch,
+// and no more. A store that lags behind may have lost every mapping an
+// honest node still holds, so the bound is not the number it has.
 const maxCatchUp = 1024
 
 // maxReported is the most service addresses a node's report may name to be
@@ -60,8 +61,8 @@ func (m *catchUpMemory) of(epoch agentproto.Epoch) *catchUpMemory {
 // address the controller can vouch for: one the store maps, or one a
 // configuration verified at Cloudflare sends a connector to. An address only
 // an agent's gateway maps moves it once in the epoch, once every node has
-// reported (settled), and no further past the pool's next than the store has
-// mappings. It says why nothing may be allocated now: the pool could not be
+// reported (settled), and no further than maxCatchUp past the pool's next.
+// It says why nothing may be allocated now: the pool could not be
 // read or moved, or would move more than maxCatchUp in the epoch. What a
 // report names at or past the pool's next that is not taken from it is a
 // problem line, and holds nothing.
@@ -87,7 +88,7 @@ func (c *cycleRun) raisePool(m *catchUpMemory, settled bool, overdue []string) s
 		}
 	}
 	reported, refused := c.reportedServices(overdue)
-	limit := addrPlus(next, len(known))
+	limit := addrPlus(next, maxCatchUp)
 	for _, addr := range slices.SortedFunc(maps.Keys(reported), netip.Addr.Compare) {
 		var why string
 		switch {
@@ -99,7 +100,7 @@ func (c *cycleRun) raisePool(m *catchUpMemory, settled bool, overdue []string) s
 			// Taken, or not, once every node has reported.
 			continue
 		case !addr.Less(limit):
-			why = fmt.Sprintf("an agent's word moves the pool at most %d past %s, as many addresses as the store has mappings", len(known), next)
+			why = fmt.Sprintf("an agent's word moves the pool at most %d past %s", maxCatchUp, next)
 		default:
 			if !addr.Less(want) {
 				want, highest = addr.Next(), addr

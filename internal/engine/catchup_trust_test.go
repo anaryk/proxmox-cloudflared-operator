@@ -62,8 +62,29 @@ func TestAnAgentsReportMovesThePoolOnlyAsFarAsItIsTaken(t *testing.T) {
 
 		require.Equal(t, netip.MustParseAddr("198.18.1.6"), poolNext(t, w), "the near one is taken, the far one not")
 		require.Contains(t, st.Problems, "node pve2 reports that its gateway maps 198.18.255.254, not taken from it: "+
-			"an agent's word moves the pool at most 4 past 198.18.1.4, as many addresses as the store has mappings")
+			"an agent's word moves the pool at most 1024 past 198.18.1.4")
 		require.False(t, hasProblem(st, held), st.Problems)
+	})
+
+	t.Run("a store that lags behind and has no mappings", func(t *testing.T) {
+		w, _ := legsWorld(t, func(w *world) {
+			w.attach(t, "vmbr1", 1, store.ScopeCluster, "10.0.0.0/24", map[string]string{"pve1": "10.0.0.250", "pve2": "10.0.0.251", "pve3": "10.0.0.252"})
+			w.cardOn(102, "vmbr1")
+			w.res.goVia("db.example.com", "vmbr1")
+			for _, n := range []string{"pve2", "pve3"} {
+				w.acts[n].legs = map[string]string{"db.example.com": "vmbr1"}
+			}
+			w.acts["pve3"].edit = func(st *agentproto.Status) {
+				st.ServiceAddrs = []netip.Addr{netip.MustParseAddr("198.18.1.0"), netip.MustParseAddr("198.18.1.5")}
+			}
+		})
+
+		w.runFor(time.Minute)
+
+		all, err := w.store.ServiceAddrs()
+		require.NoError(t, err)
+		require.Len(t, all, 1)
+		require.Equal(t, netip.MustParseAddr("198.18.1.6"), all[0].Service, "what the honest node holds is never given out")
 	})
 
 	t.Run("a report that names another node", func(t *testing.T) {

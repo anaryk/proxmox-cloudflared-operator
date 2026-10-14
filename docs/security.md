@@ -1165,9 +1165,8 @@ it takes is limited, so that neither a node nor a guest can steer it:
 
 - The pool of service addresses moves past an address a configuration verified at Cloudflare
   sends a connector to at any time. An address only an agent reports moves it once in a
-  tenure, once every node has reported, and no further than the store has mappings; nothing
-  moves it more than 1024 addresses in a tenure. A lying agent can make the pool skip that
-  many addresses, and no more. A report it does not take is a problem line and holds nothing.
+  tenure, once every node has reported, and nothing moves it more than 1024 addresses in a
+  tenure. A lying agent can make the pool skip that many addresses in a tenure, and no more. A report it does not take is a problem line and holds nothing.
   The pool never moves back, so an address below it is never given out again.
 - Allocation waits for a silent node for 5 minutes at most if it reported to this controller
   before, or was never admitted; what its last report maps stays taken. A node that was
