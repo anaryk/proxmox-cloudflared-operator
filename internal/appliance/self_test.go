@@ -79,6 +79,17 @@ func TestTheFirstPassDrawsTheEpochAndNoLaterOne(t *testing.T) {
 	require.Equal(t, 9, f.writer(t).Generation, "decided once per process")
 }
 
+func TestAnAgentProvesItselfAndDrawsNoEpoch(t *testing.T) {
+	f := newSelf(t)
+	f.self.NoEpoch = true
+
+	v := f.self.Check(t.Context(), snap(lxc(ownVMID, Pool, macA)))
+
+	require.True(t, v.OK)
+	require.False(t, f.self.EpochDrawn())
+	require.Equal(t, planner.Writer{InstallID: "abc123", Generation: 5, Nonce: "n5", Incarnation: incA}, f.writer(t))
+}
+
 func TestACopyDrawsNothingAndLosesTheFlag(t *testing.T) {
 	f := newSelf(t)
 	require.NoError(t, f.self.SetFlag(true))

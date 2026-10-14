@@ -145,6 +145,10 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	if err := cfg.check(); err != nil {
 		return err
 	}
+	if a.KindName() == store.ApplianceAgent {
+		logStart(log, cfg, st)
+		return runApplianceAgent(ctx, cfg, deps, app, st, state)
+	}
 	settings := startSettings(st, log)
 	logStart(log, cfg, st)
 
@@ -210,7 +214,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	dh.allowed = parts.gw.mayChange
 	defer dh.start(ctx)()
 	wd := newWatchdog(deps.Notifier, eng.Healthy, deps.Now, log)
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, nil, log, watch, keep, traffic.run, keepWeb, sources.keep, wd.run)
+	return serve(ctx, srv, runEngine(eng), cfg.SocketPath, gid, deps.Notifier, nil, log, watch, keep, traffic.run, keepWeb, sources.keep, wd.run)
 }
 
 // applianceStore is the check of the store the doctor makes in the appliance:

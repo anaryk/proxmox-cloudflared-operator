@@ -41,6 +41,9 @@ type Self struct {
 	Rand        io.Reader // where the nonce of a new epoch is drawn from
 	Now         func() time.Time
 	Log         zerolog.Logger
+	// NoEpoch is an agent's: it follows its controller's epoch and draws
+	// none of its own.
+	NoEpoch bool
 
 	mu        sync.Mutex
 	firstDiff time.Time
@@ -86,6 +89,8 @@ func (s *Self) Check(ctx context.Context, snap inventory.Snapshot) Verdict {
 				"run pco appliance repair --vmid %d on the node", s.Endpoint.Address, s.Endpoint.ServerName, s.ID.VMID)
 		}
 	case s.decided:
+	case s.NoEpoch:
+		s.decided = true
 	case v.Pending && f.Mount.VMID != s.ID.VMID:
 		// A clone started within the slack of the uptime passes it too, and
 		// its NICs tell it apart only once they are past their minute.

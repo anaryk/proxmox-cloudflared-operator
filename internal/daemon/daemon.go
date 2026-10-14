@@ -371,7 +371,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	srv.SetRole(api.LeaseRole(eng.State, hl.alone))
 	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, dh.awaitBound, log, beside...)
+	return serve(ctx, srv, runEngine(eng), cfg.SocketPath, gid, deps.Notifier, dh.awaitBound, log, beside...)
 }
 
 // servicePool is what the doctor reads of the pool of service addresses:
@@ -538,8 +538,9 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 // is told that the daemon is ready: the DHCP server of a managed network.
 //
 // A request that does not finish within the shutdown time is cut off. That is
-// the end of a stop that was asked for, and not a failure of the daemon.
-func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket string, gid int, n Notifier, ready func(context.Context), log zerolog.Logger, beside ...func(context.Context)) error {
+// the end of a stop that was asked for, and not a failure of the daemon. main
+// is the engine's run, or what an agent container runs in its place.
+func serve(ctx context.Context, srv *api.Server, main func(context.Context), socket string, gid int, n Notifier, ready func(context.Context), log zerolog.Logger, beside ...func(context.Context)) error {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
@@ -566,7 +567,7 @@ func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket stri
 		started = true
 		go func() {
 			defer close(cycled)
-			_ = eng.Run(ctx) // it ends with ctx and has no error to tell
+			main(ctx)
 		}()
 		for _, run := range beside {
 			others.Go(func() { run(ctx) })
@@ -600,4 +601,10 @@ func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket stri
 		return nil
 	}
 	return err
+}
+
+// runEngine is the run of eng as serve takes it: it ends with ctx and has no
+// error to tell.
+func runEngine(eng *engine.Engine) func(context.Context) {
+	return func(ctx context.Context) { _ = eng.Run(ctx) }
 }
