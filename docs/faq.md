@@ -197,16 +197,19 @@ zone. See
 
 ## Does pco work on a cluster, and does it fail over?
 
-pco runs on one node. `pco setup` refuses on a second node of a cluster, and a daemon holds
-when the node registry names another node. On a cluster, install it on the node whose guests
-you want to publish. The guests of the other nodes are listed and their routes are read, but
-this node cannot see the forwarding tables of their bridges, so they are proven at `observed`
-at best, and are served only once `identityMinimum` is lowered to `observed` and their
-segment is acknowledged; see [Identity](identity.md#identityminimum).
+Yes. On a cluster pco runs on every node: install the package and run `pco setup` on each. The
+agent of each node runs that node's connectors and egress filter and proves the addresses of its
+guests, and the node that holds the lease, a lock on the cluster filesystem, is the controller,
+the one that decides and writes. Every active node runs a connector of the shared tunnel, so a
+hostname keeps answering through the others when a node is lost; a route that only one node can
+serve, as a guest on its managed network, goes into a tunnel pinned to that node.
 
-There is no failover. The connectors run on that node, so when it is down every published
-hostname is down with it, and nothing moves pco to another node. That is planned for a later
-release; see [pco on a cluster](architecture.md#pco-on-a-cluster).
+When the controller's node is lost, another node takes the lease once its lock expired and
+writes again about two and a half minutes later; a clean reboot or `pco cluster handoff` hands it
+over within seconds. Meanwhile nothing new is published or withdrawn, and every connector serves
+on. The clocks of the nodes must be in step, and a cluster of two nodes needs a quorum device to
+fail over at all. See [Run pco on a cluster](guides/clusters.md) and
+[pco on a cluster](architecture.md#pco-on-a-cluster).
 
 ## Can pco use a tunnel or DNS records that I already have?
 

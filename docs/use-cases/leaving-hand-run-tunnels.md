@@ -75,8 +75,9 @@ not is `unreachable`, with a note that the connection was refused.
 ### Admission and identity minimum
 
 Leave both at their defaults, `tag` and `port`. You are the one moving the names, and the
-guests are on the node that runs pco. A guest on another node can only be proven at
-`observed`; see the [company cluster](company-cluster.md) page.
+guests are on the node that runs pco. On a cluster, run pco on every node, as the
+[company cluster](company-cluster.md) page describes, and the guests of every node are proven at
+`port`.
 
 ### Tokens
 

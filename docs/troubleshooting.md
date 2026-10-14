@@ -94,6 +94,11 @@ The sections the two point at:
 - **Profile** is `host` or `appliance`.
 - **Identity**, in the appliance only, is what the last self-identification found:
   `ok (lxc/120 on node1)`, or why not; see [the appliance](#the-appliance).
+- **Controller** and **Agent** appear on a node of a cluster: the node that holds the lease, with
+  its address and generation, or `none: no node holds the lease`; and how the agent of this node
+  fares, `hears the controller`, `in the controller's process`, `the controller is silent for
+  <time>` or `stood down: <why>`, with the snapshot it applied and what it serves. See
+  [a cluster](#a-cluster).
 - **Inventory** is `incomplete` when Proxmox could not be read in full. The cycle holds, and
   the problems say what was not readable.
 - **Writer** is `ok`, or `stale`, `foreign` or `unknown`, and in the appliance `behind`; see
@@ -686,6 +691,145 @@ token that failed for another reason, `grant ...` for instance, is a failure as 
 2026-10-13T14:00:00+02:00 (in 12 days)`. Rotate it before then, as
 [Cloudflare token](cloudflare-token.md) describes. When it has expired, pco can change nothing at
 Cloudflare through it, but the connectors keep serving what was published.
+
+## A cluster
+
+What follows is for pco on more than one node. [Operations](operations.md#a-cluster) says how a
+cluster is run, and [Problems](problems.md#the-lease) lists every line of the lease and the nodes.
+The [runbooks](guides/cluster-runbooks.md) go through the larger cases step by step.
+
+### This node is not the controller
+
+    pco: this node is not the controller; run it on node1 (10.0.0.1)
+
+A command that changes the install, or reads what only the controller knows, is answered by the
+node that holds the lease. Run it there, with `ssh` to the address named, or open the web
+interface, which redirects there. `pco status` on this node says which node it is, and its
+`Problems:` has `this node does not hold the lease; node node1 is the controller`, which is no
+fault.
+
+### No node is the controller
+
+    pco: no controller is reachable (lease held by node1 since 2026-10-14T09:12:40Z)
+
+The lease names a node whose controller does not answer. After the loss of the controller's
+node, another node takes the lease once the lock expired, about two minutes after its last
+refresh, and `pco status` on it says `this node does not hold the lease yet: <why>` until
+then. Wait, and follow it with `pco events --kind security` on any node. If no node takes it
+after three minutes, `<why>` says what keeps them: the cluster has no quorum (`pvecm status`),
+every node left is marked `--controller-eligible=false` or is draining, or the nodes run builds
+of another protocol. [Controller failover](guides/controller-failover.md) has what to expect.
+
+### The controller waits for the agents
+
+    waiting for the agents of node3 to report to this controller; nothing is written at Cloudflare for up to 42s
+
+A new controller writes nothing until the agent of every node that is neither down nor removed
+reported to it, for a minute at most. A node whose agent reports after that minute still stops
+the writes if it remembers a later epoch. The first cycle after a minute that ended without a
+report only adds, and says `the agents of node3 did not report within the takeover hold;
+nothing is withdrawn at Cloudflare in this cycle`. A node that stays silent is `unknown`: look at
+`pco agent status` and `journalctl -u pco` on it.
+
+### Nodes that send no status
+
+    .members lists 1 nodes online that have sent no status (node3): check cluster.agentNetwork and the 8644 rule
+
+Corosync sees the node, the agent channel does not reach the controller from it: the firewall of
+the datacenter drops TCP 8644, or `cluster.agentNetwork` names a network the nodes cannot reach
+each other on. `pco doctor` on the node names it in its check `agent dial`. Its connectors serve
+on from the last desired state, and the controller withdraws nothing for it, but nothing new
+reaches it either. Add the node's agent address to the ipset `pco-nodes` (`pco setup` on the node
+does it) or fix the network. A controller whose own node is cut off from the agents this way
+stays the controller: `pco cluster handoff` moves it to a node the agents reach.
+
+### The controller is behind
+
+    the store is older than what the agents remember (restored?); pco promote shows the differences and draws a new epoch
+
+The agent of a node follows an epoch above the one `leader.json` names: the store went back, as
+after a restore of `/etc/pve/pco` from an earlier copy, or another controller drew that epoch.
+The controller writes nothing at all. The line beside it names the nodes whose agents reported
+the higher epoch. Before anything else, make sure no other controller writes: a second cluster
+with a copy of this store, or a part of this one under a quorum override. Then
+`pco promote` on the controller shows what differs between the store and what the agents and
+Cloudflare say, and, once you agree, draws an epoch above every one of them and starts in
+observe-only mode: read `pco plan`, then `pco apply`. What was decided after the copy was made,
+an approval revoked, a node forgotten, comes back with the store; look at it before `pco apply`.
+
+The same holds for `the store went backwards (restored?); pco promote adopts it`, a store put back
+under the running controller, and for `this store was made in cluster <name> (<fingerprint>)`,
+a store restored into another cluster or a node's disk copied, where `pco promote` asks you to
+type the name of that cluster.
+
+### The lease is fenced
+
+    the lease is fenced: the last refresh failed: <error>; nothing is written
+
+The node holds the lease but may not write now: a refresh failed or is late, the process or the
+node stood still, the wall clock stepped, or an agent follows an epoch this controller did not
+draw. Writes start again with the same epoch once a refresh succeeds. A fence that comes and
+goes is the cluster filesystem answering slowly: `journalctl -u pve-cluster`, and the clocks
+(`chronyc tracking`). One that names another epoch means another controller writes: find it.
+
+### Routes pinned to their nodes
+
+    node node3 has no pco agent with a running watch; routes of other nodes' guests are pinned to their nodes
+
+A node the cluster lists online has no agent whose forwarding-table watch runs: pco is not
+installed there, its daemon is down, or its watch could not start. No node can then prove the
+port of a guest on another node, so every such route moves to the tunnel pinned to its guest's
+node, where it is served at `port`; nothing is withdrawn. Install pco on the node, or start it.
+The routes go back to the shared tunnel once every node watched for ten minutes without a break.
+`the watch of the agent of node <node> broke twice within ten minutes` names a node whose agent
+restarts over and over; `journalctl -u pco` on it says why.
+
+### An address blocked on every node
+
+    10.0.0.7 is blocked on every node: its MAC bc:24:11:00:00:07 was seen on veth121i0 of node2
+
+The watch of `node2` saw the MAC of the guest that holds `10.0.0.7` on the port of another guest,
+or saw it leave the guest's own port while the guest did not migrate. Every node takes the
+address out of its egress filter, and its routes answer 502. Find what is on the port named, a
+clone of the guest or a guest with a forged MAC, and stop it. The block ends by itself ten
+minutes after the last report once the guest's node attests the card again;
+`pco cluster unblock 10.0.0.7` ends it now, once you know what blocked it.
+
+### A node stays joining
+
+    node node2 stays joining: node2 fails 3 shared routes that other replicas reach; they move to pinned tunnels before it becomes active
+
+The new node does not reach routes the other replicas reach: an address of its own on their
+bridges and VLANs is missing, or a firewall between it and the guests drops it. The routes move
+to tunnels pinned to their guests' nodes first, and the node is admitted once they did. With
+more than `cluster.admissionMaxMoves` of them it stays joining until `pco node admit node2`, after
+which all of them move. Fix the node's network rather than admit it, if the routes should be
+shared.
+
+### An agent refuses the controller
+
+`pco status` on a node lists under its `Agent:` line
+
+      - refused a desired state: snapshot of a lower epoch: 2.k3x9, this agent follows 3.f00d
+
+The agent remembers a later epoch than the controller sends, and takes nothing from it: the
+controller's store went back, and that controller says it is behind. Run `pco promote` on the
+controller. `pco agent reset-epoch` makes the agent forget what it remembers instead; that is
+right only when the store was restored on purpose, every node is to follow it, and you have
+checked that no other controller writes, since it takes away the check that would have stopped a
+stale one. [The runbooks](guides/cluster-runbooks.md#an-agent-refuses-the-controllers-epoch) say
+when.
+
+### Two controllers after a quorum override
+
+`pco doctor` fails `quorum override`, and `pco status` shows `foreign` or `stale` for some
+tunnels on each side. Under `two_node` without a quorum device, `expected_votes` or
+`wait_for_all: 0`, two parts of a cluster can each be quorate, each takes a lease and draws an
+epoch, and the sentinel at Cloudflare is the only check between them: at each tunnel the first
+to write wins. Remove the override from `/etc/pve/corosync.conf`, decide which side writes, stop
+pco on the other side, and run `pco promote` on the side that writes. The runbook
+[Writers foreign after a quorum override](guides/cluster-runbooks.md#writers-foreign-after-a-quorum-override)
+has the steps.
 
 ## The appliance
 

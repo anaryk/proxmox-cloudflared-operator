@@ -261,8 +261,9 @@ page alike.
 ## Cluster
 
 The settings of a cluster of nodes are the keys of one object, `cluster`. They are for pco
-on more than one node, which this release does not do yet
-([Operations](operations.md#one-node)).
+on more than one node ([Operations](operations.md#a-cluster)); a node alone reads them and has
+no use for them. While an upgrade from an earlier release is not finished, the file cannot hold
+the object, as that release would refuse it: `pco cluster finish-upgrade` comes first.
 
 ```json
 "cluster": {
@@ -282,9 +283,11 @@ on more than one node, which this release does not do yet
 | `cluster`: `rotateOnForget` | boolean, `true` | `true`, `false` | When a node is forgotten | None; edit the file |
 | `cluster`: `admissionMaxMoves` | integer, `10` | `1` to `1000` | Next cycle | None; edit the file |
 
-- `agentNetwork`: the network of the address each node's agent listens on and the controller
-  dials, written as its network address. Left out, it is the address the node's name
-  resolves to.
+- `agentNetwork`: the network of each node's agent address, written as its network address:
+  the address a node listens on for the agents of the other nodes while it is the controller,
+  which they dial, and which the firewall's ipset `pco-nodes` holds. Left out, it is the address
+  the node's name resolves to. Keep it off the networks of corosync, which `pco doctor` warns
+  about, and restart pco on every node after a change.
 - `replicas`: the nodes that run the connectors of the shared tunnel. Left out, or empty, it is
   every active node; a cluster of more than 25 nodes needs the list.
 - `followMaintenance`: whether a node that Proxmox puts in maintenance is drained, and taken

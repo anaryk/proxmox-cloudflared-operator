@@ -15,8 +15,8 @@ a preview.
 
 The pieces:
 
-- **A node of its own**, with its own pco, for previews and nothing else. pco runs on one node,
-  and the guests run code from pull requests.
+- **A node of its own**, with its own pco, for previews and nothing else, outside the cluster of
+  the company's production, as the guests run code from pull requests.
 - **A zone of its own**, `example.net`, on its own token. The names of previews are one level
   below it.
 - **A tagged template**, whose clones carry its tag. Proxmox copies the tags of the source to

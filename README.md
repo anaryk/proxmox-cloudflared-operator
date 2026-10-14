@@ -24,8 +24,7 @@ in one way only, with its consent: a network card on pco's managed network.
 It publishes HTTP and HTTPS to IPv4 origins and nothing else: no TCP or SSH
 tunnels, no WARP or private networks, and no Cloudflare Access policies. A
 published hostname is public, and what protects the application behind it is the
-application. pco runs on one node of a cluster and does not fail over: when that node is
-down, so are its hostnames.
+application.
 
 ## What it does
 
@@ -54,6 +53,9 @@ down, so are its hostnames.
   readers look at the routes, tunnels and traffic, and admins act on them.
 - Installs on the node, or as an appliance, a container that holds pco and its connectors
   and leaves the node itself without them (see [Profiles](docs/profiles.md)).
+- Runs on every node of a cluster: each node serves its own connectors, and one node, the
+  controller, decides and writes for all; when its node is lost, another takes over (see
+  [Run pco on a cluster](docs/guides/clusters.md)).
 
 ![The overview of the web interface: the routes by state, the edge traffic of the last 15 minutes, the connectors, what needs an admin, and the flow map from the hostnames to the guests](docs/images/ui-overview-light.png)
 
@@ -87,9 +89,12 @@ checksum file are on the [releases page][releases].
 Early development. There is no release yet, and pco is not ready for production. The host
 profile, the appliance profile and the web interface are in the repository.
 
-pco runs on one node. A node of a cluster works, with the limits that
-[Identity](docs/identity.md) describes for guests of the other nodes, and nothing takes over
-when that node fails.
+pco runs on a node alone or on every node of a cluster. On a cluster the node that holds a
+lease on the cluster filesystem is the controller, the one that writes, and every node runs a
+replica of the tunnel, so a hostname keeps answering when a node is lost; another node takes
+over the controller's work about two and a half minutes after its node is lost, and within
+seconds of a clean hand-off. The appliance has the same roles in containers, with the
+controller as a Proxmox HA resource if you choose.
 
 ## Install
 

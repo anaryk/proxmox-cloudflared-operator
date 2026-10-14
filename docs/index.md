@@ -38,6 +38,16 @@ pco runs in one of two [profiles](profiles.md):
 - **Appliance**: they run in an unprivileged container that `pco appliance install` makes, and
   nothing is installed on the node; see [Appliance](appliance.md).
 
+## On a cluster
+
+pco runs on a node alone or on every node of a Proxmox VE cluster. On a cluster each node runs
+its own connectors, egress filter and proofs, and one node, the controller, decides and writes
+for all of them; when its node is lost, another takes over within about two and a half minutes,
+and the connectors of the other nodes serve on meanwhile. A hostname every node reaches is
+served by a connector on each node, and one that only a node reaches by a tunnel pinned to it.
+[Architecture](architecture.md#pco-on-a-cluster) says how, and
+[Run pco on a cluster](guides/clusters.md) is the guide.
+
 ## What pco needs
 
 To run pco on a node, which is the host profile, you need:

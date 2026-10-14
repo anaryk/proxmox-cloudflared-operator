@@ -556,11 +556,20 @@ from boot to boot. A renewal (`dhclient -r; dhclient ens19`, `networkctl renew e
 
 ### Migration
 
-The managed network reaches the guests of this node. A guest that is migrated to another node
-keeps its card and its lease, since leases are keyed by MAC, and is `migrated` in `pco managed
-status`, with an event and a problem line; its routes through the managed network are not
-served from there. A consenting guest on another node waits with `guest is on node pve2, not
-pve1`. Move it back, or reach it another way.
+The managed network reaches the guests of the node that has its leg. A guest that is migrated
+to another node keeps its card and its lease, since leases are keyed by MAC, and is `migrated`
+in `pco managed status`, with an event and a problem line; its routes through the managed
+network are not served from there. On a node alone, a consenting guest on another node waits
+with `guest is on node pve2, not pve1`. Move it back, or reach it another way.
+
+On a cluster, the controller sends the change of a guest's card to the agent of the guest's
+node, which runs `qm set` or `pct set` there under the controller's epoch, so a consenting guest
+of any node with an admitted agent gets its card. The SDN zone `pco` is a Simple zone, so
+`pconet` is a bridge of each node of its own: a guest is reached through the managed network
+only on a node that has a leg in it, and this release makes the leg on the node the network was
+made on alone, as it does for an attached network
+([On a cluster](#on-a-cluster)). The routes of a guest on `pconet` of another node are not
+served until it runs where the leg is.
 
 ### The vnet and what pco checks of it
 
@@ -710,6 +719,34 @@ drops such a frame, since its sender pair is not the card's own. The guest firew
 the node's `pconet` bridge device unreachable from a managed guest, which the appliance cannot
 do on the node itself: the `OUT` rules let a guest send to the leg and to DHCP only.
 
+## On a cluster
+
+On a cluster each node runs its own gateway: its legs, the translations of the service
+addresses, the pins and the sticky entries, and on the managed network the DHCP server, from the
+desired state the controller sends its agent. What belongs to the install is the controller's:
+the networks, the service addresses, which stay one pool for the whole cluster, the leases and
+the consents.
+
+- **A leg is of one node.** Each network records a leg address for each node that has one, and
+  the leg of each node gets a MAC of its own, `02:50:43:4f:<index>:<mark>`, from the node's index
+  in the registry, so that two nodes' legs on one LAN do not clash. The managed network keeps
+  `02:50:43:4f:ff:01` and its first address on every node. `pco network attach` and the setup of
+  the managed network make the leg on the node they run on, the controller's, and no other: a
+  node without a leg cannot verify the targets behind it, and says
+  `network <id> has no leg on node <node>; its routes are served from the nodes that have one`.
+- **Placement.** A route to a guest behind the leg of a network that is one segment on every
+  node, a bridge with an uplink or a VXLAN vnet, would be shared once every replica reached it,
+  which takes a leg on every node; until then it is pinned to the node that has the leg. One
+  behind a bridge of a node of its own, an isolated bridge or `pconet`, is pinned to that node's
+  tunnel always ([Architecture](architecture.md#tunnels-and-placement)).
+- **Service addresses** are the same on every node: each node with a leg into the network
+  translates them towards its own leg, so a rule names one address whichever replica serves it.
+  A new controller moves the pool of service addresses past every address an agent maps and
+  every configuration at Cloudflare names before it gives one out, so that a store that lags
+  never gives an address twice ([Security](security.md#what-a-new-controller-takes-from-the-nodes)).
+- **The appliance.** An agent container runs no DHCP server of the managed network; guests on it
+  get their leases on the controller's node.
+
 ## Limits
 
 - **15 networks** in the cluster, the managed one among them: the marks are kept once for the
@@ -718,8 +755,9 @@ do on the node itself: the `OUT` rules let a guest send to the leg and to DHCP o
 - **About 68 new connections a second** to one target behind a leg, as computed above.
 - **IPv4 only.** A leg has one IPv4 address; IPv6 is turned off on every leg and on `pconet`,
   and a guest's IPv6 addresses are no candidates anywhere.
-- **One node.** Legs and the managed network are of the node that runs pco. A managed guest
-  that migrates keeps its card and is not reached; a consenting guest on another node waits.
+- **One leg for each network.** On a cluster a network has its leg on the node it was attached
+  or made on alone, and its routes are served from there; a managed guest that migrates keeps
+  its card and is not reached on its new node.
 - **Nine legs in the appliance**, `net1` to `net9`, admin-added cards counted; and the
   appliance attaches a VLAN on a VLAN-aware bridge only, never a `vmbr<X>v<Y>` bridge.
 - **The service prefix is fixed** at `198.18.0.0/16`, and `managed.subnet` is a `/16` to a

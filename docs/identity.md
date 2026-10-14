@@ -71,14 +71,14 @@ outside the ladder:
 flowchart TB
     subgraph port["port"]
         portProof["Proof: only the guest answers ARP for the address, and this node's forwarding table has each of its MACs on the guest's own port"]
-        portServes["Reached by a guest on this node. Served at every identityMinimum."]
+        portServes["Reached by the node that runs the guest; on a cluster by the other nodes too, as port (attested). Served at every identityMinimum."]
     end
     subgraph filtered["filtered"]
         filteredProof["In the appliance: proof at observed through the managed network, while the Proxmox firewall of every card on it is proven to isolate it."]
     end
     subgraph observed["observed"]
         observedProof["Proof: only the guest answers ARP and none of its MACs is on the port of a local guest; or a trusted static address, which only the guest's configuration vouches for"]
-        observedServes["Reached by a guest on another node, or a trusted static address. Served only with identityMinimum observed, and then as the rules at observed allow."]
+        observedServes["Reached by a node for a guest of another node that it cannot attest, by the appliance, or for a trusted static address. Served only with identityMinimum observed, and then as the rules at observed allow."]
     end
     port -->|"more proof than"| filtered
     filtered -->|"more proof than"| observed
@@ -86,8 +86,8 @@ flowchart TB
 
 | Level | What was proven |
 |---|---|
-| `port` | Steps 1 to 5: only the guest answers ARP for the address, and the forwarding table of this node places each of its MACs on the guest's own port. A guest the node reaches through a leg, in an attached network or on the managed one, is proven at `port` the same way, with the ARP asked from the leg. |
-| `observed` | Less than `port`, in one of two ways. For a guest on another node of the cluster: only the guest answers ARP for the address, and none of its MACs is on the port of a guest of this node, which would be a local guest answering in its name; this node cannot see where the table sends the guest's own frames. For a trusted static address behind a router (see below): neither ARP nor the forwarding table is asked, and only the guest's Proxmox configuration vouches for the address, together with a kernel route to it through a gateway. |
+| `port` | Steps 1 to 5: only the guest answers ARP for the address, and the forwarding table of this node places each of its MACs on the guest's own port. A guest the node reaches through a leg, in an attached network or on the managed one, is proven at `port` the same way, with the ARP asked from the leg. On a cluster, another node proves it as `port (attested)`, which counts as `port`: see [`port (attested)` on a cluster](#port-attested-on-a-cluster). |
+| `observed` | Less than `port`, in one of two ways. For a guest on another node of the cluster that this node cannot attest: only the guest answers ARP for the address, and none of its MACs is on the port of a guest of this node, which would be a local guest answering in its name; this node cannot see where the table sends the guest's own frames. For a trusted static address behind a router (see below): neither ARP nor the forwarding table is asked, and only the guest's Proxmox configuration vouches for the address, together with a kernel route to it through a gateway. |
 | `filtered` | The level of the managed network `pconet` in the appliance: a proof at `observed` through it, while the Proxmox firewall of every card on it is proven to pin the card to its address and keep it from everything but pco's leg; see [`filtered` in the appliance](#filtered-in-the-appliance). The host profile does not have it. |
 
 A route that names an address and no guest has the level `manual`. Root makes it with
@@ -96,7 +96,9 @@ it is kept as a file in `/etc/pve/pco/routes/`, and nothing proves it; see
 [Security](security.md). A manual route can also name a guest, with `--guest`: its address is
 proven as for a route in the guest's Notes, and its level is one of the ladder.
 
-`port` is the highest level, and only a guest on the node that pco runs on can reach it.
+`port` is the highest level. A node proves it for the guests it runs, and on a cluster of hosts
+the other nodes prove it for them as `port (attested)` while every node watches its forwarding
+table.
 When a route has several candidates, pco serves the one proven at the highest level, and
 it stops trying once one reaches `port`; the order below only decides between equals. A
 newly bound address is kept for two minutes before pco looks for a candidate that may be
@@ -111,10 +113,14 @@ of the whole install: there is no minimum per route.
 
 With the default, two kinds of route are not served:
 
-- routes of guests on other nodes of the cluster, and
+- routes of guests that no node can prove at `port`: on a node alone, a guest of another node
+  of the cluster; on a cluster, a guest of a node that runs no pco agent, which another node
+  proves at `observed` at best; and
 - routes to a trusted static address.
 
-Both can only reach `observed`. Such a route is held back: its hostname answers 503, no
+Both can only reach `observed`. A route that the guest's own node proves at `port` and the
+other nodes only at `observed`, as while a node of the cluster has no agent whose watch runs,
+is not held back: it is served from the tunnel pinned to the guest's node. Such a route is held back: its hostname answers 503, no
 DNS record is made for it, and `pco routes` shows it as `unreachable` with the note
 
     identity level observed is below the required port
@@ -138,12 +144,75 @@ node: they are still proven at `port` where they can be, and a local guest whose
 on its own port still fails. What changes is that routes proven at `observed` are served, as
 far as [the rules at `observed`](#routes-that-wait-for-an-admin) allow, and the setting is
 the same for every guest of the install: any guest that is on another
-node, and any trusted static address, gets the lower proof. If the guests that need
-`observed` are few, the better answer is often to run pco on the node where they live.
+node that cannot be attested, and any trusted static address, gets the lower proof. If the
+guests that need `observed` are on a node without pco, the better answer is to run pco on that
+node too.
 
 `filtered` is accepted as a value on both profiles. On the host it is treated as `port`; in
 the appliance it serves the routes on the managed network while their isolation holds, and
 holds every other route back (see [`filtered` in the appliance](#filtered-in-the-appliance)).
+
+## `port (attested)` on a cluster
+
+On a cluster of hosts the node that runs a guest proves the address of its routes at `port`, as
+a node alone does: it chooses the address and checks that its own bridge has each of the
+guest's MACs on the guest's own port. The other nodes that run a replica of the shared tunnel
+must reach the same address, and a node cannot read the port of a guest on another node's
+bridge. A frame from elsewhere can answer that node's ARP with the guest's MAC and talk to it
+alone, unseen by the guest's node. Only the forwarding-table watch of the node where such a
+device runs can see it. So the other nodes prove a level of its own, `port (attested)`, and only
+while all of these hold:
+
+1. **Coverage.** Every node the cluster lists online runs an agent of this install whose
+   forwarding-table watch runs, as its last status, at most 30 seconds old, says. A node whose
+   agent restarts, or that comes back online, keeps its coverage for 60 seconds, once in ten
+   minutes; a second restart or return within ten minutes counts only once its watch has run
+   for 60 seconds without a break. An agent that restarts and reports again only after its last
+   status went stale, more than 30 seconds later, is uncovered at once, and covered again once
+   its watch has run for 60 seconds. On a host `pco.service`
+   starts before the guests, so a node's guests do not run before its watch does.
+2. **The attestation.** The agent of the guest's node says, in a fresh status, that each MAC
+   that answers for the address is learnt on one port of its bridge, on the bridge and VLAN of
+   the guest's card, that the port is the guest's own (`tap<vmid>i<n>`, `veth<vmid>i<n>`,
+   `fwpr<vmid>p<n>`), and that the MAC has stayed on it for five minutes.
+3. **The node's own check.** ARP for the address on this node's interface for the segment is
+   answered by those MACs alone, and this node's bridge has each of them on an uplink, a
+   physical interface, bond, VLAN or VXLAN port, and on no port of a guest of this node. The
+   node pins the neighbour and watches its own uplink for the MAC.
+4. **No block.** No block holds for the address, and no other running guest has those MACs
+   configured.
+
+`port (attested)` counts as `port` for `identityMinimum`. `pco routes` shows the route's level;
+the replicas of each route in `pco status --json` and the page of the route in the web interface
+show `port (attested by <node>)` for each node that proved it so. A route's level is the lowest
+over the replicas of its tunnel.
+
+When any of these fails, the node proves the route at `observed`, which takes nothing away by
+itself. With the default minimum, a route that the other replicas prove only at `observed` is
+moved to the tunnel pinned to the guest's node, which proves it at `port`: losing coverage moves
+every route of a guest of another node there at once, and when coverage comes back the routes
+return to the shared tunnel only after every online node's watch has run for ten minutes
+without a break, so that a node whose agent flaps does not move routes back and forth.
+`pco doctor` names a node whose watch broke twice within ten minutes.
+
+What this leaves open, by design:
+
+- **A device on the uplink outside the cluster** that copies the guest's MAC and answers one
+  replica alone is not seen by any watch. The guest's own node, at local `port`, stops it there.
+- **A migration.** A guest whose MAC just appeared on a port, as after a live migration, is
+  attested only once it has stayed there for five minutes; until then the other replicas prove
+  it at `observed`, and with the default minimum its routes are served from its new node's
+  pinned tunnel meanwhile.
+- **Without a controller** no attestation and no coverage is refreshed: an attestation counts
+  only while the node's last heartbeat from the controller is at most 15 seconds old, and the
+  attesting node's status was at most 30 seconds old when it was sent. A MAC cloned onto a third
+  node meanwhile is blocked by the guest's node and by the node it was cloned onto, through
+  their own watches, and not by the other replicas, until a controller is back. On a host that
+  takes a cluster without quorum for longer than a takeover.
+
+The appliance offers none of this: its agents read no bridge, so every replica proves
+`observed`, or `filtered` on the managed network. [Security](security.md#port-attested-against-the-attackers)
+sets `port (attested)` against the attackers.
 
 ## Routes that wait for an admin
 
@@ -154,10 +223,12 @@ for, `pco guest list` lists its guest among those that wait, and one problem lin
 
 At `observed`, which is served only while `identityMinimum` is `observed`:
 
-- **The segment.** A route proven by ARP at `observed`, which is the route of a guest on another
-  node, is served only on a segment an admin acknowledged: the bridge and VLAN of the guest's
-  card, named `vmbr0`, or `vmbr0:20` for VLAN 20. `pco segment list` shows the segments that
-  routes were proven on, and `pco segment acknowledge vmbr0:20` serves them from the next cycle.
+- **The segment.** A route proven by ARP at `observed`, as the route of a guest on another node
+  that cannot be attested, is served only on a segment an admin acknowledged: the bridge and VLAN
+  of the guest's card, named `vmbr0`, or `vmbr0:20` for VLAN 20.
+  [`pco segment list`](cli/pco-segment-list.md) shows the segments that routes were proven on,
+  and [`pco segment acknowledge vmbr0:20`](cli/pco-segment-acknowledge.md) serves them from the
+  next cycle.
   A trusted static address is on no segment and does not wait for one.
 - **The MAC.** The first time an address of a route is verified at `observed`, the MAC it
   answered from is pinned to the hostname's claim. When the address later answers from another
@@ -208,8 +279,8 @@ flowchart TB
   VLAN of its configuration in Proxmox. A segment is acknowledged once, by an admin, and a new
   one starts unacknowledged. Acknowledge a segment when you would trust every device on it with
   what its MAC can claim: a device that copies a guest's MAC passes ARP as the guest does.
-  `pco segment list` shows the segments and their routes, `pco segment revoke` takes an
-  acknowledgement back. A bridge whose name has a dot cannot be acknowledged, and its routes
+  `pco segment list` shows the segments and their routes, [`pco segment revoke`](cli/pco-segment-revoke.md)
+  takes an acknowledgement back. A bridge whose name has a dot cannot be acknowledged, and its routes
   wait.
 - **The MAC pin.** The first time an address of a route is verified, the MAC it answered from is
   pinned to the hostname's claim, and stays with the claim across a stop of the guest and a

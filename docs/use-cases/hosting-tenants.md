@@ -64,8 +64,10 @@ frames of the guest go through its own port. [Identity](../identity.md) and the
 does not stop. The install makes the container, the pool, the token and the settings;
 [Install the appliance](../guides/appliance-install.md) has its steps.
 
-The appliance runs on the one node it was installed on, and nothing moves it to another when
-that node fails. A copy of the container, such as a clone, serves nothing: the container proves
+This appliance runs on the one node it was installed on, and nothing moves it to another when
+that node fails. On a cluster the appliance comes as a controller container and an agent
+container on each other node, and the controller can be a Proxmox HA resource
+([Appliance](../appliance.md#a-cluster-of-appliances)). A copy of the container, such as a clone, serves nothing: the container proves
 in every cycle that it is the one that was installed.
 
 ### Identity minimum and segments
@@ -272,7 +274,8 @@ appliance. The record is removed after the grace period.
   `pco appliance repair` and `pco appliance recover`;
   [Restore the appliance from a backup](../guides/appliance-restore.md) and
   [the appliance page](../appliance.md#restore-and-repair) describe them.
-- **The node.** The appliance is on one node. While it is down, so is everything published.
+- **The node.** The appliance is on one node. While it is down, so is everything published,
+  unless it is a cluster of appliances.
 - **Names.** `pco claims list` says who holds each hostname and who waits for it, and
   `pco events` records what the admins did.
 

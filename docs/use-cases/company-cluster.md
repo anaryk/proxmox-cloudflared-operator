@@ -1,9 +1,8 @@
 # Company cluster
 
 This page describes pco on a Proxmox VE cluster that several teams use and one team
-administers: where to install it, what to do about the guests of the other nodes, how to
-keep the people who edit guests from publishing what they like, and what stops when the node
-that runs pco does.
+administers: pco on every node, how to keep the people who edit guests from publishing what they
+like, and what a node's loss costs.
 
 ## The situation
 
@@ -15,81 +14,72 @@ reachable from the internet, and the firewall should keep no inbound port open f
 
 Two facts about pco decide the rest.
 
-- **pco runs on one node.** `pco setup` on a second node refuses, and a daemon holds while
-  the node registry names another node. The connectors run on that node too.
-- **It does not fail over.** If that node is down, every published hostname is down with it,
-  and nothing takes over. Moving pco to another node is something an admin does, with the
-  steps of [Back up and recover](../guides/backup-and-recovery.md#move-pco-to-another-node);
-  automatic failover is planned for a later release.
+- **pco runs on every node.** Each node runs its own connectors and proves the addresses of its
+  own guests at `port`; the other nodes prove them at `port (attested)` on its word. One node,
+  the controller, holds the lease on the cluster filesystem, decides and writes for all.
+- **It fails over.** When a node is lost, the hostnames of the shared tunnel go on through the
+  other nodes' connectors; when the controller's node is lost, another node takes the lease about
+  two and a half minutes later, and nothing is published or withdrawn meanwhile.
 
 ## The setup
 
-pco and its connector are on `node1`. The guests published from `node1` are proven at `port`.
-A guest on `node2` is listed and its Notes are read, but this node cannot see where the bridge
-of `node2` sends the guest's frames, so it is proven at `observed` at most, and is held back at
-the default minimum. The store is on the cluster filesystem and is the same on every node:
+pco is set up on `node1` first and joined from `node2` and `node3`. Every node runs a replica
+of the shared tunnel, and a guest's routes are served by all of them, whichever node it runs on.
+The store is on the cluster filesystem and is the same on every node:
 
 ```mermaid
 flowchart TB
     visitor["Visitor"] --> edge["Cloudflare edge"]
-    edge -->|"through the tunnel the connector opened"| connector
+    edge --> c1
+    edge --> c2
+    edge --> c3
     subgraph cluster["Proxmox VE cluster"]
-        subgraph node1["node1: pco runs here, host profile"]
-            connector["cloudflared connector"] --> filter["Egress filter"]
-            daemon["pco daemon"]
+        subgraph node1["node1: the controller"]
+            c1["Connector and egress filter"]
             portal["qemu/131: portal"]
             api["lxc/132: API"]
         end
         subgraph node2["node2"]
-            reports["qemu/141: reports, proven at observed"]
+            c2["Connector and egress filter"]
+            reports["qemu/141: reports"]
         end
         subgraph node3["node3"]
-            other["Guests that are not published"]
+            c3["Connector and egress filter"]
         end
         store[("Store on the cluster filesystem, replicated to every node")]
     end
-    filter --> portal
-    filter --> api
-    daemon -->|"ARP only, no forwarding table"| reports
-    daemon --> store
+    c1 --> portal
+    c2 --> portal
+    c3 --> portal
+    c1 --> reports
+    c2 --> reports
+    c3 --> reports
 ```
 
 ## Decisions
 
 ### Profile
 
-The host profile, on `node1`. The published guests live on the node that runs pco, where the
-host profile can prove their addresses at `port`. A company that would rather keep a
-daemon off its hypervisors can run the appliance instead; every guest is then proven at
-`observed`, which [Hosting tenants](hosting-tenants.md) describes, with what that asks of the
-admins.
+The host profile, on every node. It proves the guests of each node at `port` there, and at
+`port (attested)` from the other nodes, so the default `identityMinimum` serves every guest of
+the cluster without an admin acknowledging segments. A company that would rather keep a daemon
+off its hypervisors can run the appliance instead, a controller container and an agent
+container on each other node; every guest is then proven at `observed`, which
+[Hosting tenants](hosting-tenants.md) describes, with what that asks of the admins.
 
-### Where to install it, and the guests of the other nodes
+### The nodes
 
-Install it on the node that holds the guests to publish, and keep those guests there. A
-published guest that Proxmox moves to another node, by a migration or by HA, can be proven at
-`observed` there at best, so at the default minimum it is held back with the note
-`identity level observed is below the required port`, and its hostname answers 503 until it
-is back. Plan the moves of these guests as outages of their hostnames.
+Install pco on all three: a node without pco leaves the cluster without the coverage the other
+nodes need to vouch for each other's guests, and the routes of every guest are then served from
+its own node alone. Before the second node joins:
 
-A guest that has to stay on another node can be served, at a price. The minimum is a setting
-of the whole install:
+- Run chrony on every node, and leave the clocks alone: the cluster filesystem judges whether
+  the lease expired by the clock of the node with the lowest node id.
+- Give every node an address on the bridges and VLANs of the published guests, as `node1` has.
+- Keep the agent channel, TCP 8644, open between the nodes; setup offers the datacenter rule.
 
-1. Set `identityMinimum` to `observed`. Guests of this node are still proven at `port` where
-   they can be; what changes is that routes proven at `observed` are served.
-2. Acknowledge each segment, the bridge and VLAN of the guest's card, once an admin has
-   decided that routes proven on it may be served: `pco segment list` shows them and
-   `pco segment acknowledge vmbr0` serves them. A route at `observed` is held until its
-   segment is acknowledged.
-3. Expect approvals. Where anyone but the admins holds `VM.Config.Network` on the guest, or
-   the MAC that answers for its address is not the one first seen, the route waits for
-   `pco guest approve`.
-
-[Identity](../identity.md#identityminimum) says what the lower level proves and does not, and
-the table in [Security](../security.md#identity-levels-against-five-attackers) which attacker
-each level stops. At `observed`, whoever can set the MAC of a guest's card and write its
-Notes can reach any device on the segment, which is the reason for steps 2 and 3 and the
-reason to prefer moving the guest.
+Guests that move between nodes, by a migration or by HA, keep being served: their routes follow
+them. [Run pco on a cluster](../guides/clusters.md) has the steps.
 
 ### Admission
 
@@ -154,10 +144,12 @@ Admins of pco are the users that hold `Sys.Modify` on `/`, readers the users tha
 role with `Sys.Audit`, such as PVEAuditor, and nothing more: a reader can read the state of
 the install and cannot change anything.
 
-The interface listens on the address of `node1` on port 8643. Restrict that port with the
-Proxmox firewall to the admin network, as you would port 8006. If staff reach it under a
-name of their own, put the name in `PCO_WEB_HOSTS` in `/etc/default/pco-web` and restart
-`pco-web`, and give it a certificate that the company's own CA signed:
+The interface listens on the address of each node on port 8643, and is served by the
+controller: on any other node it sends the browser to the controller's address, where the user
+signs in again. Restrict that port with the Proxmox firewall to the admin network, as you would
+port 8006. If staff reach it under a name of their own, put the name in `PCO_WEB_HOSTS` in
+`/etc/default/pco-web` on every node and restart `pco-web`, and give it a certificate that the
+company's own CA signed, on every node:
 
     pco setup --repair --web-cert own --web-cert-file /root/pco.example.com.crt --web-key-file /root/pco.example.com.key
 
@@ -206,32 +198,30 @@ runs on:
       lxc/132 (api)       node1  yes      mac:3f2a91b47c0d5e6f8a9b0c1d2e3f4a5b  waiting   1       0
       qemu/141 (reports)  node2  yes      uuid:142                              changed   1       0
 
-With the portal on `node1` and a report server on `node2`, `pco routes` shows what the default
-minimum does to the second:
+With the portal on `node1` and a report server on `node2`, both are served at `port`, by the
+replicas of every node:
 
-    HOSTNAME             STATE        LEVEL     SERVICE                VIA     OWNER     ZONE         NOTE
-    portal.example.com   active       port      http://10.0.0.31:8080  direct  qemu/131  example.com  -
-    reports.example.com  unreachable  observed  -                      -       qemu/141  example.com  identity level observed is below the required port
+    HOSTNAME             STATE   LEVEL  SERVICE                VIA     OWNER     ZONE         NOTE
+    portal.example.com   active  port   http://10.0.0.31:8080  direct  qemu/131  example.com  -
+    reports.example.com  active  port   http://10.0.0.41:8080  direct  qemu/141  example.com  -
 
 ## What to watch
 
-- **The node.** If `node1` is down, everything published is down. Write down how pco is moved
-  to another node before the day it is needed, and test it on a node that is not in use. The
-  state that cannot be made again is in `/etc/pve/pco` and `/etc/pve/priv/pco`, which every
-  node has, and in the manifest in `/var/lib/pco` of `node1`
-  ([Files](../files.md#what-to-back-up)).
-- **Quorum.** Without quorum the cluster filesystem is read-only. Published routes keep
-  serving. An approval or a change of the settings fails, and a cycle that has a claim to
-  save holds until it can ([Architecture](../architecture.md#one-writer)).
-- **Reboots of `node1`.** A Proxmox upgrade that reboots the node is an outage of all
-  hostnames: after the boot they answer 502 until the daemon's first cycle has verified the
-  routes. Migrating the guests away first does not avoid it: they are held back while they are
-  on another node.
+- **The nodes.** `pco cluster status` on the controller shows each node, whether its agent
+  reports and its forwarding-table watch runs, and whether its replica is ready; `pco doctor
+  --cluster` checks them all. Drain a node before its maintenance, `pco node drain`, and hand
+  the lease off before the controller's, `pco cluster handoff`.
+- **Coverage.** A node whose pco is stopped or broken makes the routes of every guest of the
+  other nodes move to tunnels pinned to their own nodes; `pco status` names the node.
+- **Quorum.** Without quorum nothing is written, anywhere; published routes keep serving. An
+  approval or a change of the settings fails until it is back.
+- **Upgrades.** One node at a time, the controller last, and `pco cluster finish-upgrade` once
+  all of them run the new release ([Upgrade and go back](../guides/upgrade-and-rollback.md#on-a-cluster)).
 - **Guests that wait.** `pco status` has the line `Approval:` with how many wait, and
   `pco doctor` warns for each. A team that clones a guest to test something will ask why it
   is not served.
 - **Held routes.** `pco status` says how many routes the minimum and the rules at `observed`
-  hold, and why. A line that counts guests of other nodes means someone moved one.
+  hold, and why.
 - **The token.** Its expiry, and who else spends the Cloudflare API of the same user.
 - **Monitoring.** `pco status` exits 1 when there is a problem, and `pco status --json` has
   the fields to alert on; `pco doctor` can run from a timer
@@ -239,13 +229,14 @@ minimum does to the second:
 
 ## Guides it uses
 
-- [Run pco on a cluster](../guides/clusters.md): which node to install on, the guests of other
-  nodes and segments, what stops when that node is down.
+- [Run pco on a cluster](../guides/clusters.md): pco on every node, and what a node's loss
+  costs; [Controller failover](../guides/controller-failover.md) and
+  [the runbooks of a cluster](../guides/cluster-runbooks.md).
 - [Decide who may publish](../guides/who-may-publish.md): the gate tag, the admission modes,
   approvals.
 - [Use several tokens and accounts](../guides/several-tokens-and-accounts.md), and
   [roll out in observe-only mode](../guides/observe-then-enforce.md).
-- [Back up and recover](../guides/backup-and-recovery.md): what to back up, and moving pco to
-  another node.
+- [Back up and recover](../guides/backup-and-recovery.md): what to back up, and the bundle of
+  `pco export`.
 - [Upgrade and go back](../guides/upgrade-and-rollback.md), and
   [monitor pco](../guides/monitoring.md).

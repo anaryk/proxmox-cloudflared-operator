@@ -16,6 +16,14 @@ web interface a Proxmox user or token with `Sys.Modify` on `/`. A reader, with `
 **Admission**: The setting `admission`. With `tag`, a guest that carries the gate tag is
 published; with `approve`, it also needs an approval. See [Security](security.md#approval-mode).
 
+**Agent**: The part of the daemon that serves one node of a cluster: its connectors, egress
+filter, gateway and the proofs of its guests, from the desired state the controller sends it. A
+node alone runs it in the daemon's process. See [Architecture](architecture.md#pco-on-a-cluster).
+
+**Agent address**: The address of a node that the agents of the other nodes dial while it is the
+controller, on TCP port 8644, chosen by `cluster.agentNetwork`. See
+[Settings](settings.md#cluster).
+
 **`allowHosts`, `denyHosts`**: Patterns of the hostnames that may and may not be published. An
 apex and a wildcard are published only when an `allowHosts` pattern names them. See
 [Operations](operations.md#settings).
@@ -40,6 +48,10 @@ own put there, without touching the guests; `pco network attach` does it. See
 [Networking](networking.md#attach).
 
 ## B
+
+**Behind**: A controller whose store is older than what the agents remember, as after a
+restore: it writes nothing until `pco promote`, in the appliance `pco appliance recover`. See
+[Architecture](architecture.md#a-store-that-goes-back).
 
 **Binding**: The address pco verified for a hostname, with the MAC, the identity level and the
 time of the proof. Bindings are kept in `/var/lib/pco/bindings`, and a bound address is tried
@@ -67,9 +79,17 @@ it for as long as it asks for it, and for the grace period after. See
 `managed.consent: auto` for a guest the gate tag admits that needs the network. See
 [Networking](networking.md#consent).
 
+**Controller**: The one node of a cluster that decides and writes: on a host the node that
+holds the lease, in the appliance the controller container. See
+[Architecture](architecture.md#pco-on-a-cluster).
+
 **Copy**: In the appliance profile, a container that holds the store of an appliance but is not
 the container it was installed as, such as a clone of it. A copy serves nothing. See
 [Architecture](architecture.md#one-writer).
+
+**Coverage**: Whether every node a cluster lists online runs an agent whose forwarding-table
+watch runs, which `port (attested)` needs. See
+[Identity](identity.md#port-attested-on-a-cluster).
 
 **Credential**: A Cloudflare API token that pco stores, with an id and a label. See
 [Cloudflare token](cloudflare-token.md).
@@ -84,6 +104,10 @@ filter in line. See [Architecture](architecture.md#the-reconcile-cycle).
 guest's, the addresses of the nodes, and the gateways of SDN subnets. See
 [Identity](identity.md#the-denylist-and-the-node).
 
+**Drain**: Taking a node out of the replicas of the shared tunnel, for its maintenance, with
+`pco node drain`; Proxmox's maintenance mode drains a node by itself. See
+[Operations](operations.md#a-cluster).
+
 ## E
 
 **Egress filter**: The nftables table `inet pco_egress`, which lets the connectors reach
@@ -96,8 +120,9 @@ See
 `pco apply` leaves observe-only for it. See
 [Operations](operations.md#observe-only-until-pco-apply).
 
-**Epoch**: In the appliance profile, the writer identity drawn at a start of the container: the
-generation one up and a new nonce. See [Architecture](architecture.md#one-writer).
+**Epoch**: The writer identity, a generation and a nonce, as one tenure of the writer drew it: on
+a host each time a node takes the lease, in the appliance at each start of the container. See
+[Architecture](architecture.md#epochs).
 
 ## F
 
@@ -158,7 +183,16 @@ in the name of its tunnels and the marker of its records. See
 **Issue**: A mistake in the Notes of a guest or in the settings, with its position. `pco status`
 lists them. See [Annotations](annotations.md#what-is-rejected-and-why).
 
+## J
+
+**Join token**: The token, good once and for 15 minutes, that an appliance agent container
+enrols with, made by `pco cluster join-token` on the controller. See
+[Appliance](appliance.md#a-cluster-of-appliances).
+
 ## L
+
+**Lease**: On a host, the lock `/etc/pve/priv/lock/pco-leader` of the cluster filesystem; the node
+that holds it is the controller. See [Architecture](architecture.md#the-lease).
 
 **Leg**: A network card of pco's own in a network the node has no address in, with an address
 of that network: `leg<N>` in the namespace `pco` of a host, a card `net<N>` of the appliance.
@@ -201,17 +235,27 @@ apart. See [Architecture](architecture.md#one-writer).
 works out what it would do and changes nothing at Cloudflare. `pco apply` ends it. See
 [Operations](operations.md#observe-only-until-pco-apply).
 
-**`observed`**: The identity level of a guest on another node, proven by ARP alone, and of a
-trusted static address. See [Identity](identity.md#the-levels).
+**`observed`**: The identity level of a guest on another node that this node cannot attest, of
+every guest of the appliance, proven by ARP alone, and of a trusted static address. See [Identity](identity.md#the-levels).
 
 **Owner**: Who a route belongs to: a guest, written `qemu/101` or `lxc/102`, or a manual route,
 written `manual/<id>`. See [Annotations](annotations.md#hostnames-belong-to-one-guest-at-a-time).
 
 ## P
 
+**Pinned tunnel**: A tunnel `pco-<install id>-<node>` whose connector runs on one node, for the
+routes only that node can serve. See [Architecture](architecture.md#tunnels-and-placement).
+
+**Placement**: Where a route of a cluster is served: the shared tunnel, or a tunnel pinned to a
+node. See [Architecture](architecture.md#tunnels-and-placement).
+
 **`port`**: The highest identity level: only the guest answers ARP for the address, and the
 forwarding table of this node has its MACs on the guest's own port. See
 [Identity](identity.md#the-levels).
+
+**`port (attested)`**: On a cluster of hosts, `port` as another node proves it: on the word of
+the guest's node, whose watch has the MAC on the guest's own port, and its own check of its
+uplink. It counts as `port`. See [Identity](identity.md#port-attested-on-a-cluster).
 
 **Profile**: The way pco is installed: `host`, on the node itself, or the appliance, in a
 container. See [Profiles](profiles.md).
@@ -223,6 +267,9 @@ container. See [Profiles](profiles.md).
 **`rejected`**: The state of a route for an apex or a wildcard that no `allowHosts` pattern
 names. It takes no claim and gets no rule and no record. See
 [Troubleshooting](troubleshooting.md#a-route-is-held-withdrawn-or-in-conflict).
+
+**Replica**: A connector of the shared tunnel on one node; every active node runs one. See
+[Architecture](architecture.md#tunnels-and-placement).
 
 **Rogue connector**: A connector that Cloudflare lists on a tunnel of this install and that pco
 does not run on the node; the pages call it a connector that is not pco's. It takes a share of
@@ -256,6 +303,9 @@ while the guest is stopped. See [Security](security.md#a-managed-guest-and-its-c
 **Served zone**: A zone pco publishes hostnames in, through the one credential that serves it.
 See [Cloudflare token](cloudflare-token.md#several-accounts-and-zone-pins).
 
+**Shared tunnel**: The tunnel `pco-<install id>` of an account, which runs a replica on every
+active node of a cluster. See [Architecture](architecture.md#tunnels-and-placement).
+
 **Soft-denied address**: The gateway of an interface of a node, or a resolver of a node. A
 guest's route to it is served only once an approval names the address. See
 [Identity](identity.md#routes-that-wait-for-an-admin).
@@ -264,6 +314,9 @@ guest's route to it is served only once an approval names the address. See
 `/var/lib/pco`. See [Architecture](architecture.md#the-store).
 
 ## T
+
+**Takeover hold**: The minute at most in which a new controller writes nothing while it waits
+for every node's agent to report to it. See [Operations](operations.md#the-lease).
 
 **Target**: The address and port on a guest that a route sends requests to. The targets the
 daemon verified are what the egress filter lets the connectors reach. See
@@ -304,7 +357,7 @@ stopped. It answers 503 and keeps its record. See
 [Troubleshooting](troubleshooting.md#a-route-is-held-withdrawn-or-in-conflict).
 
 **Writer**: The one process that may write the tunnel configurations and the DNS records of an
-install, named by `/etc/pve/pco/meta/leader.json`. Its verdict, in `pco status`, is `ok`,
+install, named by `/etc/pve/pco/meta/leader.json`: on a cluster, the controller. Its verdict, in `pco status`, is `ok`,
 `stale`, `foreign` or `unknown`, and in the appliance `behind`, when its state is older than
 its last write at Cloudflare. See [Architecture](architecture.md#one-writer).
 

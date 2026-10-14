@@ -777,8 +777,11 @@ controller asks every agent for them, and checks every agent container from the 
 ### The controller and Proxmox HA
 
 Without HA, a lost controller is installed again on another node and adopts the install with
-`pco appliance repair --recover`, as a lost appliance does ([Restore and repair](#restore-and-repair));
-the agents follow its higher epoch. `--ha` on `install --kind controller` or on `convert` makes it a
+`pco appliance repair --recover`, as a lost appliance does ([Restore and repair](#restore-and-repair)).
+The install's CA was on its state volume and is made anew, so the agent containers, which trust
+the old one only, are enrolled again: on each node `pco appliance uninstall --vmid <vmid>` for
+its agent container, then a new join token on the controller and `pco appliance install --kind
+agent` with it. [Run the controller as an HA resource](guides/appliance-ha.md) avoids that. `--ha` on `install --kind controller` or on `convert` makes it a
 Proxmox HA resource, kept on `--ha-nodes` when given (a node-affinity rule on Proxmox VE 9, a
 restricted group on 8). Read this first: the node that runs an HA resource arms its watchdog and
 fences itself when it loses quorum, which resets every guest on that node.

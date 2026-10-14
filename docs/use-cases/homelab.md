@@ -66,10 +66,9 @@ against here.
 ### Identity minimum
 
 Leave `identityMinimum` at `port`. Every guest is on the node that runs pco, so every guest
-can be proven at that level. If the home lab has more nodes, pco still runs on one, and the
-guests of the others would be held back; the [company cluster](company-cluster.md) page
-describes that, and the simplest answer at home is to keep the guests you publish on the
-node that runs pco.
+can be proven at that level. If the home lab has more nodes, run pco on each of them, as the
+[company cluster](company-cluster.md) page describes: every node then proves its own guests at
+`port`, and the others vouch for them.
 
 ### Tokens
 
@@ -177,7 +176,7 @@ denylist and a connection to the port are checked.
   runs and its address verifies, and its hostname answers 503 meanwhile
   ([Operations](../operations.md#the-daemon-and-its-units)).
 - **The node itself.** pco runs on this one node and so do the connectors. While it is down,
-  every published hostname is down, and nothing takes over.
+  every published hostname is down, and nothing takes over: that takes a cluster.
 - **Services that listen on 127.0.0.1 only.** pco proves an address of the guest, and a
   service that does not listen on it makes its route `unreachable`, with a note that the
   connection was refused.

@@ -45,10 +45,9 @@ And these on the guests:
   Proxmox configuration (cloud-init `ipconfig`).
 - The service listens on that address, not only on 127.0.0.1.
 
-pco runs on one node. On a cluster, install it on the node whose guests you want
-to publish; the guests of other nodes need a setting described in
-[Identity](identity.md) and the [profiles](profiles.md) page says what else is
-missing for clusters.
+This page sets up one node. On a cluster, set up the first node as here, then
+the others as [Run pco on a cluster](guides/clusters.md) describes: pco runs on
+every node.
 
 ## Install
 

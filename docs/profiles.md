@@ -51,21 +51,22 @@ flowchart TB
 | How it is installed | `install.sh`, by default, then `pco setup` | `install.sh --appliance`, which runs `pco appliance install` |
 | Proxmox access | an API token (read-only) and local root for `pco setup` | the API only, with a privilege-separated token of the same read-only role |
 | How guests are reached | as the node itself, through the node's own address on the guest's bridge; a network the node is not on through a leg of pco's own in the gateway namespace `pco` | through the container's network card, on its bridge and VLAN; a network it is not on through a card the appliance adds to itself as a leg |
-| Identity level | `port` for guests on the node, through a leg too; `observed` for others | `observed`; `filtered` on the managed network while its isolation holds |
+| Identity level | `port` for guests on the node, through a leg too; on a cluster `port (attested)` for guests of other nodes while every node watches its forwarding table, `observed` otherwise | `observed`; `filtered` on the managed network while its isolation holds |
 | Managed network isolation | SDN isolated ports, at layer 2, with pco's guard and sticky entries on the bridge; the node out of reach through its own table | the Proxmox guest firewall on the cards pco attaches, at layer 3; the iptables backend only |
 | Where the legs live | the network namespace `pco`, brought back at boot by `pco-netns.service` before the guests | the container's own cards `net1` to `net9`, restored at boot by `pco-net.service` |
 | Store | `/etc/pve/pco`, on the cluster filesystem | a volume of the container, kept out of backups |
 | Upgrades | apt, with the package | `pco upgrade`, inside the container; Debian's security updates by themselves |
-| Control-plane failover | planned for clusters: a lease on the cluster filesystem, automatic | planned: a Proxmox HA resource, or restore and promote |
-| Data-path availability | one connector on the one node; a connector for each node is planned for clusters | the same |
+| On a cluster | pco on every node: the agent of each serves its node, and the node that holds the lease is the controller | a controller container, which serves its own node, and an agent container on each other node, enrolled with a join token |
+| Control-plane failover | automatic: another node takes the lease about two and a half minutes after the controller's node is lost, within seconds of a clean stop or `pco cluster handoff` | the controller as a Proxmox HA resource, on shared storage automatic, on replicated storage after `pco appliance recover`; without HA, installed again and recovered |
+| Data-path availability | a replica of the shared tunnel on every active node; the routes only one node can serve in a tunnel pinned to it | the same |
 | Sign-in to the web interface | the ticket of the Proxmox web interface, or a Proxmox API token | a Proxmox VE user and password, with its TOTP or recovery code, checked at the node's API, or a Proxmox API token; `root@pam` only with `PCO_WEB_ALLOW_ROOT=1` |
 | Where the web interface listens | the node's address in the cluster status, port 8643, or what `pco setup --web-listen` gives | the address of `net0`, port 8643, and nowhere else |
 | The certificate of the web interface | by default a key of its own and a certificate of the cluster CA for 90 days, which the daemon renews; or yours; or pveproxy's | a key of its own and a self-signed certificate of 397 days, which the daemon renews; or yours |
 
-The rows that say planned are direction, not behaviour: nothing in this release does them. In
-this release pco runs on one node, or as one appliance for a cluster, has a command line and a
-web interface, reaches the networks the node is not on through legs of its own, and manages a
-network of its own for the guests that consent ([Networking](networking.md)).
+Both run on a node alone or on every node of a cluster ([Operations](operations.md#a-cluster)),
+have a command line and a web interface, reach the networks a node is not on through legs of
+their own, and manage a network of their own for the guests that consent
+([Networking](networking.md)).
 [Architecture](architecture.md) describes the parts of each profile, and
 [Appliance](appliance.md) the appliance as a whole.
 

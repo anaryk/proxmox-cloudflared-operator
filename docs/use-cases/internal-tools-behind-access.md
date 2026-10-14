@@ -102,8 +102,8 @@ that the install publishes in the list.
 
 ### Identity minimum
 
-Leave `identityMinimum` at `port`, with the guests on the node that runs pco. See the
-[company cluster](company-cluster.md) page for guests on other nodes.
+Leave `identityMinimum` at `port`, with the guests on the node that runs pco, or with pco on
+every node of a cluster as the [company cluster](company-cluster.md) page describes.
 
 ### Tokens
 

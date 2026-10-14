@@ -76,7 +76,7 @@ node.
 
 | Part | Runs as | Can |
 |---|---|---|
-| The daemon, `pco.service` | root | Read Proxmox through its API token, open a raw socket to ask ARP, read the bridge forwarding table through netlink and watch it and the neighbour table for changes, load the egress table with `nft`, run `systemctl` for the connectors and write their files, call the Cloudflare API with the stored tokens. With a network behind a leg: keep the namespace `pco`, its legs and tables, and the sticky entries and the guard on `pconet`; run a DHCP server on the managed leg; and run `qm set` and `pct set` to add, remove or set down the one card of a consenting guest on the managed network, under the configuration's digest. It listens on a unix socket and nowhere else. |
+| The daemon, `pco.service` | root | Read Proxmox through its API token, open a raw socket to ask ARP, read the bridge forwarding table through netlink and watch it and the neighbour table for changes, load the egress table with `nft`, run `systemctl` for the connectors and write their files, call the Cloudflare API with the stored tokens. With a network behind a leg: keep the namespace `pco`, its legs and tables, and the sticky entries and the guard on `pconet`; run a DHCP server on the managed leg; and run `qm set` and `pct set` to add, remove or set down the one card of a consenting guest on the managed network, under the configuration's digest. It listens on a unix socket, and on a cluster, while it is the controller, on TCP port 8644 of its agent address for the agents of the other nodes ([Between the nodes of a cluster](#between-the-nodes-of-a-cluster)). |
 | The connectors, `pco-cloudflared@<tunnel id>.service` | the system user `pco-connector`, with no capabilities | Open outbound connections, which the egress filter confines (below). |
 | The web interface, `pco-web.service` | the system user `pco-web`, with no capabilities | Serve HTTPS on its address, ask the node's API whether a user may sign in, and call the daemon on its socket for the users signed in; see [the web interface](#the-web-interface). |
 | The `pco` command | whoever runs it | `setup`, `uninstall` and `pco egress` work on the node directly and need root. The others ask the daemon through its socket, which lets in only root and `pco-web`. |
@@ -228,10 +228,12 @@ administer the node. It is off by default. The default is `tag`.
 row but the first assumes a guest that carries the tag: a user cannot tag their own guest
 when the tag is registered, unless they may clone one that has it (the last row).
 
-`port` is what a guest on this node gets. `observed` is what a guest on another node of the
-cluster gets, what an address behind a router gets when you trust it, and what every guest of
-the [appliance](appliance.md) gets; on a host only if `identityMinimum` is lowered to
-`observed`. `filtered` is what a guest on the managed network of the appliance gets while its
+`port` is what a guest gets from the node that runs it. On a host cluster the other nodes
+prove it at `port (attested)` while every node watches its forwarding table, which
+[`port (attested)` against the attackers](#port-attested-against-the-attackers) compares with
+`port`, and at `observed` otherwise. `observed` is also what an address behind a router gets
+when you trust it, and what every guest of the [appliance](appliance.md) gets; on a host it is
+served only if `identityMinimum` is lowered to `observed`. `filtered` is what a guest on the managed network of the appliance gets while its
 isolation holds; [the managed network against the five attackers](#the-managed-network-against-the-five-attackers)
 has it. A guest reached through a leg of an attached network gets `port` on a host and
 `observed` in the appliance, as any other.
@@ -705,6 +707,11 @@ when.
 | Tunnel run tokens of the connectors | `/var/lib/pco/tunnels/<tunnel id>.token` | Mode 0600 in a directory of mode 0700. Passed to cloudflared as a systemd credential. |
 | The key of the web interface's certificate | `/etc/pco/web/tls.key` | Mode 0600 in a directory of mode 0700, root only. Passed to `pco web` as a systemd credential. In the mode `pveproxy` a link to the key of `pveproxy`. |
 | Sessions of the web interface, and the Proxmox tokens and tickets they hold | the memory of `pco web` | Never written to disk; a restart of `pco-web` ends them all. |
+| The key of the install's CA, on a cluster | `/etc/pve/priv/pco/ca/current.json`, and `previous.json` for ten minutes after a rotation | Signs the certificate of every node: whoever holds it can issue one in any node's name. In the appliance on the controller's state volume only. |
+| The key of each node's certificates | `/var/lib/pco/agent/tls/client.pem`, and on a host `server.pem` | Mode 0600. Each file holds the key with its certificate. |
+| The desired state an agent last took, with the run tokens of its tunnels | `/var/lib/pco/agent/desired.json` | Mode 0600. The agent serves on from it while no controller answers. |
+| A join token of an appliance agent | the file `pco cluster join-token --file` writes, then the agent's state volume until the controller answered | The store keeps only the SHA-256 of its secret. Good once, for one node, for 15 minutes. |
+| An export bundle | wherever `pco export` wrote it | Encrypted under a passphrase. It holds the CA's key, and with `--credentials` the Cloudflare tokens: with its passphrase it can pass for the controller to every agent of the install. Keep the passphrase apart from the file. |
 
 In the appliance the first three are on its state volume, below `/var/lib/pco`; see
 [the appliance](#the-state-volume-and-its-copies).
@@ -731,7 +738,9 @@ secret; [Operations](operations.md) lists it.
 
 ## The socket API and who may call it
 
-The daemon answers on the unix socket `/run/pco/pco.sock`. It has no network listener. The
+The daemon answers on the unix socket `/run/pco/pco.sock`. The socket is not on the network;
+the agent endpoint a controller of a cluster serves is, and answers the agents of the install
+and nothing else ([Between the nodes of a cluster](#between-the-nodes-of-a-cluster)). The
 directory `/run/pco` has mode 0750 and the socket 0660, both owned by root; the group is
 `pco-web` when that group exists, and root's group otherwise. The daemon also reads the
 user id of the process on the other end of every connection from the kernel and answers only
@@ -1093,7 +1102,31 @@ the appliance itself, where `VM.Config.Network` would be enough to read its toke
 ## Between the nodes of a cluster
 
 On a cluster, one node's controller drives an agent on every node over HTTPS on tcp/8644,
-with mutual TLS under a CA of pco's own (never Proxmox's `pve-root-ca`).
+with mutual TLS under a CA of pco's own (never Proxmox's `pve-root-ca`, whose certificates
+every node of the cluster trusts). [Architecture](architecture.md#pco-on-a-cluster) says what
+goes over it.
+
+### Who trusts whom
+
+- **On a host, root of any node is root of the cluster.** The nodes share `/etc/pve/priv`, the
+  root SSH keys and the API, and pco does not pretend otherwise: the CA's key is in
+  `/etc/pve/priv/pco/ca`, every node reads it, and a node enrols itself by writing its own
+  certificate into the cluster filesystem. Mutual TLS protects the agent channel against the
+  network, not against the root of a node. The daemon reads the Cloudflare credentials into
+  memory only while its node holds a valid lease, and drops them when it loses it.
+- **In the appliance the containers are principals of their own.** The controller container
+  holds every credential that writes: the Cloudflare tokens, its Proxmox token with the grants
+  of the managed network, and the CA. An agent container holds the run tokens of the tunnels it
+  runs, a Proxmox token with the reading role `PCO` alone, and its client certificate. It never
+  holds the CA's key.
+- **What a report of an agent can do.** An agent's report restricts what other nodes do, or
+  what its own connectors may reach, and nothing else: the controller never puts one agent's
+  verification into another node's egress filter, and takes the lowest level over the replicas.
+  The attestation that a guest's MAC is on its own port is the one exception, and the controller
+  takes it only from a host agent, about a guest Proxmox lists on that agent's node, on the
+  card's bridge and VLAN, and only while that agent reports a forwarding-table watch that runs.
+
+### The listener and the certificates
 
 - The listener drops a connection from an address that is not a registered node's or agent's
   before the TLS handshake starts. One address holds at most 16 connections open, and the
@@ -1105,7 +1138,23 @@ with mutual TLS under a CA of pco's own (never Proxmox's `pve-root-ca`).
   must be the one the registry holds.
 - An agent that is refused is told only the kind of refusal (removed, contested, not enrolled,
   another install, another address, protocol versions). The detail goes to the controller's
-  log.
+  log. An agent that is told it was removed, or that it belongs to another install, stands
+  down: it stops its connectors, empties its egress filter and deletes the run tokens it holds.
+- The CA is an ECDSA P-256 key valid for ten years. A node's certificates are valid for 90 days
+  and name its kind, `host` or `appliance`, and its node; an agent renews its client certificate
+  over the channel 60 days after it was issued, always with a new key. A host node also issues
+  its own certificates from the CA at each start of its daemon when they end within 30 days, so
+  that it needs no controller for it. An appliance agent whose certificate ended is enrolled
+  again with a new join token: the controller never takes an ended certificate.
+- An agent checks the controller's certificate under the CA it was given and under the name
+  `node-<node>.pco-<install id>.invalid` of the node `leader.json` names on a host, or
+  `controller.pco-<install id>.invalid` in the appliance, so the address it dials does not
+  matter.
+- The Proxmox firewall gives a second gate where it is on: `pco setup` offers the datacenter
+  rule `IN ACCEPT -p tcp -dport 8644 -source +pco-nodes`, with the agent address of every node
+  in the ipset `pco-nodes`, and the appliance's controller container gets the ipset `pco-agents`
+  with one rule for it. Nothing else of the firewall is touched. `pco doctor --cluster` checks
+  that each agent reaches the port.
 
 ### Join tokens
 
@@ -1190,6 +1239,63 @@ it takes is limited, so that neither a node nor a guest can steer it:
   address of the managed network; were its lease saved again for any guest, that user could
   take an address whose lease the store lost from the guest that holds it. Such a card is
   reported, and it gets nothing.
+
+### What a compromised part can do
+
+| Compromised | Can | Cannot | What to do |
+|---|---|---|---|
+| An appliance agent container | Run a connector elsewhere with the run tokens it holds, and so take a share of the requests of every hostname of the shared tunnel, in the clear, as any replica does, until it is forgotten and the secrets rotated. Read guest configurations, as its token's role allows. Report false failures, which move routes or withdraw them on its node: an attack on availability. Stop serving. | Get a Cloudflare API token, write to Proxmox, add a target to another node's egress filter or raise the level another node proves, call the endpoint as another node, or hide a second connector of its own: an agent owns one connector of a tunnel, and a second one it reports is counted as not pco's. | `pco node forget <node>`, with `--compromised` once its container and token are removed; see [Remove a node](guides/remove-a-node.md). |
+| A host node | Everything pco can do: root of a node is root of the cluster. | | Proxmox's own model applies. Take the node out of the cluster, then `pco node forget --compromised`. |
+| The disk of a host node, out of your hands: stolen, returned, sold | Every credential in its copy of the cluster filesystem: the Cloudflare API tokens, the secret of the Proxmox token, the CA's key, the run tokens. | | `pvecm delnode`, then `pco node forget <node> --compromised`, which rotates them all; see [A compromised node](guides/compromised-node.md). |
+| The controller | Everything. | | As for the combined appliance: a hardened container, and the reach-in check. |
+| An export bundle together with its passphrase | Pass for the controller to every appliance agent, as it holds the CA's key, and use the Cloudflare tokens it carries with `--credentials`. | | Keep the two apart. On a host the rotation of `--compromised` makes a new CA; in the appliance the agents are enrolled again. |
+| The network between the nodes | Delay or drop the agent channel; the agents serve on from their last desired state. | Read or forge it, or reach the listener from an address that is not a node's or an agent's. | |
+| A join token in transit | Nothing alone: it is good once, for 15 minutes and one node, a second use holds the node contested, and the agent gets nothing before an admin types its fingerprint. | | Forget the contested node, and make a new token. |
+
+### What pco cannot rotate
+
+`pco node forget --compromised` rotates every secret pco made or stores. The disk of a host node
+holds more that is not pco's, and the command lists it for you to change by hand:
+
+- the corosync authkey, `/etc/corosync/authkey`: a node that keeps it can join the cluster
+  again; `pvecm updatecerts` after a new key;
+- the SSH keys of root, `/root/.ssh` and `/etc/ssh/ssh_host_*`: the other nodes trust them
+  until they are replaced;
+- the key of the cluster CA of Proxmox VE, `/etc/pve/priv/pve-root-ca.key`: it signs the
+  certificate of every node's pveproxy.
+
+No rotation helps against a node that stays a member of the cluster: its root reads
+`/etc/pve/priv` and gets every new secret the moment it is written. That is why
+`--compromised` is refused while the node is in the corosync node list or online, and why
+uninstalling pco from a node rotates nothing. The same holds for a node taken out with
+`pvecm delnode` whose disk you keep: treat that disk as compromised when it leaves your hands.
+
+### `port (attested)` against the attackers
+
+A replica of another node proves a guest's address at `port (attested)` only on the word of the
+guest's node, which watched the guest's own port, and on its own check that its bridge sees the
+MAC on an uplink and on no local guest's port. It counts as `port` for `identityMinimum`, and it
+stops less:
+
+| Attacker | `port (attested)` |
+|---|---|
+| A device on the uplink, outside Proxmox | Does not stop a device that copies the guest's MAC and answers a replica in unicast, which the guest's node never sees: the replica's bridge has the MAC on its uplink, as it has for the guest itself. Local `port` on the guest's node stops it, and that node's replica keeps the address out of its own filter. |
+| Root in a guest of any node that runs an agent | Stops it. The watch of the node where the forging guest runs sees the guest's MAC on a port that is not the guest's, and the address is blocked on every node as soon as the controller hears of it, until no agent reported it for ten minutes and the guest's node attests the card again. A guest whose MAC leaves its own port without a migration is blocked on every node once the ten seconds a migration is given have passed. |
+| Root in a guest of a node without an agent, or whose watch does not run | Not offered: while any node the cluster lists online has no agent with a running watch, the routes of other nodes' guests are `observed`, and pinned to their own nodes with the default minimum. |
+| A Proxmox user with `VM.Config.Network` on another guest | As for `port`, on the guest's node; a card configured with a MAC a running guest has is refused from the inventory on every node. |
+| A Proxmox user with `VM.Clone` on a tagged guest and `VM.Allocate` | Does not stop it, as for `port`: admission mode `approve` does. |
+
+Three windows are open by design. A node whose agent restarts, or that comes back online, keeps
+counting as watched for 60 seconds, once in ten minutes: restarting an agent takes root on the
+node, which is root of the cluster anyway, and a watch starts from a full dump of the tables,
+so a forged MAC learned while it was down is reported as soon as it is back, while the bridge
+still holds the entry. While no controller exists no attestation is refreshed, and a MAC cloned
+onto a third node then is blocked by the guest's node and the node it was cloned onto, through
+their own watches, and not by the other replicas, until a controller is back; on a host that
+takes a cluster without quorum for longer than a takeover. And a guest whose MAC just appeared on a port, as after a
+migration, is attested only once it has stayed there for five minutes: until then the other
+replicas prove it at `observed`, and with the default minimum its routes are pinned to its node
+meanwhile.
 
 ## What Cloudflare sees
 

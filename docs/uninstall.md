@@ -3,8 +3,9 @@
 `pco uninstall` takes pco off a node: the daemon, the connectors, the egress filter, the web
 interface, what `pco setup` created in Proxmox, and the store. It does that in an order that keeps what the
 next part needs, and it removes only what pco made. Run it as root on the node, before you
-remove the package. An appliance is removed with `pco appliance uninstall` instead; see
-[the appliance](#the-appliance).
+remove the package. On a node of a cluster it takes that node out of the install and leaves the
+rest to the other nodes; [a cluster](#a-cluster) says what differs. An appliance is removed with
+`pco appliance uninstall` instead; see [the appliance](#the-appliance).
 
 ## The command
 
@@ -124,6 +125,80 @@ credentials and the manifest, so that `pco uninstall` run again finishes the res
 command exits with 1. The same holds when Cloudflare cannot be listed: the store is kept,
 and you finish with `pco uninstall --purge-cloudflare` once Cloudflare answers, or say
 `--keep-cloudflare`.
+
+## A cluster
+
+On a node of a cluster that other nodes keep the install running on, `pco uninstall` takes that
+node out of the install and leaves the install to the others. The whole install goes with
+`--cluster` on the controller, and a node that is gone is forgotten from the controller instead.
+
+### One node
+
+Drain the node first, so that the shared tunnel loses its replica there before its connectors
+stop, and the routes pinned to it move where they can:
+
+    pco node drain node3
+    pco uninstall
+
+on `node3`. The node leaves the install:
+
+- It hands the lease off when it holds it, so that another node takes over within seconds.
+- It stops and removes its connectors, its egress filter, its gateway, its web interface and
+  its local state, `/var/lib/pco`, with the run tokens of its tunnels.
+- Its address leaves the firewall ipset `pco-nodes`, and its entry of the node registry becomes
+  `removed`, so that its certificate is refused from then on. The controller deletes its pinned
+  tunnels once nothing points at them.
+- What the nodes share stays: the store, the credentials, what is at Cloudflare and in Proxmox,
+  and the firewall rule, which the last node removes. So do the package and `cloudflared`.
+
+A node that holds the lease and cannot hand it off, and one whose connectors may be the last
+that serve the shared tunnel, are refused unless `--force` says to remove them regardless. With
+`--yes` it needs no word on Cloudflare, as nothing there goes with one node, and it refuses
+`--purge-cloudflare` and `--detach-managed`, which go with the last node only.
+
+Uninstalling pco from a node rotates no secret. While the node is a member of the Proxmox
+cluster its root reads `/etc/pve/priv` anyway; a node whose disk leaves your hands is forgotten
+with `--compromised` once it left the cluster, as [A compromised node](guides/compromised-node.md)
+describes. [Remove a node](guides/remove-a-node.md) has the whole procedure, and what to do
+when the node is to come back.
+
+### A node that is gone
+
+A node that cannot run `pco uninstall` any more, because it is dead, reinstalled or lost, is
+forgotten on the controller:
+
+    pco node forget node3
+
+Its entry becomes `removed`, so that its agent is refused should it come back, its connections
+are closed, its pinned tunnels are deleted, and the secret of the shared tunnel is rotated in
+every account while `cluster.rotateOnForget` is on, so that the run token on its disk stops
+working. Should the node come back with its disk as it was, its agent is told it was removed and
+stands down: it stops and disables its connectors, empties its egress filter and deletes its run
+tokens. `pco uninstall` on it then removes the rest.
+
+### The whole cluster
+
+On the controller:
+
+    pco uninstall --cluster
+
+checks this node and asks its questions first, as for a node alone. Then it removes every other
+node from the install, so that their agents stand down and stop their connectors, and prints
+for each the line to run on it later:
+
+    The other nodes are removed from the install; their agents stand down. On each, later:
+      - node2: pco uninstall --yes --keep-cloudflare removes what pco keeps on the node
+      - node3: pco uninstall --yes --keep-cloudflare removes what pco keeps on the node
+
+Last it uninstalls this node as the last one, with the offers of the last node: the records
+and tunnels at Cloudflare, what setup made in Proxmox, the SDN zone of the managed network and
+the store, as [above](#what-it-removes-and-in-which-order). A node that is not online refuses
+it, since its agent cannot be told to stand down; `--force` goes on without it, and that node's
+agent stands down when it comes back and finds its entry removed.
+
+The appliance has no `--cluster`: remove the agent container of each node with
+`pco appliance uninstall --vmid <vmid>` on its node, then the controller container on its own,
+as [below](#the-appliance).
 
 ## What it never touches
 

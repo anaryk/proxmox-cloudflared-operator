@@ -4,8 +4,8 @@ This page lists every path that pco writes or reads on a node: the state and its
 roots, the socket, the units, the files of the web interface and what the package installs.
 For each it says what writes it, who may read it, and whether to back it up. It describes
 the host profile; the [last section](#the-appliance) lists what differs in the appliance.
-What a row says of a cluster is for pco on more than one node, which this release does not
-do yet ([Operations](operations.md#one-node)).
+What a row says of a cluster is for pco on more than one node
+([Operations](operations.md#a-cluster)); a node that stands alone has none of those files.
 
 Do not edit the state files by hand, except the settings (see [Settings](settings.md)). The
 modes in the tables are those pco gives a file it makes. The cluster filesystem sets the
@@ -100,6 +100,8 @@ mounted.
 | `agent/desired.json` | The desired state the node's agent last accepted from the controller, with the run tokens of the tunnels it runs. | The daemon | root, `0600` | No: it holds secrets, and the controller sends it again. |
 | `agent/epoch.json` | The epoch the agent follows: the install, generation and nonce of the controller it takes desired state from. It never goes down, except when an admin resets it; a controller whose store is below it knows its store went back. | The daemon | root, `0600` | No. |
 | `agent/actions.json` | The newest 1000 actions of the controller the agent ran, so that a restart runs none twice. | The daemon | root, `0600` | No. |
+| `agent/tls/client.pem`, `agent/tls/server.pem` | On a cluster, the key of the node's agent with the certificate it shows the controller, and on a host the key and certificate the node serves the agents with while it holds the lease, each with its CA in one file, so that a key never stands beside the certificate of another. | `pco setup`, the daemon of the node, which issues its own again at its start when they end within 30 days and after a rotation of the CA | root, `0600` | No; a host node issues them again, an appliance agent is enrolled again. |
+| `backup/<schema>-<time>/` | A copy of the store that `pco cluster finish-upgrade` made on the controller's node before it changed anything. | `pco cluster finish-upgrade` | root, `0700` | It is a backup; keep a `pco export` bundle as well. |
 | `meta/soft-deny.json` | The gateways and DNS resolvers of the nodes, and in the appliance of the appliance, each with when it was last seen. A guest whose address is one of them waits for an approval. An address that is not seen for 30 days ages out. | The daemon | root, `0600` | No. |
 | `events.log`, `events.log.1` | The event log, one JSON object a line; rotated at 5 MiB, one earlier file is kept. | The daemon | root, `0600` | If you want the history. |
 | `tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector, in a directory of mode `0700`; the token and the configuration are `0600`, the env file `0644`. The `.env` file names the install the connector belongs to. A hidden file `.<tunnel id>.pending`, `0600`, says that the files of a tunnel changed and its unit has not been started or restarted since. | The daemon | root; the directory `0700`, `.token` and `.yml` `0600`, `.env` `0644` | No; the daemon reads the token of a tunnel again from Cloudflare. |
@@ -226,6 +228,8 @@ of the cluster filesystem. The differences in the paths:
 | `/etc/default/pco-web` | The environment of `pco-web`. The installer writes it without `PCO_WEB_LISTEN`, so that `pco-web` listens on net0's address, port 8643; `PCO_WEB_LISTEN` may name another port of that address and nothing else. `PCO_WEB_ALLOW_ROOT=1` lets `root@pam` sign in with a password. |
 | `/etc/pco/web/tls.crt`, `tls.key`, `mode` | A key of the appliance's own and a self-signed certificate of 397 days, which the daemon makes at its first start and again 30 days before it ends, or a pair you imported (`mode` says `own`), which it leaves alone. A new address of net0 keeps the certificate, and with it the fingerprint the browser trusts. They are on the root filesystem, so a backup holds the key. |
 | `/etc/pco/web/pve-api.json` | The Proxmox API as the daemon reaches it: its address, the name its certificate is verified under and the CA, which `pco-web` signs users in at. The daemon writes it; nothing in it is secret. |
+| `/var/lib/pco/join.token` | In an agent container, the join token the installer pushed onto its volume, `0600`. The agent removes it as soon as the controller answered its join, yes or no. |
+| `/var/lib/pco/agent/controller.json`, `agent/join.key` | In an agent container, where the controller answers, as its join token named it, kept once the token is gone; and the key of a join under way, kept until its certificate is, so that a join sent again after a lost answer is for the same key. |
 | `/var/lib/misc/pco-first-upgrade` | Written once `pco-first-boot.service` has installed the security updates of Debian; without it, the unit runs again at the next start. |
 
 On the node, `pco appliance install` keeps a journal of each run in

@@ -2,9 +2,10 @@
 
 This page says how pco is built: its parts and where they run, what one cycle of the daemon
 does, the path of a request, how pco makes sure that one process alone writes to Cloudflare,
-where its state lives, and what it never touches. It describes the host profile, and
-[the appliance](#the-appliance) where it differs; [Profiles](profiles.md) sets the two side by
-side. The words in the sense pco gives them are in the [Glossary](glossary.md).
+how the nodes of a cluster share the work, where its state lives, and what it never touches. It
+describes the host profile, and [the appliance](#the-appliance) where it differs;
+[Profiles](profiles.md) sets the two side by side. The words in the sense pco gives them are in
+the [Glossary](glossary.md).
 
 ## The parts
 
@@ -79,6 +80,8 @@ flowchart TB
 | Managed network | The consent of a guest, the leases, the cards pco adds, the DHCP server and the isolation of the managed network `pconet`. | `internal/managednet` |
 | Socket API | JSON over `/run/pco/pco.sock`, for the command line and the web process. | `internal/api` |
 | Web process | Serves the web interface and passes its calls on to the socket. | `internal/web` |
+| Agent | Runs what the node serves, its connectors, egress filter and gateway, from the desired state of the controller, proves the targets of the node and reports. On a node alone it runs in the daemon's process beside the engine. | `internal/agent`, `internal/agentproto` |
+| Lease and agent endpoint | On a cluster: which node is the controller, the registry of the nodes, the CA of the install, and the HTTPS endpoint the agents of the other nodes follow. | `internal/cluster`, `internal/clusterapi` |
 
 ### The daemon and its cycle
 
@@ -100,7 +103,10 @@ change, and loads it again when it is gone or changed; and a sampler that reads 
 of the connectors and of the egress filter every five seconds, for the traffic the web
 interface shows. While the web interface is set up, the daemon also keeps its certificate up to
 date, and restarts `pco-web.service` when what it loaded is no longer what the files hold.
-[Operations](operations.md#the-daemon-and-its-units) has the units.
+On a host it also runs the keeper of [the lease](#the-lease), which reads the quorum every two
+seconds and refreshes the lease every 10, apart from the cycle, and the agent of the node
+([pco on a cluster](#pco-on-a-cluster)). [Operations](operations.md#the-daemon-and-its-units)
+has the units.
 
 ### The store
 
@@ -111,8 +117,9 @@ the files.
 
 The first two roots are on pmxcfs, the cluster filesystem of Proxmox VE, so that every node
 of a cluster sees the same files: the install, the settings, the writer identity, the claims,
-and the node registry that names the node pco runs on. That is how `pco setup` on a second
-node knows that pco runs elsewhere. Proxmox keeps `/etc/pve/priv` readable by root alone.
+and the node registry that names every node of the install. That is how `pco setup` on a
+further node knows that it joins an install. Proxmox keeps `/etc/pve/priv` readable by root
+alone.
 
 pmxcfs also sets the terms the store keeps to. It fixes the mode of a file by its path, has no
 links, refuses a file over 1 MiB, copies every write to every node, and is read-only on a node
@@ -245,8 +252,10 @@ bridged frames. They set two limits:
 
 ### The socket API
 
-The daemon answers a JSON API on the unix socket `/run/pco/pco.sock` and has no network
-listener. It answers root and, while the web interface is installed, the user `pco-web`, and it
+The daemon answers a JSON API on the unix socket `/run/pco/pco.sock`, which is its only
+listener on a node alone. On a cluster the controller also listens on TCP port 8644 of its
+agent address for the agents of the other nodes ([pco on a cluster](#pco-on-a-cluster)), an
+endpoint that answers no command and no user. The socket answers root and, while the web interface is installed, the user `pco-web`, and it
 tells them apart by the user id the kernel gives for the other end of each connection. The
 commands that show or change the state ask the daemon through it; those that set up or take
 down the node, such as `pco setup`, `pco uninstall` and `pco egress`, work on the node directly.
@@ -424,13 +433,56 @@ daemon is stopped or upgraded.
 
 Only one process may write the configuration of the tunnels and the DNS records of an install.
 Two that did would undo each other's work, and one that runs on an old copy of the store would
-put back what the other took away. pco keeps to that with a writer identity in the store and a
-mark of it at Cloudflare.
+put back what the other took away. pco keeps to that with three things: on a host, the lease,
+which names the one node that may write; a writer identity in the store, drawn anew for each
+time a node takes the lease; and a mark of that identity at Cloudflare, which a writer checks
+before every write.
+
+### The lease
+
+On a host the node that may write is the one that holds the lease, the lock directory
+`/etc/pve/priv/lock/pco-leader` of the cluster filesystem. It is taken and kept the way the HA
+manager of Proxmox VE keeps its own locks: a node takes it with `mkdir`, and keeps it by setting
+its time again every 10 seconds, which pmxcfs accepts only from the node that made it. pmxcfs
+removes the lock for another node only once 120 seconds passed since its last refresh. The holder
+writes only while its last refresh is at most a few seconds old, the cluster is quorate and the
+process did not stand still in between, and it counts its lease as lost 60 seconds after its last
+good refresh. So a holder that cannot refresh any more stops writing a minute before another node
+can take the lease. The node that holds it is the controller. A node that stands alone holds it
+too, as the cluster filesystem runs in local mode there.
+
+pmxcfs judges whether a lock has expired by the wall clock of the node with the lowest node id
+in the cluster, which answers every request to remove one. The clocks of the nodes must be in
+step, that node's above all: Proxmox VE asks for that anyway, and pco makes a skew of more than
+10 seconds an error of `pco doctor`. A node whose agent still hears a controller with a valid
+lease never tries to take it, so a clock that jumps does not move the lease away from a
+controller that is alive; were it moved all the same, the old holder finds at its next refresh,
+at most a few seconds later, that the lock is not its own any more, and stops writing.
+
+[Operations](operations.md#the-lease) has the timings, and what a clean stop, a crash and a
+reboot do to the lease.
+
+### Epochs
 
 The writer identity is `/etc/pve/pco/meta/leader.json`: the install id, a generation, which is a
-number, and a nonce, a random string. `pco setup` writes generation 1 for a new install, and
-`pco setup --recover` takes a generation above every one it finds at Cloudflare and in the store.
-Every cycle reads the file once at its start; that identity is the one the cycle writes as.
+number, and a nonce, a random string; together they are the epoch. On a host it also names the
+node that holds the lease, the boot of that node, since when, and the fingerprint of the
+install's CA.
+
+A node that takes the lease draws a new epoch: the generation one above the one `leader.json`
+names, and a new nonce. It writes `leader.json`, reads it back, and only then writes anything
+else. A daemon that starts again on the node and in the boot `leader.json` names, and finds the
+lock still its own, keeps the epoch: a crash, `kill -9` or a restart by the watchdog costs no new
+epoch. A clean stop gives the lease back on a node of a cluster, so that another node can take it
+within seconds, and the next start draws anew. A node that stands alone keeps its lock when it
+stops, as nobody else could take it, and draws one new epoch for each boot.
+
+`pco setup` writes generation 1 for a new install. `pco setup --recover` takes a generation above
+every one it finds at Cloudflare and in the store, and `pco promote` above those and every epoch
+an agent reported; both start the install in observe-only mode. In the appliance a controller draws a new epoch at each
+start of its container, as the last part of this section says.
+
+### The sentinel
 
 Every configuration a writer puts at Cloudflare carries its identity in the sentinel rule, the
 last rule but one: `g<generation>.<nonce>.pco-<install id>.invalid`, which answers 404 and, being
@@ -447,55 +499,278 @@ one at Cloudflare and judges the sentinel it finds there:
 
 Before it writes, a run checks that `leader.json` still names the identity the cycle started
 with, and the DNS run asks again before every single write. If `leader.json` changed meanwhile,
-the run is `stale` and stops. If it cannot be read, nothing is written.
+the run is `stale` and stops. If it cannot be read, nothing is written. On a host the gate of the
+lease is asked as well, before every write to the store, to Cloudflare and to Proxmox.
 
 A writer that stops changes nothing at Cloudflare for the rest of the cycle, and the `Writer:`
 line of `pco status` says `stale` or `foreign`; the daemon goes on watching the connectors.
 [Troubleshooting](troubleshooting.md#the-writer-is-stale-foreign-or-unknown) says what to do about
 each verdict.
 
-A restored copy of the store carries the `leader.json` of the time it was saved. If a recovery
-has taken a newer generation since, the copy finds a sentinel newer than anything it knows, which
-is `foreign`, and writes nothing: the problem names the generation it found and says
-`pco setup --recover`. If the copy carries the generation still in use, it is the same writer as
-far as the sentinel can tell, which is right when it replaces a node that is gone. Never run it
-beside the original: the sentinel cannot tell two such daemons apart, and each reports the
-other's connector as [a connector that is not pco's](security.md#a-connector-that-is-not-pcos).
+Each tunnel is judged on its own. When two writers run at once, the first configuration written
+wins at each tunnel: at least one of the two stops there, which one is not chosen, and they may
+split the tunnels of the install between them until one of them is stopped. Inside one cluster
+the lease keeps that from happening. What it cannot keep from happening is a second cluster, or a
+second part of one cluster, that also believes it holds the lease: a copy of the store promoted
+beside a live original, or quorum overrides of corosync (`two_node` without a quorum device,
+`expected_votes`, `wait_for_all: 0`) under which two parts of a cluster are quorate at once and
+each takes a lease of its own. The sentinel is then the only check left, and `pco doctor` fails
+its check `quorum override`.
 
-Without quorum, pmxcfs is read-only, and so are the two shared roots of the store. The store goes
-on reading, and every write to them fails. A cycle that has a changed claim to save holds and
-changes nothing at Cloudflare until the claims can be saved, a DNS record whose grace cannot be
-recorded is not deleted, and an admin action that writes to the store, such as an approval, fails.
-A cycle with nothing to save goes on as before.
+### A store that goes back
 
-In the appliance profile the writer identity is also bound to the start of its container. Once
-the appliance has proven that it is the container it was installed as, from facts a copy cannot
+A restored copy of the store carries the `leader.json` of the time it was saved. pco does not
+take that as the truth:
+
+- **The agents remember.** The agent of every node keeps the highest epoch it followed, in
+  `/var/lib/pco/agent/epoch.json`, and takes desired state only from that epoch or a later one
+  of its own install. A controller that learns from an agent of an epoch above its own, before
+  it wrote anything in its tenure, is **behind**: the store went back, or another controller
+  drew that epoch. It writes nothing, to the store, Cloudflare or Proxmox, until
+  [`pco promote`](cli/pco-promote.md) has shown what differs and drawn an epoch above every
+  sentinel and every agent. After its first write such a report fences it.
+- **The controller remembers.** Every object carries a revision, and a controller remembers the
+  revision of each object it wrote in its tenure. One read back at a lower revision, or gone
+  though it did not delete it, says that the store was put back under the running controller:
+  it writes nothing more until `pco promote` adopts the store as it is.
+- **The store knows its cluster.** The install records the fingerprint of the CA of the cluster
+  it was made in, `/etc/pve/pve-root-ca.pem`. A store restored into another cluster, or the image
+  of a node copied elsewhere, writes nothing until `pco promote` makes this cluster its writer.
+
+The sentinel catches what these cannot see. A copy that draws an epoch of its own beside the
+original finds a sentinel of a writer it does not know, `foreign`, or of a newer generation,
+`stale`, and stops at that tunnel. On a node that stands alone, whose own agent is the only one
+to remember, a restore of the whole node brings back the agent's memory with the store; the
+copy then finds the newer sentinel at Cloudflare and says `foreign`, and `pco setup --recover`
+or `pco promote` takes a generation above it. Never run a restored copy beside the original.
+
+### Without quorum
+
+Without quorum, pmxcfs is read-only, the lease cannot be refreshed, and the daemon reads
+`/etc/pve/.members` every two seconds. A host writes nothing, to the store, Cloudflare or
+Proxmox, within five seconds of losing quorum, whether or not it has something to save, and says
+`the cluster is not quorate; nothing is written`. An admin action that writes to the store, such
+as an approval, fails meanwhile. The connectors, the egress filter and the gateway of every node
+keep running as they were: losing quorum never stops a connector. A loss shorter than the two
+minutes in which the lock expires costs no new epoch: the holder resumes the epoch it had.
+
+### In the appliance
+
+In the appliance profile the writer identity is bound to the start of its container. Once the
+appliance has proven that it is the container it was installed as, from facts a copy cannot
 share, it draws a new epoch at each start of the container: the generation one up and a new
 nonce. A copy of the container, such as a clone, serves nothing: it stops its connectors, empties
 its egress filter and changes nothing at Cloudflare. A snapshot rolled back, or a state restored,
 after the container started again carries an older generation than the one at Cloudflare; the
 appliance then says `behind` and writes nothing until `pco appliance recover` draws an epoch
-above it. See [Appliance](appliance.md#snapshots-backups-and-their-limits).
+above it. A controller container of a cluster is behind as well when more than half of the agent
+containers of the other nodes with a fresh report, and at least two, follow a higher epoch than
+its own. See [Appliance](appliance.md#snapshots-backups-and-their-limits).
 
 ## pco on a cluster
 
-`pco setup` on a further node of a cluster joins the install, with a certificate of the
-install's CA and an entry of the node registry as joining. Every node runs the daemon; the node
-that holds the lease is the controller, the only one that writes, and the others run their agent,
-which follows the controller over the agent channel, TCP port 8644, and reports to it. The
-controller admits a node that joins once its agent reports, and marks a node `unknown` when its
-agent falls silent and `down` when the cluster lists it offline.
+On a cluster pco runs on every node. On a host each node has the package and the same
+`pco.service`, and the daemon of each runs an **agent**, which serves that node: its connectors,
+its egress filter, its gateway and legs, the DHCP server of the managed network, and the proofs of
+the addresses of its guests. One node is the **controller**, the one that holds the lease. It
+alone reads the inventory, plans, decides where each route is served, writes the store,
+Cloudflare and Proxmox, and issues the certificates of the nodes. Its own agent runs in its
+process and takes the same messages in memory. A node that stands alone is a cluster of one: the
+controller and its agent, with no listener and no second path through the code.
 
-The routes are served from the controller's node: its connectors run there, and the guests of
-the other nodes are reached from it. This node cannot see the forwarding tables of the other
-nodes' bridges, so their guests are proven at `observed` at best, and are served only once
-`identityMinimum` is lowered to `observed` and their segment is acknowledged; see
-[Identity](identity.md#identityminimum). When the controller's node is lost, another node takes
-the lease once it has expired, about two minutes later, and starts the connectors there.
+```mermaid
+flowchart LR
+    cfapi["Cloudflare API"]
+    edge["Cloudflare edge"]
+    subgraph n1["node1: the controller"]
+        ctl["Controller: inventory, plan, placement, every write"]
+        a1["Agent of node1"]
+        c1["Connectors of node1"]
+        ctl -->|"in memory"| a1
+        a1 --> c1
+    end
+    subgraph n2["node2"]
+        a2["Agent of node2"]
+        c2["Connectors of node2"]
+        a2 --> c2
+    end
+    subgraph n3["node3"]
+        a3["Agent of node3"]
+        c3["Connectors of node3"]
+        a3 --> c3
+    end
+    store[("Cluster filesystem: store, leader.json, the lease")]
+    ctl -->|"writes"| cfapi
+    ctl <-->|"reads and writes"| store
+    a2 -->|"desired state and status: HTTPS, mutual TLS, tcp/8644"| ctl
+    a3 -->|"desired state and status: HTTPS, mutual TLS, tcp/8644"| ctl
+    a2 -.->|"reads leader.json every 2 s"| store
+    a3 -.->|"reads leader.json every 2 s"| store
+    c1 --> edge
+    c2 --> edge
+    c3 --> edge
+```
 
-The appliance is one for a cluster as well: it runs on one node, reaches the guests of every
-node that are on its segments, all at `observed`, and holds its writes while the cluster has no
-quorum. See [Operations](operations.md#the-appliance-on-a-cluster).
+### The agent channel
+
+The agents of the other nodes follow the controller over the agent channel: HTTPS with mutual
+TLS 1.3 on TCP port 8644 at the controller's agent address, one address of the node that the
+setting `cluster.agentNetwork` chooses, by default the one its name resolves to. The listener
+opens only once a second node is registered, and drops a connection from an address that is not
+a registered node's before TLS begins. Each side shows a certificate of a CA of pco's own,
+which `pco setup` makes on the first node; [Security](security.md#between-the-nodes-of-a-cluster)
+says what each certificate is checked against.
+
+An agent asks for its desired state, a full snapshot of what its node should run: the tunnels
+and their run tokens, the targets to verify with the MACs they must answer from, the legs, the
+service addresses, the leases of the managed network and the addresses blocked on every node. It
+holds the request open for up to 30 seconds, until the snapshot changes. It reports its status
+every 10 seconds and within a second of a change: what it verified, its connectors and their
+readiness, its egress filter, what its forwarding-table watch saw, its clock and its events. The
+answer to a status is the controller's heartbeat. On a host every agent reads `leader.json` every
+two seconds and dials the node it names, so the agents follow a new controller within seconds of
+its first listen.
+
+When no controller answers, an agent serves on from the last desired state it took: its
+connectors run, and it verifies its targets again against the MACs it was given. It only ever
+restricts by itself: a target that fails its check leaves its egress filter, a node that is told
+it was removed stops its connectors, and a node that heard no controller for a minute, and whose
+shared targets have all failed for a minute while another replica was ready, stops its connector
+of the shared tunnel until one of them verifies again. Nothing is published, withdrawn or
+moved until a controller is back. After a boot an agent starts the connectors of its pinned
+tunnels at once, and its connector of the shared tunnel when the controller says the node is
+active, or, when no controller answered within two minutes, once a shared target verified.
+
+### A takeover
+
+When the controller's node is lost, the lock expires two minutes after its last refresh, a node
+that may be the controller takes the lease, and the agents follow it:
+
+```mermaid
+sequenceDiagram
+    participant N1 as node1, controller
+    participant FS as Cluster filesystem
+    participant N2 as node2
+    participant N3 as node3
+    loop every 10 s
+        N1->>FS: Refresh the lock
+        N2->>N1: Status
+        N1-->>N2: Heartbeat: the lease is valid
+    end
+    Note over N1: Power lost
+    Note over N2,N3: No heartbeat for 30 s: they may take the lease
+    N2->>FS: Ask to remove the lock, every 5 s
+    Note over FS: 120 s after the last refresh, the lock goes
+    N2->>FS: mkdir the lock: node2 holds the lease
+    N2->>FS: leader.json with a new epoch, read back
+    N3->>FS: Reads leader.json, every 2 s
+    N3->>N2: Status to the new controller
+    Note over N2: Takeover hold: no write until every node not down reported, 60 s at most
+    N2->>N2: First cycle that writes
+```
+
+A takeover after a node is lost takes about two and a half minutes to the first write: 120
+seconds of the lock, up to 5 seconds of the next try, the few seconds in which the agents find
+the new controller, and a cycle. In tests the lock changed hands 123 to 127 seconds after the
+last refresh. A clean stop of the controller, a reboot of its node and
+[`pco cluster handoff`](cli/pco-cluster-handoff.md) give the lease back, and another node takes
+it within seconds. Through all of it the connectors of every other node serve on: pco is never
+in the data path, and a takeover changes nothing that runs.
+
+A new controller writes nothing, to the store or at Cloudflare, until the agent of every node
+that is neither down nor removed has reported to it once, a minute at most: one of them may
+remember an epoch the store does not, and a route must not be withdrawn for a node only because
+its agent has not found the new controller yet. [Operations](operations.md#the-lease) says what
+that minute bounds.
+
+### Tunnels and placement
+
+Each account with routes has the **shared tunnel** `pco-<install id>`, as on a node alone, and
+it runs a replica, a connector, on every active node, or on the nodes `cluster.replicas` names,
+at most 25. Cloudflare spreads the requests of every hostname of the tunnel over its replicas, so
+every replica must reach a route's target. A route is placed in the shared tunnel only when every
+replica has verified its target at the identity minimum and holds it in its egress filter, and
+the controller writes the rule only after they all reported that.
+
+A route that not every replica can serve goes to a **pinned tunnel**, `pco-<install id>-<node>`,
+whose connector runs on that one node: the route of a guest to the node that runs the guest, a
+target of a network that only one node reaches, as on the managed network or an isolated bridge,
+to that node always, and a manual route with `allowNode` to the node whose address it names. A
+pinned tunnel is made when the first route is placed on its node, and deleted once it served no
+route for ten minutes, or its node was removed.
+
+```mermaid
+flowchart LR
+    edge["Cloudflare edge"]
+    subgraph shared["Shared tunnel pco-1a2b3c4d5e6f"]
+        r1["Replica on node1"]
+        r2["Replica on node2"]
+        r3["Replica on node3"]
+    end
+    subgraph pinned["Pinned tunnel pco-1a2b3c4d5e6f-node2"]
+        p2["Connector on node2"]
+    end
+    edge -->|"app.example.com: every replica reaches it"| shared
+    edge -->|"wiki.example.com: only node2 reaches it"| pinned
+    r1 --> app["Guest of app.example.com, on node1"]
+    r2 --> app
+    r3 --> app
+    p2 --> wiki["Guest of wiki.example.com, on the managed network of node2"]
+```
+
+A route moves between the tunnels as a hostname moves between guests: its rule goes into the
+tunnel it moves to, its DNS record is switched once that tunnel's connectors run the rule, and
+the old rule goes five minutes later. A shared route is pinned once one replica has failed it
+for 30 seconds while another reaches it, and goes back once every replica has reached it for
+ten minutes; a route that every replica fails is `unreachable`, and does not move. A guest that
+migrates takes its pinned routes along to its new node. Placements and moves under way are in
+the store, so a new controller moves nothing at a takeover.
+
+### Proofs across nodes
+
+The node that runs a guest resolves its routes: it chooses the address as a node alone does,
+and proves it at `port` on its own bridge. Every other replica verifies that address: ARP for it
+must be answered by the guest's MACs alone. A replica cannot see the port of a guest on another
+node's bridge, so on a host it proves the route at `port (attested)`: the guest's node attests
+that each MAC is on the guest's own port, and the replica checks that its own bridge holds the
+MAC on an uplink and on no port of a local guest. That is offered only while every node the
+cluster lists online runs an agent whose forwarding-table watch runs; otherwise the routes of
+guests of other nodes are `observed` and, with the default `identityMinimum`, pinned to their
+guests' nodes. [Identity](identity.md#port-attested-on-a-cluster) has the rules. Agents of the
+appliance read no bridge, so there every replica proves `observed`, or `filtered` on the
+managed network.
+
+When an agent's watch sees the MAC of a published guest on the port of another guest, or leave
+the guest's own port while the guest does not migrate, the controller blocks the address on
+every node within seconds, until the guest's node attests its card again and no agent reported
+it for ten minutes, or an admin ends the block with `pco cluster unblock`.
+
+### The nodes
+
+The registry of the store holds every node of the install, in one of these states:
+
+| State | What it means |
+|---|---|
+| `joining` | Enrolled and not admitted yet, or back after it was `unknown`, `down` or rebooted. Its agent verifies the shared routes and runs no shared connector. |
+| `active` | Admitted: it runs a replica of the shared tunnel and its pinned tunnels. |
+| `draining` | Taken out of the shared tunnel by an admin, or by Proxmox's maintenance mode; its pinned tunnels go on. |
+| `unknown` | Its agent sent no status for 30 seconds. Its placements hold, and nothing is withdrawn for it. |
+| `down` | The cluster lists it offline: `/etc/pve/.members` on a host, the API in the appliance. |
+| `contested` | An appliance agent whose join token was used twice or by a container that did not match: refused until it is forgotten. |
+| `removed` | Forgotten, or uninstalled: its certificate is refused, and an agent told so stops. |
+
+A node is admitted once its agent reported every route of the shared tunnel: the routes it
+fails while other replicas reach them move to pinned tunnels first, up to
+`cluster.admissionMaxMoves`; past that it stays joining until `pco node admit`. On a host
+`pco setup` enrols a node by itself, as root of a node is root of the cluster; an appliance agent
+enrols with a join token and is admitted by the fingerprint of its certificate.
+[Operations](operations.md#a-cluster) has the commands.
+
+The appliance has the same roles in containers of their own: a **controller** container, which
+serves the node it runs on as a combined appliance does and serves the agent endpoint on its
+card `net0`, and an **agent** container on each other node. There is no lease: the controller is
+one container, which can be made a Proxmox HA resource. See
+[Appliance](appliance.md#a-cluster-of-appliances).
 
 ## Where the state lives
 
@@ -509,9 +784,9 @@ flowchart LR
         config["Network cards, addresses, nodes"]
     end
     subgraph store["The store: what pco decided"]
-        shared["/etc/pve/pco: install, settings, writer, claims, approvals, manual routes"]
-        secret["/etc/pve/priv/pco: the tokens"]
-        local["/var/lib/pco: bindings, memory, events"]
+        shared["/etc/pve/pco: install, settings, writer, registry, claims, approvals, manual routes, placements"]
+        secret["/etc/pve/priv/pco: the tokens, the CA, the enrolments"]
+        local["/var/lib/pco: bindings, memory, events, the agent's desired state and epoch"]
     end
     subgraph cloudflare["Cloudflare: the result"]
         tunnel["Tunnel configuration with the sentinel"]
@@ -538,9 +813,18 @@ flowchart LR
 - **The store** holds what pco decided and must not forget: the install and its writer, the
   settings, who holds each hostname, the approvals, the acknowledged segments, the manual routes,
   the networks attached with their service addresses, the consents, leases and cards of the
-  managed network, and the tokens. On the node it keeps the verified address of each hostname,
-  what the daemon must still know after a restart, the event log, and the cache the gateway
-  is brought back from at boot.
+  managed network, and the tokens. On a cluster it also holds the registry of the nodes, where
+  each route is placed and the moves under way, the blocks of addresses, the CA of the install and
+  the certificate of each node, and the security events of each node; and copies of what the
+  controller learnt between its runs, so that a controller on another node knows it too. On the
+  node it keeps the verified address of each hostname, what the daemon must still know after a
+  restart, the event log, and the cache the gateway is brought back from at boot.
+- **The agent of each node** keeps what it was last told and what it must not forget, in
+  `/var/lib/pco/agent`: the desired state it took last, with the run tokens of its tunnels, which
+  it serves on while no controller answers; the highest epoch it followed, which a restored store
+  cannot go below; the actions of the controller it ran, so that a restart runs none twice; and its
+  key and certificates. An agent container of the appliance never reads the controller's store;
+  it has only what the controller sends it.
 - **Cloudflare** holds the result: the tunnel of each account with its configuration, and a
   record for each hostname. pco reads it to compare and to verify, and takes nothing there as a
   wish: a change made to its tunnel in the dashboard is overwritten in the next cycle. What

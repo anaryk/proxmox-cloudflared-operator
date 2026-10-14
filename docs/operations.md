@@ -2,8 +2,8 @@
 
 This page is the reference for running pco: the daemon and its units, what the daemon does
 in each cycle and when it holds back, what a reboot does, how to read its output from a
-script, the environment variables, upgrades, and what differs in
-[the appliance](#the-appliance). The settings are in [Settings](settings.md),
+script, the environment variables, upgrades, pco on [a cluster](#a-cluster) and its lease, and
+what differs in [the appliance](#the-appliance). The settings are in [Settings](settings.md),
 every path in [Files](files.md), and every problem line in [Problems](problems.md).
 
 ## The daemon and its units
@@ -344,7 +344,9 @@ Cloudflare, holds that began or ended, problems that appeared, what happened to 
 filter, and what admins did. Each event has a time, a level (`info`, `warn`, `error`), a
 kind, a subject and a message. The kinds are `route`, `conflict`, `action`, `problem`,
 `claim`, `rollout`, `writer`, `admin`, `credential`, `hold`, `egress`, `connector`,
-`identity`, `net` and `web`; [Problems](problems.md#event-kinds) says what each one reports.
+`identity`, `web`, `net`, `managed` and `network`, and on a cluster `node`, `lease`, `enrol`,
+`placement`, `attestation`, `block`, `rotation` and `audit`; [Problems](problems.md#event-kinds)
+says what each one reports, and `pco events --kind <kind>` lists one.
 `--since` takes a duration such as `10m` or a time in RFC 3339 form. The daemon keeps the
 last thousand events since it started; the journal has all of them, and the event log file
 keeps the recent ones.
@@ -403,7 +405,7 @@ fields:
 | `profile` | `host` or `appliance`. |
 | `identity`, `epochDrawnAt` | In the appliance: what the last self-identification found (`vmid`, `node`, `ok`, `why`, `copy`, `copies`, `tenants`, `exposed`, `checkedAt`), and when this process drew a new writer epoch after a start of the container. |
 | `segments` | The segments routes at `observed` were proven on, and those acknowledged. |
-| `routes` | One object for each route: `hostname`, `owner`, `state`, `level`, `reason`, `service`, `zone`, `warnings`, `guest`, `candidates`, and where they are known `accountId`, the planned ingress `rule`, and the `path` its address was proven on: `node`, `bridge`, `vlan`, `port`, `mac`, `verifiedAt`, the time of the proof last stored, and `since`. |
+| `routes` | One object for each route: `hostname`, `owner`, `state`, `level`, `reason`, `service`, `zone`, `warnings`, `guest`, `candidates`, and where they are known `accountId`, the planned ingress `rule`, and the `path` its address was proven on: `node`, `bridge`, `vlan`, `port`, `mac`, `verifiedAt`, the time of the proof last stored, and `since`. On a cluster also the `placement` (`tunnel`, `kind` `shared` or `pinned`, the `node` it is pinned to and `why`, and a `move` under way) and the `replicas`, how each node of its tunnel fares with the target: `node`, `level`, `attested` and `attestedBy` for a port proven through another node's attestation, `ok`, `reason` and `inSet`. |
 | `zones` | The zones as the last cycle used them: `name`, `id`, `status`, `accountId`, `state` (`served`, `frozen`, `left out` or `not served`), the `credentials` that list it, the one it is `servedBy`, the one it is `pinned` to, those whose listing lost it (`stale`) or that may not read its DNS (`excluded`), and `frozenWhy`. |
 | `issues` | Problems in the Notes and the settings: `guest`, `line`, `col`, `msg`. |
 | `tunnels`, `connectors` | The tunnels and the state of their connectors. `unchecked` on a tunnel says the last cycle did not look at Cloudflare, and `leftAsIs` that the tunnel is left as it is for a reason of its own, which `held` gives, as a frozen account. A connector has the `connectorId` its `/ready` gives, and `tokenRefused` or `metricsPortHeld` when its journal says Cloudflare refuses its token or another process holds its metrics port. |
@@ -416,6 +418,8 @@ fields:
 | `unapproved` | The guests that wait for an approval: in approve mode, and in either mode for what holds a route at `observed` or on a soft-denied address. |
 | `hold`, `writerVerdict` | Why the last cycle did not check Cloudflare, and what it found of the writer. |
 | `egress` | The egress filter as the daemon last found it: `state` is `on`, `off`, `not loaded` or `changed`, and `since` says when the admin switched it off. Absent until the daemon has looked. |
+| `lease` | On a host, the lease as this node sees it: the node that holds it, its agent address and generation, whether it is valid and how old its last refresh is, and why it is fenced or behind. Absent in the appliance. |
+| `nodes`, `cluster` | On a cluster, the nodes of the registry as the controller's last cycle found them, the same as `pco node list --json`, and the cluster: its quorum, members and quorum device, the coverage of the forwarding-table watches, an upgrade not finished, a rotation under way and the addresses blocked on every node (`cluster.blocks`). `nodes` is `[]` on a node alone. |
 
 A script should read the fields and not match the text. The messages in `problems`, `held`,
 `reason` and `msg` are for people and can change; the field names, the route states and the
@@ -636,14 +640,29 @@ alone, so that they serve again once a pattern names them. Add the patterns befo
 upgrade if those names are to go on.
 
 `pco setup` can be run again after an upgrade: it changes nothing that is in order and notes
-the new version in the node registry. `pco setup --repair` re-asserts the role, user, token
+the new version in the node registry.
+
+On a cluster, upgrade one node at a time, the nodes that are not the controller first, and hand
+the lease off before you upgrade the controller's node (`pco cluster handoff`). A node may run the
+release before or after the controller's while the others are upgraded, and `pco cluster status`
+and `pco doctor` show which run what. The restart of the package gives the lease back on a node
+that holds it, so its next start draws a new epoch, one sentinel rewrite per tunnel; a node that
+stands alone keeps its epoch. The first start of this release on an install an earlier release
+made writes the objects of a cluster beside the old ones and leaves those as they were, so that
+the earlier release can be installed again on any node and serves the same routes, until
+[`pco cluster finish-upgrade`](cli/pco-cluster-finish-upgrade.md) ends the upgrade once every node
+runs the new one. Until then the settings the new release adds cannot be set, and
+`pco doctor` warns `upgrade`. [Upgrade and go back](guides/upgrade-and-rollback.md) has the
+steps. `pco setup --repair` re-asserts the role, user, token
 and tags in Proxmox, as after a restore of the node or an upgrade of Proxmox VE that changes
 privileges.
 
 The package does not touch the egress table either. When a release changes the filter, the
 table in place is not the one the new daemon loads: `pco egress show` and `pco status` say so
 until the daemon's next check loads the new one, and `pco egress load` does it by hand.
-Downgrades are not supported: see [the rule for compatibility](settings.md#compatibility).
+Downgrades are not supported: see [the rule for compatibility](settings.md#compatibility). The
+one exception is the release before this one, which can be installed again until the upgrade is
+finished, as above.
 
 `cloudflared` comes from Cloudflare's apt repository, and `apt upgrade` updates it. A
 running connector keeps the binary it started with until it restarts. To use the new one,
@@ -655,15 +674,161 @@ routes of its tunnel are unreachable for a short moment while it reconnects:
 
 `pco doctor` warns when `cloudflared` is more than ten months old.
 
-## One node
+## A cluster
 
-pco serves from one node at a time. `pco setup` on a further node of a cluster joins the install,
-with a certificate of the install's CA and an entry of the node registry as joining; the node
-that holds the lease is the controller, and serves the routes with its connectors, and the
-others follow it and take over when it is lost. On a cluster, set it up first on the node whose
-guests you want to publish. The guests of the other nodes are listed by Proxmox and
-their routes are read, but they can only be proven at `observed`; see [Identity](identity.md).
-The appliance is one for a cluster too; see [the appliance on a cluster](#the-appliance-on-a-cluster).
+On a cluster pco runs on every node. Install the package and run `pco setup` on each: the first
+node makes the install, and each further node joins it, with its key and certificates from the
+install's CA and an entry of the node registry as `joining`, which the controller admits once
+its agent reported ([Add a node](guides/add-a-node.md)). Every node runs the daemon and its
+agent, and the node that holds [the lease](#the-lease) is the controller.
+[Architecture](architecture.md#pco-on-a-cluster) describes the roles, the agent channel and how
+the routes are placed, and [Run pco on a cluster](guides/clusters.md) is the guide. The
+appliance is one for a cluster in its own way; see
+[the appliance on a cluster](#the-appliance-on-a-cluster).
+
+Before the first further node joins:
+
+- **Clocks in step.** The cluster filesystem judges whether the lock of the lease expired by the
+  wall clock of the node with the lowest node id, and a controller that loses the lease must
+  stop writing well before another node can take it. Run chrony, as Proxmox VE asks anyway, on
+  every node, and never step a node's clock by hand, that node's above all. A step there can
+  move the lease away from a controller that is alive: no two controllers write, but the
+  install loses a tenure. `pco doctor` warns when a node's clock is more than 2 seconds off the
+  controller's and fails at 10.
+- **Every node on the same release.** Every node runs the same release of pco before a further
+  node joins.
+- **The agent channel.** The controller listens on TCP port 8644 of its agent address, which
+  `cluster.agentNetwork` chooses, by default the address the node's name resolves to. With the
+  firewall of Proxmox VE on, `pco setup` offers the datacenter rule
+  `IN ACCEPT -p tcp -dport 8644 -source +pco-nodes` and keeps the agent address of every node in
+  the ipset `pco-nodes`. A channel that does not get through leaves the nodes `unknown`, while
+  corosync, on another network, sees them fine.
+- **A quorum device on two nodes.** A cluster of two loses its quorum with either node, and
+  nothing is written while it has none, so without a quorum device no controller takes over
+  when one node is lost. The connectors of the other node serve on all the same.
+  `pco doctor` warns about a cluster of two without one, and fails on the quorum overrides of
+  corosync that let two parts of a cluster both be quorate.
+
+### Where to run a command
+
+The controller answers every command, and the web interface is served by it alone. On any other
+node, a command that changes the install, or reads what only the controller knows, is refused
+before anything is done, with the node to run it on:
+
+    pco: this node is not the controller; run it on node1 (10.0.0.1)
+
+or, while no node holds the lease, `no controller is reachable (lease held by node1 since
+<time>)`. Every node answers what it knows itself: `pco status`, `pco agent status`, `pco doctor`
+with its own checks, `pco events --kind security`, and the local block of
+[`pco egress block`](cli/pco-egress-block.md), which works without a controller. The commands
+that work on the node directly, `pco setup`, `pco uninstall`, `pco netns status`, work on any
+node. pco web on another node redirects a page to the controller's web interface; sign in again
+there, as the ticket of Proxmox VE is bound to the host name it was given for.
+
+### Reading the nodes
+
+`pco status` on any node of a cluster has two more lines: which node is the controller, and how
+the agent of this node fares. On a node that is not the controller:
+
+    Controller:  node1 (10.0.0.1), generation 3
+    Agent:       hears the controller, heartbeat 4s old; snapshot 42 of generation 3, 7s old; 2 connectors, 5 egress targets
+
+The agent says `in the controller's process` on the controller's node, `the controller is
+silent for <time>` after a minute without an answer, and `stood down: <why>` on a node that was
+removed. [`pco agent status`](cli/pco-agent-status.md) has the agent in full, with the
+fingerprint of its certificate:
+
+    Node:        node2
+    Kind:        host
+    Controller:  node1
+    Epoch:       3.f00d
+    Desired:     seq 42, 7s old
+    Connectors:  2
+    Egress set:  5 targets
+    Certificate: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08, ends 2026-12-20T14:00:00+02:00
+    Replicas:    ready 6f1d0c2e: 3, aaaa0c2e: 1 (heartbeat 4s old)
+
+On the controller, [`pco cluster status`](cli/pco-cluster-status.md) shows the cluster as its
+last cycle found it, and [`pco node list`](cli/pco-node-list.md) the registry:
+
+    Controller:  node1
+    Generation:  3
+    Lease:       held by node1, valid, refreshed 4s ago
+    Quorum:      quorate, 3 members
+    Coverage:    every node watches its forwarding tables
+
+    Nodes:
+      NAME   STATE   ROLE        KIND  AGENT                   REPLICA  TARGETS                   PINNED  CERT ENDS
+      node1  active  controller  host  heard 1s ago, watching  ready    3 ok, 0 failing, 0 below  0       2026-11-30T14:00:00+02:00
+      node2  active  agent       host  heard 3s ago, watching  ready    3 ok, 0 failing, 0 below  1       2026-11-30T14:00:00+02:00
+      node3  active  agent       host  heard 2s ago, watching  ready    3 ok, 0 failing, 0 below  0       2026-11-30T14:00:00+02:00
+
+`Coverage` says whether every node's forwarding-table watch runs, which the proofs of guests on
+other nodes need, and names the nodes whose watch does not. `Upgrade`, `Rotation` and `Blocks`
+appear when an upgrade is not finished, the secrets of a forgotten node are being rotated, or
+addresses are blocked on every node. Both commands exit 1
+when a node is `unknown`, `down` or `contested`. `pco doctor --cluster` on the controller adds the
+checks of every active node to its own ([Problems](problems.md#checks-of-a-cluster)).
+
+### The cycle on a cluster
+
+The controller runs [the cycle](#the-cycle-in-plain-words) for the whole install, with the
+nodes in it:
+
+1. It reads the registry and `/etc/pve/.members` too, and gives each node its state: a node
+   whose agent sent no status for 30 seconds is `unknown`, one the cluster lists offline
+   `down`, and a node that joined is admitted once its agent reported every shared route.
+2. The guests are those of the whole cluster, from the API, as on a node alone.
+3. The address of a guest's route is chosen and proven by the agent of the node that runs the
+   guest, and every other replica verifies it; the controller takes what each agent reported
+   for its snapshot, and waits a few seconds for the reports of this cycle before it goes on
+   with the latest.
+4. It decides where each route is served, in the shared tunnel or one pinned to a node, and
+   plans each tunnel's rules from that.
+5. It sends each agent its desired state, and writes a rule for a target only once every node
+   of the tunnel reported it in its egress filter; a target leaves a node's filter only after a
+   configuration without its rule was written.
+
+The agents run their connectors, filters and gateways from what they were sent, beside the
+cycle, and keep doing so while no controller answers. What the controller writes to Proxmox, a
+card on the managed network of a guest of another node, it sends to the agent of that node,
+which runs `qm set` or `pct set` itself and only under the epoch that sent it.
+
+### What a node's loss costs
+
+| What is lost | What goes on | What stops, and until when |
+|---|---|---|
+| A node that is not the controller | The shared routes, through the replicas of the other nodes: Cloudflare stops sending requests to the lost connector once it sees it gone. Everything the controller decides. | The routes pinned to that node, whose guests ran there, until the guests run on another node, as high availability of Proxmox restarts them; the controller then moves their routes to the new node's pinned tunnel. |
+| The controller's node | Every connector of the other nodes, from the last desired state of each. | Every change: new routes, withdrawals at Cloudflare, records, cards, rotations. A takeover gives a node the lease about two and a half minutes after the loss; see [the lease](#the-lease). |
+| The controller's daemon, by a crash | Everything: the connectors run on. | Changes, for the few seconds systemd takes to start it again. It keeps the lease and the epoch. |
+| The agent channel, while corosync works | Every connector, from the last desired state. | The controller sees the nodes `unknown` and holds their placements; no node takes over, as the lock is alive. `pco doctor` on the controller names the nodes. |
+| The quorum | Every connector. | Every write, to the store, Cloudflare and Proxmox, within five seconds, until the quorum is back. |
+
+A clean reboot of the controller's node, and [`pco cluster handoff`](cli/pco-cluster-handoff.md)
+before it, hand the lease to another node within seconds: it is the way to take the
+controller's node down for maintenance. [Controller failover](guides/controller-failover.md)
+has what an admin sees.
+
+### Events, settings and the nodes
+
+- **Events.** The agents send their events with their status, and `pco events` on the
+  controller shows them with their node. The kinds of a cluster are `node`, `lease`, `enrol`,
+  `placement`, `attestation`, `block`, `rotation` and `audit`;
+  [Problems](problems.md#event-kinds) has each. The security events, from the lease, the
+  enrolments, admissions, forgets, rotations and blocks to what admins did, are written by the
+  node that acted to its journal and to its own file in the cluster root, so that
+  `pco events --kind security` shows them on any node, also when the node that held the lease is
+  lost.
+- **Settings.** The keys of `cluster` say where the agents listen, which nodes run the shared
+  tunnel, whether Proxmox's maintenance mode drains a node, whether forgetting a node rotates the
+  shared tunnel's secret, and how many routes may move to admit a node;
+  [Settings](settings.md#cluster) has them.
+- **The nodes.** [`pco node drain`](cli/pco-node-drain.md) takes a node out of the shared
+  tunnel for its maintenance and [`pco node undrain`](cli/pco-node-undrain.md) takes it back;
+  Proxmox's maintenance mode does both by itself while `cluster.followMaintenance` is on.
+  [`pco node set --controller-eligible=false`](cli/pco-node-set.md) keeps a node from ever being
+  the controller. [`pco node forget`](cli/pco-node-forget.md) removes a node that is gone, and
+  [Remove a node](guides/remove-a-node.md) has the steps.
 
 ## The lease
 
@@ -688,7 +853,12 @@ node takes it within seconds,
 and its next start takes it with a new generation; a daemon that ended without giving it back,
 as after `kill -9` or a restart by the watchdog, finds the lock of its node and boot still its
 own and keeps the epoch, and after a crash or a power loss of the node the lock expires two
-minutes after its last refresh, and a node takes it then.
+minutes after its last refresh, and a node takes it then. In tests another node took the lease
+123 to 127 seconds after the last refresh of a node that lost its power, and within four seconds
+of a clean stop. A node whose agent still hears a controller with a valid lease never tries to
+take it, whatever its own clock says, and a node that `pco node set --controller-eligible=false`
+marked, or that is draining, removed or contested, never does. The expiry is judged by the wall
+clock of the node with the lowest node id, which is why [the clocks must be in step](#a-cluster).
 
 A controller writes nothing, and says why, while the store is older than what the agents
 remember, went back under it, or was made in another cluster: after a restore of
