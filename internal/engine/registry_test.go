@@ -320,6 +320,7 @@ func TestTheOtherNodesAreServedSnapshotsOfTheirState(t *testing.T) {
 	require.Equal(t, "pve2", s.Node)
 	require.Equal(t, agentproto.Epoch{InstallID: testInstall, Generation: testWriter.Generation, Nonce: testWriter.Nonce}, s.Epoch)
 	require.Empty(t, s.Targets)
+	require.Equal(t, []string{"10.0.0.2:8644"}, s.Endpoints, "an agent that lost its controller's address finds it here")
 	for _, tun := range s.Tunnels {
 		require.False(t, tun.Run)
 		require.Empty(t, tun.Token.Reveal())

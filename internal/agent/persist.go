@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/netip"
+	"slices"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
@@ -48,6 +49,7 @@ func (a *Agent) load() error {
 				return err
 			}
 			a.desired, a.desiredRaw, a.seqAt = &s, buf.Bytes(), a.started
+			a.noteEndpoints(s)
 			switch c, same := s.Epoch.Order(a.remembered); {
 			case same:
 				a.applied = s.Seq
@@ -138,6 +140,25 @@ func (a *Agent) persist(s agentproto.Snapshot) error {
 		a.seqAt = a.d.Now()
 	}
 	a.desired, a.desiredRaw, a.applied, a.unreadable = &s, buf.Bytes(), s.Seq, ""
+	a.noteEndpoints(s)
+	return nil
+}
+
+// noteEndpoints keeps where s says the controller answers; a snapshot that
+// says nothing of it keeps what was known.
+func (a *Agent) noteEndpoints(s agentproto.Snapshot) {
+	if len(s.Endpoints) > 0 {
+		eps := slices.Clone(s.Endpoints)
+		a.endpoints.Store(&eps)
+	}
+}
+
+// ControllerEndpoints are where the controller answers, as the desired state
+// the agent follows says; none when it says nothing of it.
+func (a *Agent) ControllerEndpoints() []string {
+	if eps := a.endpoints.Load(); eps != nil {
+		return slices.Clone(*eps)
+	}
 	return nil
 }
 

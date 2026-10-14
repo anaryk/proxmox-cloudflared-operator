@@ -175,6 +175,9 @@ type Agent struct {
 	// halted says that the engine of an appliance stopped serving: a
 	// verification that passes puts nothing back into the filter.
 	halted atomic.Bool
+	// endpoints are where the controller answers, as the desired state the
+	// agent follows says.
+	endpoints atomic.Pointer[[]string]
 
 	// sem is held by every pass, by StandDown and by the verification of an
 	// address whose MAC moved. It guards everything below up to rep.
