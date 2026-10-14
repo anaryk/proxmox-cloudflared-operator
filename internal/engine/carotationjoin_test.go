@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +192,37 @@ func TestAJoinRedoesStepsStampedByAClockAhead(t *testing.T) {
 	require.Empty(t, rec.Done, "every step is done again")
 	require.Empty(t, rec.Rotated)
 	require.True(t, rec.Since.After(latest), "the join counts from after what ran before it")
+}
+
+// A forget with --compromised whose entry cannot be saved has begun the
+// rotation, which goes on, but has not removed the node: the event says
+// so, and that the forget has to be run again.
+func TestACompromisedForgetThatCannotRemoveTheNodeSaysSo(t *testing.T) {
+	w := threeNodes(t)
+	seedCA(t, w.env, testCA(t))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("old-secret")}))
+	w.settle()
+	*w.listed = []members.Member{{Name: "pve1", ID: 1, Online: true}, {Name: "pve2", ID: 2, Online: true}}
+	w.acts["pve3"].silent = true
+	nodes := filepath.Join(w.paths.Cluster, "nodes")
+	require.NoError(t, os.Chmod(nodes, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(nodes, 0o700) })
+
+	_, err := w.eng.ForgetNode(t.Context(), "pve3", true)
+
+	require.Error(t, err)
+	require.NoError(t, os.Chmod(nodes, 0o700))
+	_, found, err := w.store.CARotation()
+	require.NoError(t, err)
+	require.True(t, found, "the rotation goes on")
+	var msgs []string
+	for _, ev := range w.eng.Events(time.Time{}) {
+		msgs = append(msgs, ev.Message)
+	}
+	all := strings.Join(msgs, "\n")
+	require.NotContains(t, all, "was forgotten as compromised")
+	require.Contains(t, all, "rotation of every secret started for node pve3; its removal failed: ")
+	require.Contains(t, all, "run pco node forget pve3 --compromised again")
 }
 
 // underCA says whether a certificate is signed by a CA, both in PEM.

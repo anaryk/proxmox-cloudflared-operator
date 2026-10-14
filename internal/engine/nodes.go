@@ -414,17 +414,26 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 		// cannot, a controller that takes over included.
 		n.Rotation = &store.ForgetRotation{Since: e.d.Now(), TunnelsRotated: store.TunnelsRotated{Connectors: e.connectorIDsOf(name)}}
 	}
+	var began Event
 	if compromised {
 		// The rotation is recorded before the node is removed: a crash in
 		// between leaves a rotation of a node that is still there, which a
 		// second forget joins, never a removed node no rotation is for.
 		var err error
-		if res, err = e.beginRotation(ctx, name, res); err != nil {
+		if res, began, err = e.beginRotation(ctx, name, res); err != nil {
 			return res, err
 		}
 	}
 	if err := e.saveEntry(ctx, before, rev.Rev, n, fmt.Sprintf("node %s is forgotten%s", name, compromisedText(compromised))); err != nil {
+		if compromised {
+			began.Message = fmt.Sprintf("rotation of every secret started for node %s; its removal failed: %v; run pco node forget %s --compromised again",
+				name, err, name)
+			e.events.add(began)
+		}
 		return res, err
+	}
+	if compromised {
+		e.events.add(began)
 	}
 	res.Done = append(res.Done, "the entry of the node is removed: its agent is refused from its next request")
 	delete(e.nodes.admitted, name)

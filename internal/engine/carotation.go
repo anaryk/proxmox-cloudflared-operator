@@ -62,12 +62,12 @@ const (
 )
 
 // beginRotation records the rotation of every secret a compromised node
-// held, which the cycles then carry out step by step. The caller holds the
-// cycle lock.
-func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResult) (ForgetResult, error) {
+// held, which the cycles then carry out step by step, and returns the event
+// that says so once the node is removed. The caller holds the cycle lock.
+func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResult) (ForgetResult, Event, error) {
 	under, found, err := e.d.Store.CARotation()
 	if err != nil {
-		return res, fmt.Errorf("reading the rotation of the secrets: %w", err)
+		return res, Event{}, fmt.Errorf("reading the rotation of the secrets: %w", err)
 	}
 	e.dropEveryJoinToken(&res)
 	if found && under.FinishedAt.IsZero() {
@@ -76,19 +76,19 @@ func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResul
 	rec := store.CARotation{Node: name, StartedAt: e.d.Now(), Actor: ActorOf(ctx),
 		TunnelsRotated: store.TunnelsRotated{Connectors: e.connectorIDsOf(name)}}
 	if tok, found, err := e.d.Store.PVEToken(); err != nil {
-		return res, fmt.Errorf("reading the Proxmox token: %w", err)
+		return res, Event{}, fmt.Errorf("reading the Proxmox token: %w", err)
 	} else if found {
 		rec.PVESecretSHA256 = secretHash(tok.Secret.Reveal())
 	}
 	if err := e.d.Store.SaveCARotation(rec); err != nil {
-		return res, fmt.Errorf("recording the rotation: %w", err)
+		return res, Event{}, fmt.Errorf("recording the rotation: %w", err)
 	}
-	e.events.add(Event{At: rec.StartedAt, Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx),
-		Message: fmt.Sprintf("node %s was forgotten as compromised: every secret of the install is rotated, step by step", name)})
+	ev := Event{At: rec.StartedAt, Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx),
+		Message: fmt.Sprintf("node %s was forgotten as compromised: every secret of the install is rotated, step by step", name)}
 	res.Done = append(res.Done, "the rotation of every secret of the install began; pco cluster status follows it, and a controller that takes over finishes it")
 	res.Pending = append(slices.Clone(rotationSteps), res.Pending...)
 	res.NotRotated = slices.Clone(notRotated)
-	return res, nil
+	return res, ev, nil
 }
 
 // dropEveryJoinToken deletes every join token not used yet: the node may
@@ -119,11 +119,11 @@ var redoneOnJoin = []string{stepCredentials, stepProxmox, stepTunnels, stepRollo
 // now, every tunnel gets a secret again, and a CA rotated already is rotated
 // a second time once the window of its previous one ended, never a third
 // at once. The rotation keeps when it began.
-func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARotation, res ForgetResult) (ForgetResult, error) {
+func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARotation, res ForgetResult) (ForgetResult, Event, error) {
 	now := e.d.Now()
 	since, err := e.joinedAt(now, rec)
 	if err != nil {
-		return res, err
+		return res, Event{}, err
 	}
 	if name != rec.Node && !slices.Contains(rec.Also, name) {
 		rec.Also = append(rec.Also, name)
@@ -147,7 +147,7 @@ func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARota
 	// and the Proxmox secret of now.
 	rec.Since, rec.PVESecretSHA256 = since, ""
 	if tok, found, err := e.d.Store.PVEToken(); err != nil {
-		return res, fmt.Errorf("reading the Proxmox token: %w", err)
+		return res, Event{}, fmt.Errorf("reading the Proxmox token: %w", err)
 	} else if found {
 		rec.PVESecretSHA256 = secretHash(tok.Secret.Reveal())
 	}
@@ -158,14 +158,14 @@ func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARota
 		rec.Connectors[tunnel] = slices.Compact(slices.Sorted(slices.Values(append(rec.Connectors[tunnel], ids...))))
 	}
 	if err := e.d.Store.SaveCARotation(rec); err != nil {
-		return res, fmt.Errorf("recording the rotation: %w", err)
+		return res, Event{}, fmt.Errorf("recording the rotation: %w", err)
 	}
 	msg := fmt.Sprintf("node %s was forgotten as compromised: it joins the rotation of every secret that began at %s for node %s",
 		name, rec.StartedAt.UTC().Format(time.RFC3339), rec.Node)
 	if len(redo) > 0 {
 		msg += fmt.Sprintf(", whose steps that ran while it was a member are done again: %s", strings.Join(redo, ", "))
 	}
-	e.events.add(Event{At: now, Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx), Message: msg})
+	ev := Event{At: now, Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx), Message: msg}
 	res.Done = append(res.Done, fmt.Sprintf("the node joins the rotation of every secret under way since %s for node %s; "+
 		"what it ran while the node was a member is done again; pco cluster status follows it", rec.StartedAt.UTC().Format(time.RFC3339), rec.Node))
 	pending := res.Pending
@@ -177,7 +177,7 @@ func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARota
 	}
 	res.Pending = append(res.Pending, pending...)
 	res.NotRotated = slices.Clone(notRotated)
-	return res, nil
+	return res, ev, nil
 }
 
 func secretHash(s string) string {
