@@ -171,6 +171,22 @@ func (w *world) placementEvents() []string {
 	return out
 }
 
+// What the placement remembers by owner or hostname is pruned against the
+// winners of every cycle: a route that is gone leaves no timer behind that
+// would count for one with its name later.
+func TestThePlacementMemoryIsPrunedAgainstTheWinners(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.eng.place.addedAt = map[string]time.Time{"qemu/101": t0, "qemu/999": t0}
+	w.eng.place.unresolvedSince = map[string]time.Time{"old.example.com": t0}
+
+	w.tick(time.Second)
+
+	require.Contains(t, w.eng.place.addedAt, "qemu/101", "an owner of a winner keeps its timer")
+	require.NotContains(t, w.eng.place.addedAt, "qemu/999")
+	require.NotContains(t, w.eng.place.unresolvedSince, "old.example.com")
+}
+
 // Three nodes, a guest on each: every route is shared once every replica
 // reached it, the guests of other nodes at port through their node's
 // attestation, and every replica runs the shared tunnel.

@@ -244,6 +244,14 @@ func (c *cycleRun) place() {
 		}
 	}
 	mem.decided = p.decided
+	// A route that is gone leaves no timer behind for one with its name
+	// later.
+	hosts := make(map[string]bool, len(c.claims.Winners))
+	for _, rt := range c.claims.Winners {
+		hosts[rt.Hostname] = true
+	}
+	maps.DeleteFunc(mem.addedAt, func(owner string, _ time.Time) bool { _, ok := owners[owner]; return !ok })
+	maps.DeleteFunc(mem.unresolvedSince, func(host string, _ time.Time) bool { return !hosts[host] })
 }
 
 // storedOf is the placement stored for an owner's routes: of its first
