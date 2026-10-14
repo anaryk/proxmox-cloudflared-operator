@@ -29,6 +29,10 @@ type lostView struct {
 // token reports its id within it.
 const ownGrace = 2 * time.Minute
 
+// runAtSkew is how far this node's clock may be ahead of Cloudflare's, by
+// which a connector started, before the grace of one is cut short.
+const runAtSkew = time.Minute
+
 // errNotHeard says that this process has not yet heard the connectors the
 // nodes still in the install run, as a controller that just took over: a
 // connector of theirs would look lost.
@@ -39,7 +43,10 @@ var errNotHeard = errors.New("this controller has not heard the connectors the r
 // may run: those of ids, and every other one no node still in the install
 // owns. One Cloudflare says started after since, when the secret was given,
 // waits for ownGrace for a node to report it, as a replica that restarted
-// with the new token does; it is lost after that all the same.
+// with the new token does; it is lost after that all the same. The grace
+// is read on Cloudflare's clock and this node's may be ahead of it, by up
+// to runAtSkew; when it started is not stretched, as one that started
+// before the secret was given may be a gone node's.
 func (e *Engine) lostConnectors(ctx context.Context, t reconcile.TunnelState, ids []string, since time.Time) (lostView, error) {
 	api := e.clients[t.CredentialID]
 	if api == nil {
@@ -59,7 +66,7 @@ func (e *Engine) lostConnectors(ctx context.Context, t reconcile.TunnelState, id
 		case slices.Contains(ids, c.ID):
 		case owned[c.ID]:
 			continue
-		case !since.IsZero() && c.RunAt.After(since) && e.d.Now().Before(c.RunAt.Add(ownGrace)):
+		case !since.IsZero() && c.RunAt.After(since) && e.d.Now().Before(c.RunAt.Add(ownGrace+runAtSkew)):
 			v.waiting = append(v.waiting, c.ID)
 			continue
 		}

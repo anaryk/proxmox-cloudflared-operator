@@ -125,12 +125,42 @@ func TestAForgetDropsEveryConnectorNoNodeOwns(t *testing.T) {
 
 	// No node owns it once a replica would have reported it: it is lost
 	// all the same.
-	w.clock.advance(ownGrace)
+	w.clock.advance(ownGrace + runAtSkew)
 	n = len(w.cf.Calls())
 	w.tick(time.Second)
 	require.Contains(t, w.callsSince(n), "CleanUpConnector acc1 "+id+" pve2-next")
 	w.tick(time.Second)
 	require.Nil(t, entryOf(t, w.env, "pve3").Rotation)
+}
+
+// The grace of a connector that started with the new secret is counted
+// from when Cloudflare says it started: a local clock somewhat ahead of
+// Cloudflare's does not cut it short. One no node owns is lost once the
+// grace and the skew allowed are over.
+func TestAClockAheadOfCloudflareKeepsTheGraceOfANewConnector(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	w.conn.setConnectorID(id, "c-pve1")
+	w.listAt(t, tunnelName, "c-pve1", "pve2-"+id, "pve3-"+id)
+	w.tick(time.Second)
+	_, err := w.eng.ForgetNode(t.Context(), "pve3", false)
+	require.NoError(t, err)
+	rotatedAt := entryOf(t, w.env, "pve3").Rotation.At
+	w.cf.SetConnectors(testAccount, id, []cfapi.Connector{
+		{ID: "c-pve1"}, {ID: "pve2-" + id}, {ID: "pve2-next", RunAt: rotatedAt.Add(time.Second)},
+	})
+
+	w.clock.advance(ownGrace + runAtSkew/2)
+	n := len(w.cf.Calls())
+	w.tick(time.Second)
+	require.NotContains(t, w.callsSince(n), "CleanUpConnector acc1 "+id+" pve2-next", "within the grace by Cloudflare's clock")
+	require.NotNil(t, entryOf(t, w.env, "pve3").Rotation)
+
+	w.clock.advance(runAtSkew)
+	n = len(w.cf.Calls())
+	w.tick(time.Second)
+	require.Contains(t, w.callsSince(n), "CleanUpConnector acc1 "+id+" pve2-next")
 }
 
 // When a replica reported no connector, its own cannot be told from the
