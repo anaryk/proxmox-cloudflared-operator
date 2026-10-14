@@ -521,6 +521,75 @@ func TestTheAgentAddressFallsBackToTheClusterStatus(t *testing.T) {
 	require.Equal(t, netip.MustParseAddr("192.0.2.11"), e.node(testNode).AgentAddress)
 }
 
+func TestTheAgentAddressIsOneOtherNodesCanReach(t *testing.T) {
+	tests := []struct {
+		addr string
+		why  string
+	}{
+		{"192.0.2.10", ""},
+		{"fd00:4::10", ""},
+		{"127.0.0.1", "a loopback address"},
+		{"::1", "a loopback address"},
+		{"0.0.0.0", "the unspecified address"},
+		{"::", "the unspecified address"},
+		{"169.254.7.7", "a link-local address"},
+		{"fe80::1", "a link-local address"},
+		{"ff02::1", "a link-local address"},
+		{"224.0.0.251", "a link-local address"},
+		{"239.1.1.1", "a multicast address"},
+		{"ff05::1", "a multicast address"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			require.Equal(t, tt.why, unusableAgentAddress(netip.MustParseAddr(tt.addr)))
+		})
+	}
+
+	t.Run("IPv4 first", func(t *testing.T) {
+		a, err := pickAgentAddress([]netip.Addr{netip.MustParseAddr("fd00:4::10"), netip.MustParseAddr("192.0.2.10")})
+		require.NoError(t, err)
+		require.Equal(t, netip.MustParseAddr("192.0.2.10"), a)
+	})
+	t.Run("IPv6 when it is the only one", func(t *testing.T) {
+		a, err := pickAgentAddress([]netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("fd00:4::10")})
+		require.NoError(t, err)
+		require.Equal(t, netip.MustParseAddr("fd00:4::10"), a)
+	})
+	t.Run("none usable", func(t *testing.T) {
+		_, err := pickAgentAddress([]netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("fe80::1")})
+		require.EqualError(t, err, "127.0.0.1 is a loopback address, fe80::1 is a link-local address")
+		_, err = pickAgentAddress(nil)
+		require.EqualError(t, err, "none listed")
+	})
+}
+
+func TestAClusterStatusWithOnlyALoopbackAddressRefusesTheSetup(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.script(preflight("9.0.10"), noConnectorsSeen(),
+		[]call{{line: "pvesh get /cluster/status --output-format json", out: clusterStatus("127.0.0.1")}})
+
+	err := e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode})
+
+	require.EqualError(t, err, "setup step cluster: neither "+e.s.host.members+" nor the cluster status lists an address of node "+
+		testNode+" the agent can listen on: 127.0.0.1 is a loopback address")
+	e.done()
+}
+
+func TestAListedAddressTheAgentCannotListenOnRefusesTheJoin(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.joinable()
+	e.clusterAs(testNode, "fe80::10", firstNode)
+	e.script(preflight("9.0.10"))
+
+	err := e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode})
+
+	require.EqualError(t, err, "setup step cluster: "+e.s.host.members+" lists fe80::10 for node "+testNode+
+		", which is a link-local address: the agent cannot listen there")
+	e.done()
+}
+
 // A member whose corosync has not reported yet prints the file of a node
 // alone; its own copy of corosync.conf is what gives it away.
 func TestANodeWithACorosyncConfigOfItsOwnIsNotAlone(t *testing.T) {

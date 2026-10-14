@@ -2,6 +2,7 @@ package setup
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -87,6 +88,16 @@ func firewallJoined() []call {
 		{line: ipsetList, out: ipsetJSON(ipsetComment)},
 		{line: ipsetEntries, out: entriesJSON(firstNode + "=" + firstAddr)},
 		{line: entryAdd(testNode, testAddr)},
+		{line: rulesList, out: rules(otherRule, ruleJSON(1, 1, ruleComment))},
+	}
+}
+
+// firewallJoinedAt is firewallJoined for a node whose agent address is addr.
+func firewallJoinedAt(addr string) []call {
+	return []call{
+		{line: ipsetList, out: ipsetJSON(ipsetComment)},
+		{line: ipsetEntries, out: entriesJSON(firstNode + "=" + firstAddr)},
+		{line: entryAdd(testNode, addr)},
 		{line: rulesList, out: rules(otherRule, ruleJSON(1, 1, ruleComment))},
 	}
 }
@@ -199,6 +210,22 @@ func TestASecondCopyOfTheRuleIsRemovedKeepingTheTopmost(t *testing.T) {
 	e.done()
 
 	e.requireShown("removed a second copy of the datacenter rule")
+}
+
+// An IPv6 agent address goes into the ipset as it is: an address, no
+// brackets, no prefix length.
+func TestAJoinAddsAnIPv6AddressToTheIPSet(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.joinable()
+	e.clusterAs(testNode, "fd00:4::10", firstNode)
+	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), firewallJoinedAt("fd00:4::10"), cloudflaredKept(), serviceStarted())
+
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
+	e.done()
+
+	require.Equal(t, netip.MustParseAddr("fd00:4::10"), e.node(testNode).AgentAddress)
+	e.requireShown("firewall: ipset pco-nodes holds fd00:4::10 (" + testNode + ")")
 }
 
 func TestAJoinAddsItsAddressToTheIPSet(t *testing.T) {

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -118,6 +119,11 @@ func (r *run) chooseAgentAddress(ctx context.Context, m members.Members) error {
 			listed = n.IP
 		}
 	}
+	if listed.IsValid() {
+		if why := unusableAgentAddress(listed); why != "" {
+			return fmt.Errorf("%s lists %s for node %s, which is %s: the agent cannot listen there", r.host.members, listed, r.o.Node, why)
+		}
+	}
 	if p := settings.Cluster.AgentNetwork; p.IsValid() {
 		return r.agentAddressIn(p, listed)
 	}
@@ -129,11 +135,58 @@ func (r *run) chooseAgentAddress(ctx context.Context, m members.Members) error {
 	if err != nil {
 		return err
 	}
-	if len(addrs) == 0 {
-		return errors.New("neither " + r.host.members + " nor the cluster status lists an address of node " + r.o.Node)
+	chosen, err := pickAgentAddress(addrs)
+	if err != nil {
+		return fmt.Errorf("neither %s nor the cluster status lists an address of node %s the agent can listen on: %w", r.host.members, r.o.Node, err)
 	}
-	r.agentAddress = addrs[0]
+	r.agentAddress = chosen
 	return nil
+}
+
+// pickAgentAddress chooses, among the addresses of the node, one the agent
+// can listen on: an IPv4 one where there is one, an IPv6 one otherwise.
+func pickAgentAddress(addrs []netip.Addr) (netip.Addr, error) {
+	var usable []netip.Addr
+	var why []string
+	for _, a := range addrs {
+		if w := unusableAgentAddress(a); w != "" {
+			why = append(why, a.String()+" is "+w)
+			continue
+		}
+		usable = append(usable, a)
+	}
+	if len(usable) == 0 {
+		if len(why) == 0 {
+			return netip.Addr{}, errors.New("none listed")
+		}
+		return netip.Addr{}, errors.New(strings.Join(why, ", "))
+	}
+	slices.SortStableFunc(usable, func(a, b netip.Addr) int { return cmp.Compare(family(a), family(b)) })
+	return usable[0], nil
+}
+
+// family orders IPv4 before IPv6.
+func family(a netip.Addr) int {
+	if a.Is4() {
+		return 4
+	}
+	return 6
+}
+
+// unusableAgentAddress says why a is no address the agent can listen on and
+// be dialled at from the other nodes, or nothing when it is one.
+func unusableAgentAddress(a netip.Addr) string {
+	switch {
+	case a.IsLoopback():
+		return "a loopback address"
+	case a.IsUnspecified():
+		return "the unspecified address"
+	case a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast():
+		return "a link-local address"
+	case a.IsMulticast():
+		return "a multicast address"
+	}
+	return ""
 }
 
 // agentAddressIn chooses the node's address in the agent network p, the one
@@ -149,7 +202,7 @@ func (r *run) agentAddressIn(p netip.Prefix, listed netip.Addr) error {
 	}
 	var in []netip.Addr
 	for _, a := range addrs {
-		if p.Contains(a) && !slices.Contains(in, a) {
+		if p.Contains(a) && unusableAgentAddress(a) == "" && !slices.Contains(in, a) {
 			in = append(in, a)
 		}
 	}
