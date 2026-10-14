@@ -212,6 +212,33 @@ func TestAMoveGivenUpAfterItsRolloutKeepsBothRulesUntilTheRecordsAreBack(t *test
 	require.True(t, slices.ContainsFunc(w.placementEvents(), func(ev string) bool { return strings.Contains(ev, "given up") }), w.placementEvents())
 }
 
+// The records of a move count as switched only where a DNS run listed their
+// zone and saw each of them point at the tunnel moved to, or wrote it: a
+// zone that could not be listed says nothing of its records, and a move
+// that went on without them would drop the rules of the tunnel the records
+// still point at.
+func TestAMoveWaitsForTheRecordsOfAZoneThatCouldNotBeListed(t *testing.T) {
+	pinned2, _ := planner.PinnedTunnelName(testInstall, "pve2")
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].fail = map[string]string{"db.example.com": "not reached"}
+	w.untilMove(t, "qemu/102", store.MoveRolledOut, 40, hosts3...)
+	require.Equal(t, tunnelName, w.recordTunnel(t, "db.example.com"))
+
+	w.cf.FailNext("dns.read", 2, errors.New("connection reset"))
+	for range 2 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+		m, ok := w.moveOf(t, "qemu/102")
+		require.True(t, ok)
+		require.Equal(t, store.MoveRolledOut, m.Step, "nothing is known of the records of a zone that was not listed")
+		require.Equal(t, tunnelName, w.recordTunnel(t, "db.example.com"))
+	}
+
+	w.untilMove(t, "qemu/102", store.MoveCNAMEsSwitched, 10, hosts3...)
+	require.Equal(t, pinned2, w.recordTunnel(t, "db.example.com"))
+}
+
 // A move whose owner is wanted at a third tunnel once its rules are rolled
 // out goes on to its end: its records may point at the tunnel it goes to
 // already, and a move turned around toward a tunnel it never had the rules

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -179,7 +180,7 @@ func (c *cycleRun) advanceMoves() {
 			}
 			next.Step, next.At = store.MoveRolledOut, c.now
 		case store.MoveRolledOut:
-			if !c.checked || c.recordsPending(owner) {
+			if !c.checked || c.recordsPending(m) {
 				continue
 			}
 			next.Step, next.At, next.CNAMEAt = store.MoveCNAMEsSwitched, c.now, c.now
@@ -291,18 +292,34 @@ type agentStatusConnector struct {
 	ready  bool
 }
 
-// recordsPending says whether the DNS run of this cycle left a record of an
-// owner's routes unwritten.
-func (c *cycleRun) recordsPending(owner string) bool {
-	hosts := map[string]bool{}
+// recordsPending says whether a record of the owner of a move is not known
+// to point at the tunnel the move goes to after the DNS run of this cycle:
+// its zone could not be listed, the run left it unwritten, or it neither
+// pointed there when the run listed the zone nor was written there by the
+// run. A zone that was not listed says nothing of its records.
+func (c *cycleRun) recordsPending(m store.Move) bool {
 	for _, rt := range c.claims.Winners {
-		if rt.Owner() == owner {
-			hosts[rt.Hostname] = true
+		if rt.Owner() != m.Owner {
+			continue
+		}
+		if z, ok := c.zoneOf(rt.Hostname); !ok || slices.Contains(c.dnsUnlisted, z.Name) {
+			return true
+		}
+		var written bool
+		for _, a := range c.st.Actions {
+			if a.Target != rt.Hostname || a.Kind != reconcile.CreateRecord && a.Kind != reconcile.UpdateRecord {
+				continue
+			}
+			if !a.Applied {
+				return true
+			}
+			written = true
+		}
+		if !written && c.dnsPointsAt[strings.ToLower(rt.Hostname)] != m.To {
+			return true
 		}
 	}
-	return slices.ContainsFunc(c.st.Actions, func(a reconcile.Action) bool {
-		return !a.Applied && hosts[a.Target] && (a.Kind == reconcile.CreateRecord || a.Kind == reconcile.UpdateRecord)
-	})
+	return false
 }
 
 // moveView is a move under way as the state shows it.

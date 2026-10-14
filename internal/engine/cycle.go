@@ -91,6 +91,11 @@ type cycleRun struct {
 	checked       bool
 	recheck       recheck
 	tunnelVerdict reconcile.WriterVerdict
+	// dnsUnlisted names the zones the DNS run could not list, and
+	// dnsPointsAt is, by lower-case name, the tunnel each owned record
+	// pointed at when the run listed its zone.
+	dnsUnlisted []string
+	dnsPointsAt map[string]string
 	// tunnels are the states the tunnel run returned, which DNS must be given.
 	tunnels []reconcile.TunnelState
 	// unreported are the tunnels with an id the last state showed in the

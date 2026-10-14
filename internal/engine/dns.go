@@ -49,6 +49,7 @@ func (c *cycleRun) reconcileDNS() {
 		}
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
+	c.dnsUnlisted, c.dnsPointsAt = res.Unlisted, res.PointsAt
 	c.noteListed(res)
 	c.notePointed(res)
 	c.offerRemovals(res)
