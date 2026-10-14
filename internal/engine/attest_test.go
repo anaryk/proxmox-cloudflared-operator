@@ -60,6 +60,10 @@ func TestAnAttestationStandsOnlyAsTheControllerChecksIt(t *testing.T) {
 			w.acts["pve2"].edit = func(st *agentproto.Status) { st.Attestations = nil }
 			w.acts["pve3"].edit = func(st *agentproto.Status) { st.Attestations = append(st.Attestations, dbAttested("pve2")) }
 		}},
+		{"a node that does not host the guest", func(w *world) {
+			w.acts["pve2"].edit = func(st *agentproto.Status) { st.Attestations = nil }
+			w.acts["pve3"].edit = func(st *agentproto.Status) { st.Attestations = append(st.Attestations, dbAttested("pve3")) }
+		}},
 		{"an appliance agent", func(w *world) { w.acts["pve2"].kind = pki.KindAppliance }},
 		{"no running watch", func(w *world) {
 			w.acts["pve2"].edit = func(st *agentproto.Status) { st.WatchRunningSince = time.Time{} }

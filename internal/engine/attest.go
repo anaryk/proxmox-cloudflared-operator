@@ -59,12 +59,15 @@ type agentFacts struct {
 }
 
 // fleetView is what the agents reported, as one cycle takes it: the facts of
-// every node of the registry that is neither removed nor contested, and the
-// attestations that stand, by card.
+// every node of the registry that is neither removed nor contested, the
+// attestations that stand of the node the inventory has each guest on, by
+// card, which let another node prove the guest's port, and by card the
+// other nodes that attest it, which only tell that the guest migrates.
 type fleetView struct {
-	nodes    map[string]*agentFacts
-	attested map[cardRef][]agentproto.Attestation
-	cards    map[string]card // by MAC, lower case with colons
+	nodes     map[string]*agentFacts
+	attested  map[cardRef][]agentproto.Attestation
+	elsewhere map[cardRef][]string
+	cards     map[string]card // by MAC, lower case with colons
 }
 
 // node returns the facts of a node; a node the view has none of is unheard.
@@ -105,7 +108,7 @@ func (c *cycleRun) observeFleet() bool {
 		return false
 	}
 	c.placements = placements
-	c.fleet = &fleetView{nodes: map[string]*agentFacts{}, attested: map[cardRef][]agentproto.Attestation{}, cards: c.publishedCards()}
+	c.fleet = &fleetView{nodes: map[string]*agentFacts{}, attested: map[cardRef][]agentproto.Attestation{}, elsewhere: map[cardRef][]string{}, cards: c.publishedCards()}
 	reports := c.reportsNow()
 	for _, name := range slices.Sorted(maps.Keys(c.nodes)) {
 		n := c.nodes[name].Node
@@ -207,9 +210,14 @@ func (c *cycleRun) takeAttestations(name string, facts *agentFacts) {
 			c.refuseFacts(name, fmt.Sprintf("the agent of node %s attests more than %d cards; the rest is not read", name, maxAttestations))
 			break
 		}
-		if c.attests(name, st, a) {
-			ref := cardRef{a.Guest, a.NIC}
+		if !c.attests(name, st, a) {
+			continue
+		}
+		ref := cardRef{a.Guest, a.NIC}
+		if c.fleet.cards[normalMAC(a.MAC)].node == name {
 			c.fleet.attested[ref] = append(c.fleet.attested[ref], a)
+		} else {
+			c.fleet.elsewhere[ref] = append(c.fleet.elsewhere[ref], name)
 		}
 	}
 }
@@ -228,6 +236,15 @@ func (c *cycleRun) attests(node string, st agentproto.Status, a agentproto.Attes
 		return false
 	}
 	return attestsCard(a, cd.nic)
+}
+
+// normalMAC is mac lower case with colons; empty when it is not a MAC.
+func normalMAC(mac string) string {
+	out, err := model.NormalizeMAC(mac)
+	if err != nil {
+		return ""
+	}
+	return out
 }
 
 // attestsCard says whether an attestation names the card's own bridge and VLAN,
@@ -342,7 +359,7 @@ func (c *cycleRun) migrating(cd card, movedOn string) bool {
 	if g, ok := c.snap.Guest(cd.ref.guest); ok && g.Lock == "migrate" {
 		return true
 	}
-	return slices.ContainsFunc(c.fleet.attested[cd.ref], func(a agentproto.Attestation) bool { return a.Node != movedOn })
+	return slices.ContainsFunc(c.fleet.elsewhere[cd.ref], func(node string) bool { return node != movedOn })
 }
 
 // hostOf is the node the inventory has a guest on.
