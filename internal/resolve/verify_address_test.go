@@ -264,6 +264,86 @@ func TestVerifyAddressOfAGuestOfAnotherNode(t *testing.T) {
 	})
 }
 
+// While no controller refreshes it, an attestation goes on holding up an
+// address that stood at port on it, as long as the wire shows what it
+// showed; it never raises an address to port or admits one.
+func TestVerifyAddressHoldsAnAttestationOverASilence(t *testing.T) {
+	stood := func(t *testing.T) *Binding {
+		t.Helper()
+		s, p := remoteScenario(t)
+		res := s.verify(t, p, s.verifyRequest())
+		require.True(t, res.Attested)
+		return res.Binding
+	}
+	tests := []struct {
+		name         string
+		after        time.Duration // since the proof that stood
+		change       func(*scenario, *VerifyRequest)
+		attested     bool
+		stale        bool
+		withoutStood bool
+	}{
+		{name: "a takeover's silence", after: 3 * time.Minute, attested: true},
+		{name: "longer than a proof may stand", after: DefaultMaxProofAge + time.Second, attested: true, stale: true},
+		{name: "a last heartbeat that does not name the node", after: 5 * time.Second, attested: true,
+			change: func(_ *scenario, r *VerifyRequest) { r.Attestation.Recalled = true }},
+		{name: "no address stood on it", after: time.Minute, withoutStood: true},
+		{name: "recalled for an address that did not stand on it", after: 5 * time.Second, withoutStood: true,
+			change: func(_ *scenario, r *VerifyRequest) { r.Attestation.Recalled = true }},
+		{name: "a withdrawn binding", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Prev.Withdrawn = true }},
+		{name: "a binding below port", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Prev.Level = LevelObserved }},
+		{name: "the node's status stale in the last heartbeat", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Attestation.StatusAge = maxStatusAge + time.Second }},
+		{name: "a heartbeat never heard", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Attestation.HeardAt = time.Time{} }},
+		{name: "a heartbeat dated later", after: time.Minute,
+			change: func(s *scenario, r *VerifyRequest) { r.Attestation.HeardAt = s.clock.t.Add(time.Second) }},
+		{name: "the MAC on another uplink", after: time.Minute,
+			change: func(s *scenario, _ *VerifyRequest) { s.prober.fdb[fdbKey("vmbr0", 0, mac0)] = []string{"eno2"} }},
+		{name: "no coverage", after: time.Minute,
+			change: func(_ *scenario, r *VerifyRequest) { r.Covered = false }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := stood(t)
+			s, p := remoteScenario(t)
+			s.clock.t = t0.Add(tt.after)
+			req := s.verifyRequest()
+			if !tt.withoutStood {
+				req.Prev = b
+			}
+			if tt.change != nil {
+				tt.change(s, &req)
+			}
+
+			res := s.verify(t, p, req)
+
+			require.Equal(t, tt.attested, res.Attested)
+			require.Equal(t, tt.stale, res.Stale)
+			require.Equal(t, map[bool]Level{true: LevelPort, false: LevelObserved}[tt.attested], res.Level)
+			if tt.attested {
+				require.Equal(t, s.clock.t, res.Binding.VerifiedAt, "proven anew on the wire")
+			}
+		})
+	}
+
+	t.Run("what the wire shows against the guest still withdraws", func(t *testing.T) {
+		b := stood(t)
+		s, p := remoteScenario(t)
+		s.clock.t = t0.Add(time.Minute)
+		s.prober.fdb[fdbKey("vmbr0", 0, mac0)] = []string{"tap102i0"}
+		req := s.verifyRequest()
+		req.Prev = b
+
+		res := s.verify(t, p, req)
+
+		require.True(t, res.Target.Withdrawn)
+		require.False(t, res.Attested)
+	})
+}
+
 func TestVerifyAddressChecksWhatAnyCheckDoes(t *testing.T) {
 	t.Run("a denied address is rejected without a probe", func(t *testing.T) {
 		s, p := remoteScenario(t)

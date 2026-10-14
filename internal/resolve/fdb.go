@@ -167,8 +167,10 @@ func isDigits(s string) bool {
 // chose, where the bridge has learned each MAC that answered: on no port of a
 // local guest or of a leg, and on one port at most. It returns, by MAC, the
 // port the MAC is learned on only when every MAC is on an uplink and the node
-// that hosts the guest attests it on the guest's own port; otherwise nothing,
-// which leaves the proof at observed. A MAC that is not learned, or a port of
+// that hosts the guest attests it on the guest's own port, and, for an
+// attestation held over a silence of the controller, every MAC is where the
+// proof the address stood on found it; otherwise nothing, which leaves the
+// proof at observed. A MAC that is not learned, or a port of
 // a kind this node does not know, proves nothing either way.
 func (a *attempt) onUplink(ctx context.Context, ifc HostIface, nic model.NIC, macs []string, own map[string][]int) (map[string]string, outcome) {
 	bridge, vlan := fdbOf(ifc, nic)
@@ -206,6 +208,9 @@ func (a *attempt) onUplink(ctx context.Context, ifc HostIface, nic model.NIC, ma
 		if kind(port) != PortUplink {
 			return nil, outcome{}
 		}
+	}
+	if a.cross.heldOver && !a.cross.placedAsStood(bridge, learned) {
+		return nil, outcome{}
 	}
 	return learned, outcome{}
 }

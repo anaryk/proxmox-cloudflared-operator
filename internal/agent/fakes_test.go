@@ -146,7 +146,7 @@ func (f *fakeResolver) VerifyAddress(ctx context.Context, req resolve.VerifyRequ
 	level, set := f.levels[req.Route.Hostname]
 	f.mu.Unlock()
 	at := req.Attestation
-	attested := at != nil && req.Covered && !at.HeardAt.IsZero() && f.now().Sub(at.HeardAt) <= 15*time.Second
+	attested := at != nil && req.Covered && !at.Recalled && !at.HeardAt.IsZero() && f.now().Sub(at.HeardAt) <= 15*time.Second
 	switch {
 	case set:
 	case req.Route.Guest == nil:
@@ -567,9 +567,11 @@ type env struct {
 	paths store.Paths
 	store *store.Store
 	res   *fakeResolver
-	conn  *fakeConnectors
-	egr   *fakeEgress
-	gw    *fakeGateway
+	// resolver, when set, is given to the agent instead of res.
+	resolver Resolver
+	conn     *fakeConnectors
+	egr      *fakeEgress
+	gw       *fakeGateway
 	// isolation is what an appliance agent reads of its node for the
 	// filtered level; nil for an agent that judges it not.
 	isolation func(context.Context, time.Time) managednet.FilteredInput
@@ -626,6 +628,9 @@ func (e *env) deps() Deps {
 		Log:        zerolog.Nop(),
 		Changed:    func() { e.changed.Add(1) },
 		Event:      e.events.add,
+	}
+	if e.resolver != nil {
+		d.Resolver = e.resolver
 	}
 	if e.gw != nil {
 		d.Gateway = e.gw

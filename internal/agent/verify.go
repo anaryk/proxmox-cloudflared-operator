@@ -11,6 +11,12 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
+// reasonAttestationStale is why a target served on another node's
+// attestation is reported at observed: no controller has confirmed that
+// node's word for longer than a proof may stand, which only a silence of the
+// controller allows; it stays served until one of this node's checks fails.
+const reasonAttestationStale = "attestation stale: no controller has confirmed the attestation of %s for too long; served until a check of this node fails"
+
 // verifyAll proves, on this node, the address another node chose for every
 // target this node does not resolve: with the MACs it was chosen with, the
 // attestation of the node that hosts the guest and the coverage the
@@ -52,7 +58,11 @@ func (p *pass) verifyAll() {
 	for i, t := range targets[:started] {
 		p.results[t.Key] = out[i].Result
 		p.served[t.Key] = cloneResult(out[i].Result)
-		if out[i].Attested && t.Attestation != nil {
+		switch {
+		case !out[i].Attested || t.Attestation == nil:
+		case out[i].Stale:
+			p.stale[t.Key] = t.Attestation.Node
+		default:
 			p.attested[t.Key] = t.Attestation.Node
 		}
 	}
@@ -82,31 +92,42 @@ func (a *Agent) verify(ctx context.Context, t agentproto.Target, inv inventory.S
 		req.Attestation = &resolve.Attestation{
 			Node: at.Node, MAC: at.MAC, Bridge: at.Bridge, VLAN: at.VLAN, Port: at.Port, StableSince: at.Since,
 		}
-		req.Attestation.StatusAge, req.Attestation.HeardAt = a.heardOf(at.Node)
+		req.Attestation.StatusAge, req.Attestation.HeardAt, req.Attestation.Recalled = a.heardOf(at.Node)
 	}
 	return a.d.Resolver.VerifyAddress(ctx, req)
 }
 
+// namedIn is what a heartbeat said of a node: how old its status was at the
+// controller, and when this node received the heartbeat.
+type namedIn struct {
+	statusAge time.Duration
+	at        time.Time
+}
+
 // heardOf is what the last heartbeat said of node: how old its status was at
-// the controller, and when this node received the heartbeat. Zero when no
-// heartbeat names it, or the last one is of an epoch below the one the agent
-// follows: a stale controller vouches for nothing. It takes heardMu for the
-// heartbeat; the caller holds the agent's lock, under which the epoch the
-// agent follows is read.
-func (a *Agent) heardOf(node string) (time.Duration, time.Time) {
+// the controller, and when this node received the heartbeat. When the last
+// heartbeat does not name node, or is of an epoch below the one the agent
+// follows, it is what the last heartbeat that named node said, recalled: the
+// resolver lets such times keep an address on the attestation it stood on,
+// never prove one. Zero when no heartbeat this process received named it.
+// Every heartbeat kept was of the epoch the agent followed, or a later one,
+// when it came: a stale controller is refused as it answers. It takes
+// heardMu for the heartbeat; the caller holds the agent's lock, under which
+// the epoch the agent follows is read.
+func (a *Agent) heardOf(node string) (time.Duration, time.Time, bool) {
 	a.heardMu.Lock()
 	defer a.heardMu.Unlock()
-	if a.hb == nil {
-		return 0, time.Time{}
+	if a.hb != nil {
+		if c, _ := a.hb.Epoch.Order(a.remembered); c >= 0 {
+			if fresh, ok := a.hb.Nodes[node]; ok {
+				return fresh.StatusAge, a.hbAt, false
+			}
+		}
 	}
-	if c, _ := a.hb.Epoch.Order(a.remembered); c < 0 {
-		return 0, time.Time{}
+	if n, ok := a.named[node]; ok {
+		return n.statusAge, n.at, true
 	}
-	fresh, ok := a.hb.Nodes[node]
-	if !ok {
-		return 0, time.Time{}
-	}
-	return fresh.StatusAge, a.hbAt
+	return 0, time.Time{}, false
 }
 
 // prove proves the address of t again outside a pass: as this node resolves

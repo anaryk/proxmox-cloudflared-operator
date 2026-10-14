@@ -213,6 +213,10 @@ type Agent struct {
 	heardAt time.Time // the last snapshot or heartbeat of a controller
 	hb      *agentproto.Heartbeat
 	hbAt    time.Time
+	// named is, by node, what the last heartbeat that named the node said
+	// of it: a heartbeat of a controller that took over may not name a node
+	// yet, and its silence about it holds over what the last word was.
+	named map[string]namedIn
 
 	// egMu guards what the watch of the network reads and changes beside the
 	// passes: the pins it watches, the addresses whose MAC moved and that

@@ -106,6 +106,9 @@ func (p *pass) reports() ([]agentproto.TargetReport, map[string]egress.Target) {
 			r.AttestedBy = p.attested[t.Key]
 			r.Attested = r.AttestedBy != ""
 			r.Reason = cmp.Or(p.held[t.Key], res.Target.Reason)
+			if node, stale := p.stale[t.Key]; stale {
+				r.Level, r.Reason = string(resolve.LevelObserved), fmt.Sprintf(reasonAttestationStale, node)
+			}
 			switch b := served.Binding; {
 			case b != nil:
 				r.VerifiedAt = b.VerifiedAt
@@ -244,6 +247,12 @@ func (a *Agent) Heartbeat(h agentproto.Heartbeat) {
 	a.heardMu.Lock()
 	defer a.heardMu.Unlock()
 	a.hb, a.hbAt, a.heardAt = &h, now, now
+	if a.named == nil {
+		a.named = map[string]namedIn{}
+	}
+	for node, fresh := range h.Nodes {
+		a.named[node] = namedIn{statusAge: fresh.StatusAge, at: now}
+	}
 }
 
 // HeardLive says whether, at now, a heartbeat less than within old came from

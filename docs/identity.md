@@ -203,12 +203,21 @@ What this leaves open, by design:
   attested only once it has stayed there for five minutes; until then the other replicas prove
   it at `observed`, and with the default minimum its routes are served from its new node's
   pinned tunnel meanwhile.
-- **Without a controller** no attestation and no coverage is refreshed: an attestation counts
-  only while the node's last heartbeat from the controller is at most 15 seconds old, and the
-  attesting node's status was at most 30 seconds old when it was sent. A MAC cloned onto a third
-  node meanwhile is blocked by the guest's node and by the node it was cloned onto, through
-  their own watches, and not by the other replicas, until a controller is back. On a host that
-  takes a cluster without quorum for longer than a takeover.
+- **Without a controller** no attestation and no coverage is refreshed. An attestation proves
+  an address only while the node's last heartbeat from the controller is at most 15 seconds
+  old, and the attesting node's status was at most 30 seconds old when it was sent. When the
+  controller falls silent, or a controller that took over has not heard the guest's node yet,
+  a replica keeps an address it served at `port (attested)` on the last word it had: the
+  attesting node's status was fresh in the last heartbeat that named it, and the replica's own
+  checks find what they found, the same MACs answering ARP and learned on the same uplink port.
+  Anything else its checks see, a second MAC, the MAC on a port of its own guests or on another
+  port, no answer, withdraws the address at once, and a silence never raises an address to
+  `port (attested)` or lets one in. After five minutes without a word the replica shows the
+  level as `observed` with `attestation stale` and still serves the address; a controller that
+  answers again judges it afresh. A restarted agent has heard nothing yet and holds nothing
+  over. A MAC cloned onto a third node meanwhile is blocked by the guest's node and by the node
+  it was cloned onto, through their own watches, and not by the other replicas, until a
+  controller is back. On a host that takes a cluster without quorum for longer than a takeover.
 
 The appliance offers none of this: its agents read no bridge, so every replica proves
 `observed`, or `filtered` on the managed network. [Security](security.md#port-attested-against-the-attackers)
