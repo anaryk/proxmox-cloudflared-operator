@@ -139,7 +139,10 @@ the result of its own daily check of each stored token for `pco credential list`
   A failed line otherwise shows the error that Cloudflare or the network gave. When
   Cloudflare did not answer, with a network error, a server error or a rate limit, the
   line is marked `?` and starts with `Cloudflare did not answer`: that says nothing about
-  the token, and `Usable` reads `not known, Cloudflare did not answer`.
+  the token, and `Usable` reads `not known, Cloudflare did not answer`. A call is given up
+  after 30 seconds without an answer, and the check ends with the first call that fails
+  so, which is why `pco credential add` against a Cloudflare that is silent gives up after
+  about half a minute, and stores nothing.
 - A token scoped to some zones of an account may not read the records of the others, which
   are left out: `credential add` and `credential check` name each, as
   `example.org left out: no DNS read`. `pco setup` names only those this install served, and
@@ -312,7 +315,9 @@ seconds is not sent: the cycle writes nothing more and says what waits, in one l
 `11 changes wait for Cloudflare's rate limit`, and a later cycle makes it. When Cloudflare
 answers 429 pco stops calling for as long as Cloudflare asked and fails calls fast
 meanwhile, with `not sent: holding back after an earlier 429`; what could not be done is
-tried again in a later cycle.
+tried again in a later cycle. A call that Cloudflare has not answered after 30 seconds is
+given up, and a cycle that runs into such calls ends at its deadline of 75 seconds, holds
+what is left and goes on in the next one (see [Operations](operations.md)).
 
 A token that has expired, or was revoked, cannot be used for anything: every call with
 it fails, so pco can change nothing at Cloudflare through it, and `pco status` and
