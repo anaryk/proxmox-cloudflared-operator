@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"net"
@@ -55,6 +56,15 @@ func (c *cycleRun) allReported() bool {
 // store lost, and never give the pool away.
 const maxCatchUp = 1024
 
+// maxReported is the most service addresses a node's report may name to be
+// taken at all, and maxLeasesAgain the most leases catchUp saves again in a
+// cycle: what a report or the inventory holds never grows the work of a
+// cycle, or the store, without bound. The rest waits for the next cycle.
+const (
+	maxReported    = 4096
+	maxLeasesAgain = 64
+)
+
 // raisePool moves the pool of service addresses on past the highest service
 // address the gateway of an admitted node maps or a verified configuration
 // names. It reports whether it could tell.
@@ -102,6 +112,11 @@ func (c *cycleRun) reportedServices(next netip.Addr) map[netip.Addr]bool {
 		n, known := c.nodes[name]
 		admitted := known && (n.Node.State == store.NodeActive || n.Node.State == store.NodeDraining)
 		if !admitted || rep.Status.Node != name || len(rep.Status.ServiceAddrs) == 0 {
+			continue
+		}
+		if n := len(rep.Status.ServiceAddrs); n > maxReported {
+			c.saidOnce("many "+name, Event{At: c.now, Level: levelWarn, Kind: kindNetwork, Subject: name,
+				Message: fmt.Sprintf("node %s reports that its gateway maps %d service addresses, more than %d; none of them is taken", name, n, maxReported)})
 			continue
 		}
 		limit := next
@@ -163,6 +178,7 @@ func (c *cycleRun) keepCardLeases() bool {
 		carded[strings.ToLower(a.MAC)] = true
 	}
 	owners := cardOwners(c.snap.Guests)
+	saved := 0
 	for _, g := range c.snap.Guests {
 		for _, nic := range g.NICs {
 			mac, err := net.ParseMAC(nic.MAC)
@@ -185,6 +201,11 @@ func (c *cycleRun) keepCardLeases() bool {
 			if !ok {
 				continue
 			}
+			if saved >= maxLeasesAgain {
+				// Not every card was looked at: the epoch is not caught up.
+				return false
+			}
+			saved++
 			l := store.Lease{MAC: text, Addr: addr, Owner: g.Ref.String(), Identity: g.Identity, NIC: nic.Index, Since: c.now}
 			if err := c.e.d.Store.SaveLease(l, 0); err != nil {
 				c.problem("saving again the lease of %s for net%d of %s: %v", addr, nic.Index, g.Ref, err)
@@ -237,5 +258,13 @@ func cardAddr(subnet netip.Prefix, mac net.HardwareAddr) (netip.Addr, bool) {
 	}
 	b := subnet.Masked().Addr().As4()
 	addr := netip.AddrFrom4([4]byte{b[0], b[1], mac[4], mac[5]})
+	base := subnet.Masked().Addr()
+	last := binary.BigEndian.Uint32(b[:]) | (uint32(1)<<(32-subnet.Bits()) - 1)
+	lastB := [4]byte{}
+	binary.BigEndian.PutUint32(lastB[:], last)
+	// The subnet's own address, pco's leg and the broadcast address are no card's.
+	if addr == base || addr == base.Next() || addr == netip.AddrFrom4(lastB) {
+		return netip.Addr{}, false
+	}
 	return addr, subnet.Contains(addr) && store.ManagedMAC(addr) == mac.String()
 }
