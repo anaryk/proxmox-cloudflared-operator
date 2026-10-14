@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
@@ -105,10 +106,13 @@ func (a ProbeAnswer) Check() error {
 }
 
 func (i ProbeIface) check() error {
-	for _, name := range []string{i.Name, i.Master, i.Bridge, i.Via} {
-		if name != "" && !ifaceName(name) && !(name == i.Via && networkID(name)) {
+	for _, name := range []string{i.Name, i.Master, i.Bridge} {
+		if name != "" && !ifaceName(name) {
 			return fmt.Errorf("the probe answer names the interface %q, which no interface is called", name)
 		}
+	}
+	if i.Via != "" && !networkID(i.Via) {
+		return fmt.Errorf("the probe answer names the network %q of interface %s, which no network is called", i.Via, i.Name)
 	}
 	switch {
 	case i.Name == "":
@@ -153,14 +157,24 @@ type LegReport struct {
 // ifaceName says that s is a name Linux could give an interface: up to 15
 // letters, digits, -, _ and dots.
 func ifaceName(s string) bool {
-	return s != "" && len(s) <= maxIfaceName && strings.IndexFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.')
-	}) < 0
+	return s != "" && len(s) <= maxIfaceName && strings.IndexFunc(s, notNameChar) < 0
 }
 
-// networkID says that s is the id of a network, a bridge and a VLAN of it,
-// as vmbr1.20.
+func notNameChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		return false
+	}
+	return true
+}
+
+// networkID says that s is the id of a network: a bridge, or a bridge and
+// a VLAN of it, as vmbr1.20.
 func networkID(s string) bool {
-	bridge, _, _ := strings.Cut(s, ".")
-	return len(s) <= 2*maxIfaceName && ifaceName(bridge) && strings.IndexFunc(s, func(r rune) bool { return r == ' ' || r == '/' }) < 0
+	bridge, vlan, tagged := strings.Cut(s, ".")
+	if !ifaceName(bridge) {
+		return false
+	}
+	n, err := strconv.Atoi(vlan)
+	return !tagged || err == nil && n >= 1 && n <= maxVLAN && strconv.Itoa(n) == vlan
 }
