@@ -13,6 +13,8 @@ import (
 
 const (
 	problemAgentMoved   = "agent %d runs on %s, enrolled for %s; move it back or enrol it again"
+	problemAgentUnseen  = "agent %d of node %s is not among the cluster's resources; it is served nothing until it is"
+	problemAgentMoving  = "agent %d of node %s is being migrated to %s; it is served nothing until it runs on its node again"
 	problemAgentsBehind = "the agent of node %s follows epoch %s, above this controller's %d.%s: the store is older than what the agents " +
 		"were last told, as after a restore or a relocation on replicated storage; nothing is written until pco appliance recover draws above it"
 )
@@ -75,16 +77,23 @@ func (c *cycleRun) votes(node string, rep NodeReport) bool {
 }
 
 // agentMoved says why the appliance agent of entry n is served nothing: its
-// container runs on another node than the one it was enrolled for, by the
-// snapshot of this cycle. A container on its way somewhere is left to the
-// cycle after it arrived.
+// container runs on another node than the one it was enrolled for, is being
+// migrated, or is not in the cluster at all, by the snapshot of this cycle,
+// which publishRemote reads only when it is complete. Nothing of it is
+// remembered: every cycle, and every controller after a restart or a
+// takeover, judges it again from Proxmox, and serves nothing until it holds.
 func (c *cycleRun) agentMoved(n store.NodeEntry) string {
-	if n.Kind != string(pki.KindAppliance) || n.VMID == 0 {
+	if n.Kind != string(pki.KindAppliance) {
 		return ""
 	}
 	g, ok := c.snap.Guest(model.GuestRef{Kind: model.KindLXC, VMID: n.VMID})
-	if !ok || g.Node == n.Name || g.Lock == "migrate" {
-		return ""
+	switch {
+	case n.VMID == 0 || !ok:
+		return fmt.Sprintf(problemAgentUnseen, n.VMID, n.Name)
+	case g.Lock == "migrate":
+		return fmt.Sprintf(problemAgentMoving, n.VMID, n.Name, g.Node)
+	case g.Node != n.Name:
+		return fmt.Sprintf(problemAgentMoved, n.VMID, g.Node, n.Name)
 	}
-	return fmt.Sprintf(problemAgentMoved, n.VMID, g.Node, n.Name)
+	return ""
 }

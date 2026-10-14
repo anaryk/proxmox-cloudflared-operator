@@ -144,6 +144,55 @@ func TestAMovedAgentIsServedNothing(t *testing.T) {
 	require.Contains(t, r.last(), "pve2", "moved back, it is served again")
 }
 
+// What makes the controller serve an appliance agent nothing is judged for
+// that node alone, every cycle, from Proxmox and the agent's own report: the
+// other agents are served all the same, and a new controller judges it the
+// same way, with nothing remembered.
+func TestOnlyTheAgentThatFailsIsHeldAndARestartDoesNotForgetIt(t *testing.T) {
+	ct := func(vmid int, node, lock string) model.Guest {
+		return model.Guest{Ref: model.GuestRef{Kind: model.KindLXC, VMID: vmid}, Name: "pco", Node: node, Running: true, Pool: "pco", Lock: lock}
+	}
+	for _, tt := range []struct {
+		name   string
+		guests []model.Guest
+		stale  bool
+		want   string
+	}{
+		{"moved", []model.Guest{ct(9301, "pve4", "")}, false, "agent 9301 runs on pve4, enrolled for pve2"},
+		{"being migrated", []model.Guest{ct(9301, "pve4", "migrate")}, false, "agent 9301 of node pve2 is being migrated to pve4"},
+		{"gone from the cluster", nil, false, "agent 9301 of node pve2 is not among the cluster's resources"},
+		{"silent, with a report of an epoch above", []model.Guest{ct(9301, "pve2", "")}, true, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, r, _ := clusterOf(t, applianceNode("pve2", 1), applianceNode("pve3", 2))
+			e.enforce()
+			for _, g := range append(tt.guests, ct(9302, "pve3", "")) {
+				addGuest(e, g)
+			}
+			ahead(e, r, "pve2")
+			r.report("pve3", e.clock.now(), t0.Add(-time.Hour))
+			if tt.stale {
+				e.clock.advance(time.Hour)
+				r.report("pve3", e.clock.now(), t0.Add(-time.Hour))
+			}
+
+			for range 2 {
+				st := e.cycle()
+
+				require.Equal(t, ModeEnforce, st.Mode, "one agent holds no controller")
+				if tt.want != "" {
+					require.Contains(t, problemsText(st), tt.want)
+				}
+				require.NotContains(t, r.last(), "pve2", "the agent that fails is served nothing")
+				require.Contains(t, r.last(), "pve3", "the others are served")
+				e.eng = e.newEngine()
+				e.clock.advance(time.Second)
+				r.report("pve3", e.clock.now(), t0.Add(-time.Hour))
+			}
+		})
+	}
+}
+
 func problemsText(st State) string { return strings.Join(st.Problems, "\n") }
 
 // addGuest puts g into the inventory's snapshot, in place of the guest it
