@@ -10,13 +10,14 @@ import { TrafficChart } from '../components/TrafficChart'
 import { Untrusted } from '../components/Untrusted'
 import { Link } from '../app/Link'
 import { GuestDetail } from '../pages/guests/GuestDetail'
-import { TunnelDetail, tunnelLabel, tunnelPath } from '../pages/edge/TunnelDetail'
+import { findTunnel, TunnelDetail, tunnelLabel, tunnelPathOf } from '../pages/edge/TunnelDetail'
 import { ZoneDetail } from '../pages/edge/ZoneDetail'
 import { RouteDetail } from '../pages/routes/RouteDetail'
 import { RouteTraffic } from '../pages/routes/RouteTraffic'
 import { drawerWords as words } from '../text/flow'
 import { rotateCommand } from '../text/words'
 import { ChainList } from './ChainList'
+import { tunnelOfEdge } from './model'
 import type { FlowEdge, FlowNode, FlowRow, Model } from './types'
 
 interface Shown {
@@ -49,7 +50,7 @@ function Rogue({ st, id }: { st: State; id: string }) {
   const nodeZone = useApp((s) => s.session?.nodeZone)
   const r = st.rogueConnectors.find((x) => x.id === id)
   if (!r) return <p className="muted">{words.gone}</p>
-  const t = st.tunnels.find((x) => x.accountId === r.accountId)
+  const t = findTunnel(st, r.accountId)
   return (
     <div className="detail detail-drawer">
       <dl className="details">
@@ -62,7 +63,7 @@ function Rogue({ st, id }: { st: State; id: string }) {
         <dt>{words.cloudflared}</dt>
         <dd>{r.version ? <Untrusted text={r.version} /> : words.unknownVersion}</dd>
         <dt>{words.tunnel}</dt>
-        <dd>{t ? <Link to={tunnelPath(t.accountId)}>{<Untrusted text={tunnelLabel(st, t)} />}</Link> : <Untrusted text={r.tunnel} />}</dd>
+        <dd>{t ? <Link to={tunnelPathOf(t)}>{<Untrusted text={tunnelLabel(st, t)} />}</Link> : <Untrusted text={r.tunnel} />}</dd>
         <dt>{words.firstSeen}</dt>
         <dd>
           <Time at={r.since} nodeZone={nodeZone} />
@@ -81,8 +82,11 @@ function nodeShown(st: State, traffic: TrafficView | undefined, n: FlowNode): Sh
       if (n.ref) return { title: <Untrusted text={n.ref} hostname />, body: <ZoneDetail key={n.ref} zone={n.ref} variant="drawer" /> }
       return { title: label, body: routesOf(st, traffic, n.routes ?? [], words.noZone) }
     case 'edge':
-    case 'connector':
-      return { title: label, body: <TunnelDetail key={n.ref} accountId={n.ref ?? ''} variant="drawer" /> }
+    case 'connector': {
+      const t = n.kind === 'edge' ? tunnelOfEdge(st, n.id) : undefined
+      const pinned = t?.kind === 'pinned' ? t.name : undefined
+      return { title: label, body: <TunnelDetail key={n.id} accountId={n.ref ?? ''} tunnel={pinned} variant="drawer" /> }
+    }
     case 'replica':
       return {
         title: label,
@@ -106,8 +110,7 @@ function nodeShown(st: State, traffic: TrafficView | undefined, n: FlowNode): Sh
 }
 
 function Trunk({ st, traffic, edge }: { st: State; traffic?: TrafficView; edge: FlowEdge }) {
-  const account = edge.from.slice('edge:'.length)
-  const t = st.tunnels.find((x) => x.accountId === account)
+  const t = tunnelOfEdge(st, edge.from)
   const tt = t?.id ? traffic?.tunnels.find((x) => x.tunnelId === t.id) : undefined
   const last = tt?.samples.at(-1)
   return (
@@ -129,7 +132,7 @@ function Trunk({ st, traffic, edge }: { st: State; traffic?: TrafficView; edge: 
       <p className="muted">{words.counters}</p>
       {t && (
         <p>
-          <Link to={tunnelPath(t.accountId)}>{words.theTunnel}</Link>
+          <Link to={tunnelPathOf(t)}>{words.theTunnel}</Link>
         </p>
       )}
     </div>
@@ -138,7 +141,7 @@ function Trunk({ st, traffic, edge }: { st: State; traffic?: TrafficView; edge: 
 
 function edgeShown(st: State, traffic: TrafficView | undefined, model: Model, e: FlowEdge): Shown | undefined {
   if (e.style === 'trunk') {
-    const t = st.tunnels.find((x) => `edge:${x.accountId}` === e.from)
+    const t = tunnelOfEdge(st, e.from)
     return { title: t ? <Untrusted text={tunnelLabel(st, t)} /> : words.trunk, body: <Trunk st={st} traffic={traffic} edge={e} /> }
   }
   const to = model.nodes.find((n) => n.id === e.to)

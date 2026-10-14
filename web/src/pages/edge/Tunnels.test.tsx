@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { State } from '../../api/types.gen'
+import cluster from '../../fixtures/cluster.json'
 import populated from '../../fixtures/populated.json'
 import rogueMock from '../../fixtures/rogue.json'
 import rogue from '../../fixtures/rogue-scenario.json'
@@ -170,5 +171,35 @@ describe('the detail', () => {
     const events = within(screen.getByRole('region', { name: 'Events' })).getByRole('table', { name: 'Events' })
     expect(within(events).getAllByRole('row').length).toBeGreaterThan(1)
     expect(within(events).queryByText('adoption requested for the next run')).toBeNull()
+  })
+})
+
+describe('the tunnels of a cluster', () => {
+  const clustered = cluster as unknown as State
+
+  test('a tunnel pinned to a node is told apart by the node and opens on its own', async () => {
+    const { store } = await fakeStore({ state: clustered })
+    renderPage(store, <Tunnels />)
+    const pinned = rows().find((r) => r.Name === 'pco-abc123-pve2')
+    expect(pinned?.Tunnel).toBe('Main · pinned to pve2')
+    const link = within(screen.getByRole('table', { name: 'Tunnels' })).getByRole('link', { name: 'Main · pinned to pve2' })
+    expect(link.getAttribute('href')).toBe('/edge/tunnels/acc1?tunnel=pco-abc123-pve2')
+    expect(within(screen.getByRole('table', { name: 'Tunnels' })).getByRole('link', { name: 'Main · 00000000' }).getAttribute('href')).toBe('/edge/tunnels/acc1')
+  })
+
+  test('the detail of an account is its shared tunnel, and of a pinned one that tunnel', async () => {
+    const { store } = await fakeStore({ state: clustered })
+    const { unmount } = renderPage(store, <TunnelDetail accountId="acc1" variant="page" />)
+    expect(screen.getByRole('region', { name: 'Main · 00000000' })).toBeTruthy()
+    unmount()
+    renderPage(store, <TunnelDetail accountId="acc1" tunnel="pco-abc123-pve2" variant="page" />)
+    const summary = screen.getByRole('region', { name: 'Main · pinned to pve2' })
+    expect(summary.textContent).toContain('00000000-0000-4000-8000-000000000020')
+  })
+
+  test('a pinned tunnel the state does not have says so', async () => {
+    const { store } = await fakeStore({ state: clustered })
+    renderPage(store, <TunnelDetail accountId="acc1" tunnel="pco-abc123-pve9" variant="page" />)
+    expect(document.querySelector('p.muted')?.textContent).toBe('The install has no tunnel pco-abc123-pve9 in account acc1 in the last cycle.')
   })
 })

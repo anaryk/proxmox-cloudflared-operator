@@ -117,8 +117,9 @@ describe('what is typed', () => {
 })
 
 describe('the words of a replica, a placement and a move', () => {
-  test('port (attested) only where the hosting node vouched', () => {
-    expect(replicaLevelText({ level: 'port', attested: true })).toBe('port (attested)')
+  test('port (attested) only with the node that vouched for it', () => {
+    expect(replicaLevelText({ level: 'port', attested: true, attestedBy: 'pve1' })).toBe('port (attested by pve1)')
+    expect(replicaLevelText({ level: 'port', attested: true })).toBe('port')
     expect(replicaLevelText({ level: 'port' })).toBe('port')
     expect(replicaLevelText({})).toBe('-')
     expect(replicaTone({ ok: true, inSet: true })).toBe('ok')

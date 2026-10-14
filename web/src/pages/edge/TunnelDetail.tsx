@@ -15,12 +15,26 @@ import { accountName, Card, credentialLabel } from '../kit'
 
 // tunnelLabel tells the tunnels of an install apart, which all have the same
 // name: by the name of the account and the first 8 characters of the id,
-// "Main · 3f2a91c0".
-export function tunnelLabel(st: Pick<State, 'credentials'> | undefined, t: Pick<TunnelView, 'accountId' | 'id'>): string {
+// "Main · 3f2a91c0"; a tunnel pinned to a node of a cluster by the node.
+export function tunnelLabel(st: Pick<State, 'credentials'> | undefined, t: Pick<TunnelView, 'accountId' | 'id' | 'kind' | 'node'>): string {
+  if (t.kind === 'pinned') return `${accountName(st, t.accountId)} · pinned to ${t.node ?? ''}`
   return `${accountName(st, t.accountId)} · ${t.id ? t.id.slice(0, 8) : '-'}`
 }
 
-export const tunnelPath = (account: string) => `/edge/tunnels/${encodeURIComponent(account)}`
+// tunnelPath is the page of the tunnel of an account, or of a tunnel of it
+// pinned to a node of a cluster, which shares the account.
+export const tunnelPath = (account: string, pinned?: string) =>
+  `/edge/tunnels/${encodeURIComponent(account)}${pinned ? `?tunnel=${encodeURIComponent(pinned)}` : ''}`
+
+// tunnelPathOf is the page of a tunnel of the state.
+export const tunnelPathOf = (t: Pick<TunnelView, 'accountId' | 'kind' | 'name'>) => tunnelPath(t.accountId, t.kind === 'pinned' ? t.name : undefined)
+
+// findTunnel is the tunnel named in an account, or the account's tunnel
+// that is not pinned to a node.
+export function findTunnel(st: Pick<State, 'tunnels'>, accountId: string, name?: string): TunnelView | undefined {
+  if (name) return st.tunnels.find((t) => t.accountId === accountId && t.name === name)
+  return st.tunnels.find((t) => t.accountId === accountId && t.kind !== 'pinned') ?? st.tunnels.find((t) => t.accountId === accountId)
+}
 
 // verifiedLine is the verified word of pco status, with why for a tunnel
 // that was held or not checked.
@@ -131,14 +145,22 @@ export function Rogues({ st, t, observeOnly }: { st: State; t: TunnelView; obser
 // TunnelDetail is the tunnel of the install in one account: how the last
 // cycle found it, the configuration rolled out, its connector and traffic,
 // the connectors pco does not run, and its events, found by the account as
-// every tunnel of an install has the same name. It is the page of the tunnel
-// and the tunnel's drawer of the map.
-export function TunnelDetail({ accountId, variant }: { accountId: string; variant: 'drawer' | 'page' }): JSX.Element {
+// every tunnel of an install has the same name; on a cluster a tunnel pinned
+// to a node shares the account and is found by its name. It is the page of
+// the tunnel and the tunnel's drawer of the map.
+export function TunnelDetail({ accountId, tunnel, variant }: { accountId: string; tunnel?: string; variant: 'drawer' | 'page' }): JSX.Element {
   const st = useApp((s) => s.state)
   const traffic = useApp((s) => s.traffic)
   const observeOnly = useApp((s) => s.settings?.settings.observeOnly ?? s.state?.mode === 'observe')
   if (!st) return <Skeleton lines={4} label="Loading the state" />
-  const t = st.tunnels.find((x) => x.accountId === accountId)
+  const t = findTunnel(st, accountId, tunnel)
+  if (!t && tunnel) {
+    return (
+      <p className="muted">
+        The install has no tunnel <Untrusted className="mono" text={tunnel} /> in account <Untrusted text={accountId} /> in the last cycle.
+      </p>
+    )
+  }
   if (!t) return <p className="muted">The install has no tunnel in account <Untrusted text={accountId} /> in the last cycle.</p>
   const status = connectorOf(st, t)
   const tt = t.id ? traffic?.tunnels.find((x) => x.tunnelId === t.id) : undefined

@@ -120,12 +120,12 @@ describe('the chains of a cluster', () => {
     return c.steps.map((s) => `${s.name} ${s.level}: ${s.text}`)
   }
 
-  test('a shared route: its placement and every replica, port (attested) where the hosting node vouched', () => {
+  test('a shared route: its placement and every replica, port (attested) with the node that vouched', () => {
     expect(steps('www.example.com', 'qemu/101')).toEqual([
       'Zone ok: example.com · served · Main',
       'Edge ok: Main · 00000000 · verified: yes',
       'Placement ok: shared tunnel pco-abc123',
-      'Replicas ok: pve1: port · pve2: port (attested)',
+      'Replicas ok: pve1: port · pve2: port (attested by pve1)',
       'Path ok: vmbr0 · VLAN 20 · direct',
       'Target ok: qemu/101 web-1 · 10.0.0.11:8080 http · level port',
     ])
@@ -239,6 +239,35 @@ describe('the map, the drawer and the extras of a cluster', () => {
     expect(within(drawer).getAllByRole('heading')[0]?.textContent).toBe('pve2')
     await within(drawer).findByRole('list', { name: 'Routes pinned to it' })
     expect(drawer.textContent).toContain('heard 4s ago, watching')
+    store.stop()
+  })
+
+  test.each([
+    ['edge:acc1:pve2', 'Main · pinned to pve2'],
+    ['edge:acc1:pve2>replica:acc1:pve2:pinned', 'Main · pinned to pve2'],
+    ['edge:acc1', 'Main · 00000000'],
+  ])('%s opens its own tunnel, never the shared one of the account', async (selected, heading) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'no target', code: 'not_found' }), { status: 404 })),
+    )
+    const { store } = await fakeStore({ state: st })
+    render(
+      <StoreProvider store={store}>
+        <ToastProvider>
+          <FlowDrawer model={view} selected={selected} onClose={() => undefined} />
+        </ToastProvider>
+      </StoreProvider>,
+    )
+    await flush()
+    const drawer = screen.getByRole('complementary')
+    expect(within(drawer).getAllByRole('heading')[0]?.textContent).toBe(heading)
+    if (selected.includes('>')) {
+      const pinned = heading.includes('pinned')
+      expect(within(drawer).getByRole('link', { name: 'The tunnel' }).getAttribute('href')).toBe(pinned ? '/edge/tunnels/acc1?tunnel=pco-abc123-pve2' : '/edge/tunnels/acc1')
+    } else {
+      expect(within(drawer).getByRole('region', { name: heading })).toBeTruthy()
+    }
     store.stop()
   })
 

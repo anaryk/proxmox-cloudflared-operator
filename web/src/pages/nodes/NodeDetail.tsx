@@ -1,3 +1,5 @@
+import './nodes.css'
+
 import { type JSX, useState } from 'react'
 
 import { useApp } from '../../api/store'

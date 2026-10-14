@@ -24,6 +24,7 @@ describe('every path of the page', () => {
     ['/edge/zones/example.com', '', { name: 'zone', zone: 'example.com' }],
     ['/edge/tunnels', '', { name: 'tunnels' }],
     ['/edge/tunnels/023e105f4ecef8ad9ca31a8372d0c353', '', { name: 'tunnel', account: '023e105f4ecef8ad9ca31a8372d0c353' }],
+    ['/edge/tunnels/acc1', '?tunnel=pco-abc123-pve2', { name: 'tunnel', account: 'acc1', tunnel: 'pco-abc123-pve2' }],
     ['/nodes', '', { name: 'nodes' }],
     ['/nodes/pve2', '', { name: 'node', node: 'pve2' }],
     ['/agent', '', { name: 'agent' }],

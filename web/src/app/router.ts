@@ -19,7 +19,7 @@ export type View =
   | { name: 'zones' }
   | { name: 'zone'; zone: string }
   | { name: 'tunnels' }
-  | { name: 'tunnel'; account: string }
+  | { name: 'tunnel'; account: string; tunnel?: string }
   | { name: 'nodes' }
   | { name: 'node'; node: string }
   | { name: 'agent' }
@@ -88,8 +88,12 @@ export function match(pathname: string, search = ''): View {
           return third === undefined ? { name: 'credentials' } : id ? { name: 'credential', id } : none
         case 'zones':
           return third === undefined ? { name: 'zones' } : id ? { name: 'zone', zone: id } : none
-        case 'tunnels':
-          return third === undefined ? { name: 'tunnels' } : id ? { name: 'tunnel', account: id } : none
+        case 'tunnels': {
+          if (third === undefined) return { name: 'tunnels' }
+          if (!id) return none
+          const tunnel = query.get('tunnel') ?? undefined
+          return tunnel ? { name: 'tunnel', account: id, tunnel } : { name: 'tunnel', account: id }
+        }
       }
       return none
     }

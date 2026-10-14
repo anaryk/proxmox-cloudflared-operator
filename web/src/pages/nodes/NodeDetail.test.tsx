@@ -43,7 +43,7 @@ describe('the detail of a node', () => {
     expect(pinned.textContent).toContain('reached, in its set')
     const replica = screen.getByRole('list', { name: 'Routes it is a replica of' })
     expect(replica.textContent).toContain('www.example.com')
-    expect(replica.textContent).toContain('port (attested)')
+    expect(replica.textContent).toContain('port (attested by pve1)')
     expect(replica.textContent).toContain('monitor.example.com')
     expect(replica.textContent).toContain('no answer on port 8443 from 10.10.0.2')
   })

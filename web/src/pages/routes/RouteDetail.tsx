@@ -7,10 +7,12 @@ import { Badge } from '../../components/Badge'
 import { Button } from '../../components/Button'
 import { Empty } from '../../components/Empty'
 import { Skeleton } from '../../components/Skeleton'
-import { StateBadge } from '../../components/StateBadge'
+import { StateBadge, StatusBadge } from '../../components/StateBadge'
 import { Tabs } from '../../components/Tabs'
 import { Time } from '../../components/Time'
 import { Untrusted } from '../../components/Untrusted'
+import { tunnelPath } from '../edge/TunnelDetail'
+import { moveText, nodeLink, replicaLevelText, replicaTone } from '../nodes/nodes'
 import { AdoptDialog, inTheWay } from './AdoptDialog'
 import { ClaimPanel } from './ClaimPanel'
 // The extensions are named: diagnosis.ts sits beside Diagnosis.tsx, and a
@@ -23,6 +25,12 @@ import { allowHostLink, holderOf, isManual, isWildcard, manualPrefix, openableUR
 import { Timeline } from './Timeline'
 
 export const diagnosisTab = 'Diagnosis of the current holder'
+
+function tunnelOf(st: State, route: RouteView) {
+  const p = route.placement
+  if (p?.kind === 'pinned') return st.tunnels.find((t) => t.kind === 'pinned' && t.name === p.tunnel && t.accountId === route.accountId)
+  return st.tunnels.find((t) => t.kind !== 'pinned' && t.accountId === route.accountId)
+}
 
 function accountName(st: State, id: string): string | undefined {
   for (const c of st.credentials) {
@@ -37,17 +45,35 @@ function ownerLink(owner: string): string | undefined {
   return /^(qemu|lxc)\/[0-9]+$/.test(owner) ? `/guests/${owner}` : undefined
 }
 
+// elsewhere is the node that runs the guest of a route when the path was
+// proven on another one: the port of that path is where the proving node
+// sees the guest, its uplink, and never the guest's own port. Only a node
+// that vouched for the guest's port is known to run it.
+function elsewhere(route: RouteView): string | undefined {
+  const path = route.path
+  if (!path?.port) return undefined
+  const host = (route.replicas ?? []).find((r) => r.attested && r.attestedBy)?.attestedBy
+  return host && host !== path.node ? host : undefined
+}
+
 // PathLines are the path the route was proven on, how the node reaches the
 // guest when that is through the leg of a network, when it was proven last,
 // and since when the guest has been bound there.
 function PathLines({ route, nodeZone }: { route: RouteView; nodeZone?: string }) {
   const path = route.path
   const reach = reachText(path)
+  const host = elsewhere(route)
   return (
     <>
       <dt>Path</dt>
       <dd>
         <Untrusted text={pathText(path)} />
+        {host && path && (
+          <p className="field-hint">
+            The guest runs on <Untrusted className="mono" text={host} />: <Untrusted className="mono" text={path.port ?? ''} /> is where{' '}
+            <Untrusted className="mono" text={path.node} /> sees it, not the port of the guest.
+          </p>
+        )}
       </dd>
       {reach && (
         <>
@@ -78,11 +104,93 @@ function PathLines({ route, nodeZone }: { route: RouteView; nodeZone?: string })
   )
 }
 
+// ClusterLines are the placement of a route on a cluster, a move of it
+// under way, and how its target fares on each replica of its tunnel: the
+// level each proved, port (attested by pve1) where the forwarding table of
+// the node that runs the guest vouched for the port, and what fails where.
+function ClusterLines({ route, nodeZone }: { route: RouteView; nodeZone?: string }) {
+  const p = route.placement
+  const replicas = route.replicas ?? []
+  if (!p && replicas.length === 0) return null
+  return (
+    <>
+      {p && (
+        <>
+          <dt>Placement</dt>
+          <dd>
+            {p.kind === 'pinned' ? (
+              <>
+                pinned to{' '}
+                {p.node ? (
+                  <Link to={nodeLink(p.node)} className="mono">
+                    <Untrusted text={p.node} />
+                  </Link>
+                ) : (
+                  'a node'
+                )}{' '}
+                (tunnel <Untrusted className="mono" text={p.tunnel} />)
+              </>
+            ) : (
+              <>
+                shared tunnel <Untrusted className="mono" text={p.tunnel} />
+              </>
+            )}
+            {p.why && (
+              <p className="field-hint">
+                <Untrusted text={p.why} />
+              </p>
+            )}
+          </dd>
+          {p.move && (
+            <>
+              <dt>Move</dt>
+              <dd>
+                <Untrusted text={moveText(p.move)} />
+                {p.move.since && !unset(p.move.since) && (
+                  <p className="field-hint">
+                    Since <Time at={p.move.since} nodeZone={nodeZone} />.
+                  </p>
+                )}
+              </dd>
+            </>
+          )}
+        </>
+      )}
+      {replicas.length > 0 && (
+        <>
+          <dt>Replicas</dt>
+          <dd>
+            <ul className="replica-list" aria-label="Replicas">
+              {replicas.map((r) => (
+                <li key={r.node}>
+                  <Link to={nodeLink(r.node)} className="mono">
+                    <Untrusted text={r.node} />
+                  </Link>
+                  <Badge outline>
+                    <Untrusted text={replicaLevelText(r)} />
+                  </Badge>
+                  <StatusBadge tone={replicaTone(r)}>{r.ok ? (r.inSet ? 'reached, in its set' : 'reached, not in its set yet') : 'not reached'}</StatusBadge>
+                  {r.reason && (
+                    <span className="muted">
+                      <Untrusted text={r.reason} />
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="field-hint">A route is placed in the shared tunnel only while every replica reaches its target at or above the identity minimum and holds it in its egress set.</p>
+          </dd>
+        </>
+      )}
+    </>
+  )
+}
+
 function Overview({ route, st, admin }: { route: RouteView; st: State; admin: boolean }) {
   const nodeZone = useApp((s) => s.session?.nodeZone)
   const allow = admin ? allowHostLink(route) : undefined
   const to = ownerLink(route.owner)
-  const tunnel = route.accountId ? st.tunnels.find((t) => t.accountId === route.accountId) : undefined
+  const tunnel = route.accountId ? tunnelOf(st, route) : undefined
   const rule = route.rule
   const ruleRows: [string, string][] = rule
     ? ([
@@ -171,19 +279,27 @@ function Overview({ route, st, admin }: { route: RouteView; st: State; admin: bo
           <>
             <dt>Tunnel</dt>
             <dd>
-              <Link to={`/edge/tunnels/${encodeURIComponent(route.accountId)}`}>
+              <Link to={tunnelPath(route.accountId, tunnel?.kind === 'pinned' ? tunnel.name : undefined)}>
                 account <Untrusted text={accountName(st, route.accountId) ?? route.accountId} />
-                {tunnel?.id && (
+                {tunnel?.kind === 'pinned' ? (
                   <>
                     {' '}
-                    · <Untrusted className="mono" text={tunnel.id.slice(0, 8)} />
+                    · pinned to <Untrusted className="mono" text={tunnel.node ?? ''} />
                   </>
+                ) : (
+                  tunnel?.id && (
+                    <>
+                      {' '}
+                      · <Untrusted className="mono" text={tunnel.id.slice(0, 8)} />
+                    </>
+                  )
                 )}
               </Link>
             </dd>
           </>
         )}
         <PathLines route={route} nodeZone={nodeZone} />
+        <ClusterLines route={route} nodeZone={nodeZone} />
         {(route.candidates ?? []).length > 0 && (
           <>
             <dt>Candidates</dt>

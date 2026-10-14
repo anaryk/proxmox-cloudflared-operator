@@ -5,6 +5,7 @@ import { type AppStore, StoreProvider } from '../../api/store'
 import type { Event, RouteSeries, State } from '../../api/types.gen'
 import { ToastProvider } from '../../components/Toast'
 import claims from '../../fixtures/claims.json'
+import cluster from '../../fixtures/cluster.json'
 import populated from '../../fixtures/populated.json'
 import scenario from '../../fixtures/scenario-populated.json'
 import { fakeStore, flush } from '../../test/store'
@@ -135,6 +136,69 @@ describe('the overview of a route', () => {
     expect(screen.getByText('This route is gone')).toBeTruthy()
     expect(screen.getByText(/asks for/).textContent).toBe('qemu/999 asks for www.example.com no longer.')
     expect(screen.getByRole('link', { name: 'web-2 qemu/102' }).getAttribute('href')).toBe('/routes/www.example.com?owner=qemu%2F102')
+  })
+})
+
+describe('a route on a cluster', () => {
+  const clustered = cluster as unknown as State
+
+  test('a shared route: its tunnel, every replica, and port (attested) with the node that vouched', async () => {
+    stubFetch()
+    const { store } = await fakeStore({ state: clustered })
+    show(store, 'www.example.com', 'qemu/101')
+    expect(detail('Placement')?.textContent).toBe('shared tunnel pco-abc123')
+    const replicas = screen.getByRole('list', { name: 'Replicas' })
+    const items = within(replicas).getAllByRole('listitem').map((li) => li.textContent)
+    expect(items).toEqual(['pve1portreached, in its set', 'pve2port (attested by pve1)reached, in its set'])
+    expect(within(replicas).getByRole('link', { name: 'pve2' }).getAttribute('href')).toBe('/nodes/pve2')
+    expect(detail('Move')).toBeFalsy()
+  })
+
+  test('a pinned route: its node, why, and the pinned tunnel it is served by', async () => {
+    stubFetch()
+    const { store } = await fakeStore({ state: clustered })
+    show(store, 'git.example.com', 'qemu/110')
+    const placement = detail('Placement')
+    expect(placement?.textContent).toBe('pinned to pve2 (tunnel pco-abc123-pve2)pve1 does not reach it while pve2 does')
+    expect(within(placement as HTMLElement).getByRole('link', { name: 'pve2' }).getAttribute('href')).toBe('/nodes/pve2')
+    const tunnel = within(detail('Tunnel') as HTMLElement).getByRole('link')
+    expect(tunnel.textContent).toBe('account Main · pinned to pve2')
+    expect(tunnel.getAttribute('href')).toBe('/edge/tunnels/acc1?tunnel=pco-abc123-pve2')
+  })
+
+  test('a move between tunnels in progress, and since when', async () => {
+    stubFetch()
+    const { store } = await fakeStore({ state: clustered })
+    show(store, 'grafana.example.com', 'lxc/205')
+    expect(detail('Move')?.textContent).toContain('moving from pco-abc123-pve2 to pco-abc123: its connectors run the configuration with them')
+    expect(detail('Move')?.querySelector('time')?.getAttribute('datetime')).toBe('2026-10-01T11:58:00Z')
+  })
+
+  test('a failing replica says why, and a route seen through an uplink is not shown as the guest’s own port', async () => {
+    stubFetch()
+    const st = structuredClone(clustered)
+    const www = st.routes.find((r) => r.hostname === 'www.example.com' && r.owner === 'qemu/101')
+    if (!www?.path) throw new Error('no route')
+    www.path.port = 'enp3s0'
+    www.replicas = [
+      { node: 'pve1', level: 'port', attested: true, attestedBy: 'pve2', ok: true, inSet: true },
+      { node: 'pve2', ok: false, inSet: false, reason: 'no answer on port 8080' },
+    ]
+    const { store } = await fakeStore({ state: st })
+    show(store, 'www.example.com', 'qemu/101')
+    expect(detail('Path')?.textContent).toBe('pve1 · vmbr0 · VLAN 20 · enp3s0The guest runs on pve2: enp3s0 is where pve1 sees it, not the port of the guest.')
+    const items = within(screen.getByRole('list', { name: 'Replicas' }))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent)
+    expect(items).toEqual(['pve1port (attested by pve2)reached, in its set', 'pve2-not reachedno answer on port 8080'])
+  })
+
+  test('a route of a node alone shows no placement and no replicas', async () => {
+    stubFetch()
+    const { store } = await fakeStore({ state: populated })
+    show(store, 'www.example.com', 'qemu/101')
+    expect(detail('Placement')).toBeFalsy()
+    expect(screen.queryByRole('list', { name: 'Replicas' })).toBeNull()
   })
 })
 

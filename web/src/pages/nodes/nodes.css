@@ -55,17 +55,3 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-
-.replica-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.replica-list li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  padding: 2px 0;
-}

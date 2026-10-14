@@ -116,12 +116,13 @@ export function nodeNameIssue(text: string): string | undefined {
   return undefined
 }
 
-// replicaLevelText is the level a replica proved: port (attested) when the
-// hosting node's forwarding table vouched for the port, which only a host
-// agent's word is.
-export function replicaLevelText(r: Pick<ReplicaView, 'level' | 'attested'>): string {
+// replicaLevelText is the level a replica proved: port (attested by pve1)
+// when the forwarding table of pve1, the node that runs the guest, vouched
+// for the port. An attestation is never shown without its node, so a port
+// another node saw is not read as one this replica proved.
+export function replicaLevelText(r: Pick<ReplicaView, 'level' | 'attested' | 'attestedBy'>): string {
   if (!r.level) return '-'
-  return r.attested ? `${r.level} (attested)` : r.level
+  return r.attested && r.attestedBy ? `${r.level} (attested by ${r.attestedBy})` : r.level
 }
 
 // replicaTone is the colour of a replica: reaching the target and holding

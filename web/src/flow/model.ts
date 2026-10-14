@@ -82,6 +82,15 @@ export const connectorNodeId = (account: string): string => `connector:${account
 export const pinnedEdgeId = (account: string, node: string): string => `edge:${account}:${node}`
 export const replicaNodeId = (account: string, node: string, pinned = false): string => `replica:${account}:${node}${pinned ? ':pinned' : ''}`
 
+// tunnelOfEdge is the tunnel an edge card of the map stands for: the
+// account's tunnel, or the one pinned to the node its id names.
+export function tunnelOfEdge(st: Pick<State, 'tunnels'>, id: string): TunnelView | undefined {
+  const [kind, account, node] = id.split(':')
+  if (kind !== 'edge' || !account) return undefined
+  if (node) return st.tunnels.find((t) => t.kind === 'pinned' && t.accountId === account && t.node === node)
+  return st.tunnels.find((t) => t.accountId === account && t.kind !== 'pinned')
+}
+
 // replicaOf reads a replica's id back: the account of its tunnel, its
 // node, and whether the tunnel is pinned to it.
 export function replicaOf(id: string): { account: string; node: string; pinned: boolean } | undefined {
@@ -655,8 +664,8 @@ function routeChain(ix: Index, r: RouteView): Chain {
 }
 
 // replicasStep says how the route fares on each replica of its tunnel: the
-// level each proved, port (attested) where the hosting node vouched, and
-// what fails where.
+// level each proved, port (attested by pve1) where the node that runs the
+// guest vouched, and what fails where.
 function replicasStep(replicas: readonly ReplicaView[]): ChainStep {
   const words = replicas.map((rv) => {
     if (!rv.ok) return `${rv.node}: not reached${rv.reason ? ` (${rv.reason})` : ''}`

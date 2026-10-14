@@ -91,7 +91,7 @@ function Body({ view }: { view: View }) {
     case 'tunnels':
       return <Tunnels />
     case 'tunnel':
-      return <TunnelDetail accountId={view.account} variant="page" />
+      return <TunnelDetail accountId={view.account} tunnel={view.tunnel} variant="page" />
   }
   return <p className="muted">This page is not part of this build yet.</p>
 }

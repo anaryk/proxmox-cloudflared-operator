@@ -9,7 +9,7 @@ import { Skeleton } from '../../components/Skeleton'
 import { type Column, Table } from '../../components/Table'
 import { Untrusted } from '../../components/Untrusted'
 import { Card, planEntry, unset } from '../kit'
-import { connectorLine, connectorOf, rolloutText, tunnelLabel, tunnelPath, verifiedLine } from './TunnelDetail'
+import { connectorLine, connectorOf, rolloutText, tunnelLabel, tunnelPathOf, verifiedLine } from './TunnelDetail'
 
 // Tunnels is /edge/tunnels: the tunnel of the install in each account, told
 // apart by the account, with what the last cycle found of each and the
@@ -28,7 +28,7 @@ export function Tunnels(): JSX.Element {
       header: 'Tunnel',
       lead: true,
       cell: (t) => (
-        <Link to={tunnelPath(t.accountId)}>
+        <Link to={tunnelPathOf(t)}>
           <Untrusted text={tunnelLabel(st, t)} />
         </Link>
       ),
@@ -67,7 +67,7 @@ export function Tunnels(): JSX.Element {
             {unset(st.at) ? null : <p>No tunnel of this install is known yet.</p>}
           </Empty>
         ) : (
-          <Table label="Tunnels" columns={columns} rows={st.tunnels} rowKey={(t) => t.accountId} height={360} onActivate={(t) => navigate(tunnelPath(t.accountId))} />
+          <Table label="Tunnels" columns={columns} rows={st.tunnels} rowKey={(t) => `${t.accountId} ${t.name}`} height={360} onActivate={(t) => navigate(tunnelPathOf(t))} />
         )}
       </Card>
     </>
