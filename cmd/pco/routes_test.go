@@ -33,6 +33,7 @@ func TestRoutesOfAnEarlierCycleSaySo(t *testing.T) {
 			require.True(t, strings.HasPrefix(res.out, tt.line+"HOSTNAME "), res.out)
 
 			res = r.run("", "routes", "--state", "withdrawn")
+			require.NoError(t, res.err, res.errOut)
 			require.True(t, strings.HasPrefix(res.out, tt.line+"No routes in state withdrawn.\n"), res.out)
 		})
 	}
