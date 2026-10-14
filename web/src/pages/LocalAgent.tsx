@@ -109,11 +109,14 @@ export function Agent({ agent }: { agent: AgentView }) {
 // LocalAgent is /agent: the agent of this node as it sees itself, which
 // every node answers for itself, whatever its role. On a node that does
 // not hold the lease it is what the page can show: the controller's pages
-// are served on the controller.
+// are served on the controller. The agent's view is for admins only, as it
+// names the certificate and the controller it follows; a reader gets the
+// lease from the state and is not sent for a refusal.
 export function LocalAgent(): JSX.Element {
   const st = useApp((s) => s.state)
   const digest = useApp((s) => s.state?.digest)
-  const got = useResource<AgentView>('/api/v1/local/agent', digest)
+  const admin = useApp((s) => s.session?.role === 'admin')
+  const got = useResource<AgentView>(admin ? '/api/v1/local/agent' : undefined, digest)
   return (
     <>
       <Head title="This node" description="The agent of this node as it sees itself: whom it follows, what it applied last and what it runs." />
@@ -131,7 +134,15 @@ export function LocalAgent(): JSX.Element {
         </p>
       )}
       <Card id="agent-self" title="Agent">
-        {got.error ? <Failure error={got.error} onTryAgain={got.reload} /> : got.data ? <Agent agent={got.data} /> : <Skeleton lines={6} label="Loading the agent" />}
+        {!admin ? (
+          <p>This page is for admins: the agent of this node names its certificate and the controller it follows.</p>
+        ) : got.error ? (
+          <Failure error={got.error} onTryAgain={got.reload} />
+        ) : got.data ? (
+          <Agent agent={got.data} />
+        ) : (
+          <Skeleton lines={6} label="Loading the agent" />
+        )}
       </Card>
     </>
   )

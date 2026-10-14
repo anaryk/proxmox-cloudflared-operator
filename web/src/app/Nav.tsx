@@ -129,7 +129,8 @@ export function Nav({ open, collapsed, onCollapse, onAbout }: { open: boolean; c
             count: c.nodes,
             items: [
               { section: 'nodes' as const, to: '/nodes', label: 'Nodes', Icon: NodesIcon, count: c.nodes, why: 'nodes that need a person' },
-              { section: 'agent' as const, to: '/agent', label: 'This node', Icon: AgentIcon },
+              // What the agent of this node says of itself is for admins.
+              ...(role === 'admin' ? [{ section: 'agent' as const, to: '/agent', label: 'This node', Icon: AgentIcon }] : []),
             ],
           },
         ]

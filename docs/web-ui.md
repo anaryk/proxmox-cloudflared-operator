@@ -615,7 +615,9 @@ finished, and a cluster that is not quorate.
 On a node that does not hold the lease, while no controller is known, the page is that of the
 node's own agent, This node (`GET /api/v1/local/agent`, for an admin): the controller it follows, the epoch, the snapshot it applied last
 and how old it is, its connectors, its egress set and gateway, and its local problems. Every
-action is refused there; the controller's pages are served on the controller.
+action is refused there; the controller's pages are served on the controller. The navigation
+offers This node to admins only; a reader who opens `/agent` is told the page is for admins,
+and still sees whether this node holds the lease and which node does.
 
 ## Events
 

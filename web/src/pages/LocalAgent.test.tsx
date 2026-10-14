@@ -67,3 +67,17 @@ test('on a node that does not hold the lease the page says so, and the daemon’
   expect(note.textContent).toContain('pve2 is the controller')
   await screen.findByRole('alert')
 })
+
+test('a reader is told the page is for admins, the agent is not asked, and the lease is still said', async () => {
+  const sent = stubApi({ 'GET /api/v1/local/agent': { status: 200, body: agent } })
+  const other: State = { ...(populated as unknown as State), lease: { holder: 'pve2', generation: 7, refreshAge: 0, valid: false } }
+  const { store } = await fakeStore({ state: other, session: { role: 'reader' } })
+  renderPage(store, <LocalAgent />)
+  const card = screen.getByRole('region', { name: 'Agent' })
+  expect(card.textContent).toContain('This page is for admins')
+  const note = screen.getByText((_, el) => el?.tagName === 'P' && /does not hold the lease/.test(el.textContent ?? ''))
+  expect(note.textContent).toContain('pve2 is the controller')
+  await new Promise((r) => setTimeout(r, 0))
+  expect(sent.filter((s) => s.path.startsWith('/api/v1/local/agent'))).toEqual([])
+  expect(screen.queryByRole('alert')).toBeNull()
+})

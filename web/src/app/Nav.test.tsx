@@ -88,3 +88,15 @@ test('on a cluster the group of the cluster, with the nodes that need a person',
   expect(links[0]?.getAttribute('aria-current')).toBe('page')
   expect(links.map((l) => l.getAttribute('href'))).toEqual(['/nodes', '/agent'])
 })
+
+test('a reader is not offered the agent of this node, which is for admins', async () => {
+  const { store } = await fakeStore({ state: cluster, session: { role: 'reader' } })
+  navigate('/nodes')
+  render(
+    <StoreProvider store={store}>
+      <Nav open={false} collapsed={false} onCollapse={() => {}} onAbout={() => {}} />
+    </StoreProvider>,
+  )
+  const links = within(screen.getByRole('group', { name: 'Cluster' })).getAllByRole('link')
+  expect(links.map((l) => l.getAttribute('href'))).toEqual(['/nodes'])
+})

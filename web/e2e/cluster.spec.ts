@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { expect, signIn, test } from './fixtures'
+import { expect, reader, signIn, test } from './fixtures'
 
 // A cluster of three nodes, as the cluster scenario of the fake daemon has
 // it: pve1 the controller, pve2 a host node with a tunnel pinned to it, and
@@ -99,4 +99,31 @@ test('the map has a replica per node, and a replica opens its node', async ({ pa
 test('the settings show the cluster block as the file has it', async ({ page, pco }) => {
   await signIn(page, pco, '/settings')
   await expect(page.getByRole('region', { name: 'Cluster' })).toContainText('agentNetwork10.10.0.0/24')
+})
+
+test('the agent of this node, as an admin opens it from the navigation', async ({ page, pco, fake, viewport }) => {
+  await signIn(page, pco, '/nodes')
+  await fake.clearCalls()
+  if ((viewport?.width ?? 0) < 720) await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('navigation').first().getByRole('link', { name: 'This node' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: 'This node' })).toBeVisible()
+  const card = page.getByRole('region', { name: 'Agent' })
+  await expect(card).toContainText('pve1 (this node)')
+  await expect(card).toContainText(enrolled('pve1'))
+  await expect(card).toContainText('sequence 42')
+  expect(await fake.calls('AgentView')).not.toEqual([])
+})
+
+test('a reader is not offered the agent of this node, and its page says it is for admins', async ({ page, pco, fake, viewport }) => {
+  await signIn(page, pco, '/nodes', reader)
+  if ((viewport?.width ?? 0) < 720) await page.getByRole('button', { name: 'Open navigation' }).click()
+  const group = page.getByRole('navigation').first().getByRole('group', { name: 'Cluster' })
+  await expect(group.getByRole('link', { name: /^Nodes/ })).toBeVisible()
+  await expect(group.getByRole('link', { name: 'This node' })).toHaveCount(0)
+  await fake.clearCalls()
+  await page.goto('/agent')
+  await expect(page.getByRole('heading', { level: 1, name: 'This node' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Agent' })).toContainText('This page is for admins')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(await fake.calls('AgentView')).toEqual([])
 })
