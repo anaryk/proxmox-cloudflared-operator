@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -62,12 +63,15 @@ func (b *hostBackend) sync(ctx context.Context, legs []Leg, services []Service, 
 		}
 		b.pins = slices.Clone(pins)
 	}
-	if err := b.syncSticky(sticky, false); err != nil {
-		return nil, err
-	}
+	// The guard is loaded with every card even when an entry failed: one
+	// card's port must not leave the others unguarded.
+	stickyErr := b.syncSticky(sticky, false)
 	b.sticky = slices.Clone(sticky)
 	if err := b.ensureGuard(ctx); err != nil {
-		return nil, err
+		return nil, errors.Join(stickyErr, err)
+	}
+	if stickyErr != nil {
+		return nil, stickyErr
 	}
 	announceRaised(ctx, b.sys, valid, b.records, b.sleep, b.log)
 	return states, nil
@@ -672,66 +676,79 @@ func managedMAC(mac net.HardwareAddr) bool {
 // are not given are removed from every port of their bridges, those no Sync
 // of this process made among them.
 func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
-	var placed []Sticky
+	var placed, failed []Sticky
+	var errs []error
 	for _, s := range sticky {
 		if s.Port == "" || len(s.MAC) != 6 {
 			continue
 		}
-		port, err := b.stickyPort(s)
+		port, err := b.placeSticky(s)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			failed = append(failed, s)
 		}
-		if port == "" {
-			continue
+		if port != "" {
+			s.Port = port
+			placed = append(placed, s)
 		}
-		if err := b.ensureFDB(port, s.MAC, s.VLAN); err != nil {
-			// A port that left the bridge or went since it was read, its
-			// guest stopping or starting right then, is pending: the entry
-			// stays parked, and the next Sync or the port's event moves it.
-			again, rerr := b.stickyPort(s)
-			if rerr != nil {
-				return rerr
-			}
-			if again == port {
-				return err
-			}
-			b.log.Debug().Err(err).Str("port", port).Msg("the port of a managed guest changed while its sticky entry was added")
-			if port = again; port == "" {
-				continue
-			}
-			if err := b.ensureFDB(port, s.MAC, s.VLAN); err != nil {
-				return err
-			}
-		}
-		s.Port = port
-		placed = append(placed, s)
 	}
 	ports, err := b.stalePorts(sticky, every)
 	if err != nil {
-		return err
+		return errors.Join(append(errs, err)...)
 	}
 	for _, port := range ports {
 		have, err := b.sys.fdb(port)
 		if err != nil {
-			return fmt.Errorf("reading the forwarding entries of %s: %w", port, err)
+			return errors.Join(append(errs, fmt.Errorf("reading the forwarding entries of %s: %w", port, err))...)
 		}
 		for _, e := range have {
+			// The entry a card had stays while its own could not be placed.
 			if !e.static || !e.sticky || !managedMAC(e.mac) || slices.ContainsFunc(placed, func(s Sticky) bool {
 				return s.Port == port && stickyOf(e, s.MAC, s.VLAN)
-			}) {
+			}) || slices.ContainsFunc(failed, func(s Sticky) bool { return macEqual(e.mac, s.MAC) }) {
 				continue
 			}
 			if err := b.sys.delFDB(port, e); err != nil {
-				return fmt.Errorf("removing the sticky entry of %s on %s: %w", e.mac, port, err)
+				return errors.Join(append(errs, fmt.Errorf("removing the sticky entry of %s on %s: %w", e.mac, port, err))...)
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// placeSticky gives a card its entry and returns the port the entry is on,
+// "" for none. An error is the card's own: the others are placed all the
+// same.
+func (b *hostBackend) placeSticky(s Sticky) (string, error) {
+	port, err := b.stickyPort(s)
+	if port == "" {
+		return "", err
+	}
+	ferr := b.ensureFDB(port, s.MAC, s.VLAN)
+	if ferr == nil {
+		return port, err
+	}
+	// A port that left the bridge or went since it was read, its guest
+	// stopping or starting right then, is pending: the entry stays parked,
+	// and the next Sync or the port's event moves it.
+	again, aerr := b.stickyPort(s)
+	if again == port || again == "" {
+		if again == port {
+			return "", errors.Join(err, ferr)
+		}
+		return "", errors.Join(ferr, aerr)
+	}
+	b.log.Debug().Err(ferr).Str("port", port).Msg("the port of a managed guest changed while its sticky entry was added")
+	if ferr := b.ensureFDB(again, s.MAC, s.VLAN); ferr != nil {
+		return "", errors.Join(aerr, ferr)
+	}
+	return again, aerr
 }
 
 // stickyPort is where the entry of a guest's card goes: its port while that
 // is a port of the bridge, the parking port while the port is absent or not
-// on the bridge yet, "" for nowhere. A port on another bridge is an error.
+// on the bridge yet, "" for nowhere. A port on another bridge is an error,
+// and its MAC is kept on the parking port meanwhile.
 func (b *hostBackend) stickyPort(s Sticky) (string, error) {
 	l, ok, err := b.sys.link(onHost, s.Port)
 	if err != nil {
@@ -741,7 +758,7 @@ func (b *hostBackend) stickyPort(s Sticky) (string, error) {
 	case portOnBridge:
 		return s.Port, nil
 	case portElsewhere:
-		return "", fmt.Errorf("%s is a port of %s, not of %s", s.Port, l.master, s.Bridge)
+		return b.parkingPort(s.Bridge), fmt.Errorf("%s is a port of %s, not of %s", s.Port, l.master, s.Bridge)
 	}
 	return b.parkingPort(s.Bridge), nil
 }

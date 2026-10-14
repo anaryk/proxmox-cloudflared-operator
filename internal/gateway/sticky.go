@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -65,9 +66,7 @@ func ApplySticky(ctx context.Context, b Backend, sticky []Sticky) error {
 func (b *hostBackend) keepSticky(ctx context.Context, sticky []Sticky) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.syncSticky(sticky, false); err != nil {
-		return err
-	}
+	stickyErr := b.syncSticky(sticky, false)
 	b.sticky = slices.Clone(sticky)
-	return b.ensureGuard(ctx)
+	return errors.Join(stickyErr, b.ensureGuard(ctx))
 }

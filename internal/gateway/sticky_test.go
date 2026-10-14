@@ -283,6 +283,49 @@ func TestAPortOnAnotherBridgeIsADifference(t *testing.T) {
 	require.True(t, parked(h, guest), "the MAC stays pinned to the leg")
 }
 
+// One card whose entry cannot be placed costs the others nothing: they get
+// their entries, the guard is loaded with every card, and the error of the
+// one is returned after.
+func TestOneCardThatFailsLeavesTheOthersTheirEntriesAndTheGuard(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		t.Run(map[bool]string{false: "Sync", true: "ApplySticky"}[apply], func(t *testing.T) {
+			h := newHarness(t).node()
+			h.up(t)
+			h.sync(t, []Leg{legM}, nil, nil, nil)
+			h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, master: "vmbr0"}}
+			h.sys.host.links["veth102i1"] = &fakeLink{link: link{name: "veth102i1", kind: "veth", up: true, master: ManagedBridge}}
+			h.sys.host.links["veth104i1"] = &fakeLink{link: link{name: "veth104i1", kind: "veth", up: true, master: ManagedBridge}}
+			h.sys.fail["sticky veth104i1"] = syscall.ENOBUFS
+			sticky := []Sticky{
+				{MAC: mac("06:50:43:4f:76:02"), Bridge: ManagedBridge, Port: "tap101i1", Addr: addr("10.203.118.2")},
+				{MAC: mac("06:50:43:4f:76:03"), Bridge: ManagedBridge, Port: "veth102i1", Addr: addr("10.203.118.3")},
+				{MAC: mac("06:50:43:4f:76:04"), Bridge: ManagedBridge, Port: "tap103i1", Addr: addr("10.203.118.4")},
+				{MAC: mac("06:50:43:4f:76:05"), Bridge: ManagedBridge, Port: "veth104i1", Addr: addr("10.203.118.5")},
+			}
+			// The leg's end already holds the parked entry of veth104i1's card,
+			// which its failure must not take away.
+			require.NoError(t, h.sys.addSticky("vethpco3", mac("06:50:43:4f:76:05"), 0))
+			delete(h.hostNft.tables, guardFamilyName)
+
+			var err error
+			if apply {
+				err = ApplySticky(t.Context(), h.b, sticky)
+			} else {
+				_, err = h.b.Sync(t.Context(), []Leg{legM}, nil, nil, sticky)
+			}
+
+			require.ErrorContains(t, err, "tap101i1 is a port of vmbr0, not of pconet")
+			require.ErrorIs(t, err, syscall.ENOBUFS)
+			require.True(t, slices.ContainsFunc(h.sys.host.links["veth102i1"].fdb, func(e fdbEntry) bool { return stickyOf(e, mac("06:50:43:4f:76:03"), 0) }))
+			require.True(t, parked(h, mac("06:50:43:4f:76:04")), "an absent port waits on the leg")
+			require.True(t, parked(h, mac("06:50:43:4f:76:02")), "a port on another bridge leaves its MAC pinned to the leg")
+			require.True(t, parked(h, mac("06:50:43:4f:76:05")), "an entry that failed keeps the one it had")
+			require.NotNil(t, h.hostNft.tables[guardFamilyName], "the guard is loaded")
+			require.Equal(t, guardElements(sticky)[setCards], h.hostNft.tables[guardFamilyName].elems[setCards])
+		})
+	}
+}
+
 // An entry that cannot be added on a port of the bridge is an error still.
 func TestAnEntryThatCannotBeAddedOnAPortOfTheBridgeFails(t *testing.T) {
 	h := newHarness(t).node()
