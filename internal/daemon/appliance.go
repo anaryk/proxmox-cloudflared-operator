@@ -147,7 +147,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	if a.KindName() == store.ApplianceAgent {
 		logStart(log, cfg, st)
-		return runApplianceAgent(ctx, cfg, deps, app, st, state)
+		return runApplianceAgent(ctx, cfg, deps, app, st, state, lock.check)
 	}
 	settings := startSettings(st, log)
 	logStart(log, cfg, st)
@@ -181,6 +181,9 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 		PinsOf:     st.Pins,
 	}
 	env.App = applianceDoctor(env, parts, state, local, app, deps)
+	if parts.cluster != nil {
+		env.Cluster = applianceDoctorCluster{st: st, eng: eng}
+	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{
 		table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log,

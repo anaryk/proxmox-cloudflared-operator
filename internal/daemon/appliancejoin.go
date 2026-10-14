@@ -46,9 +46,12 @@ type applianceJoins struct {
 	st      *store.Store
 	px      joinProxmox
 	install string
-	now     func() time.Time
-	rand    io.Reader
-	log     zerolog.Logger
+	// node is the controller's, whose file of security events holds those
+	// of the joins.
+	node string
+	now  func() time.Time
+	rand io.Reader
+	log  zerolog.Logger
 	// note tells the engine of an enrolment and its security events.
 	note func(node, msg string)
 
@@ -214,6 +217,7 @@ func (j *applianceJoins) contest(tok pki.JoinToken, node string, rev int64, foun
 	msg := fmt.Sprintf("node %s is contested: %s; pco node forget %s removes the entry, and a new token enrols the node again", node, why, node)
 	j.log.Warn().Str("node", node).Msg(msg)
 	j.tell(node, msg)
+	j.security(node, msg)
 }
 
 // misused holds the node of a token used more than once contested, also one
@@ -242,6 +246,7 @@ func (j *applianceJoins) misused(_ context.Context, rec store.JoinRecord) {
 		"and a new token enrols the node again", rec.Node, len(rec.Uses), rec.Node)
 	j.log.Warn().Str("node", rec.Node).Msg(msg)
 	j.tell(rec.Node, msg)
+	j.security(rec.Node, msg)
 }
 
 // usesOf are the uses of the record tok is of.
@@ -327,6 +332,18 @@ func (j *applianceJoins) ca() (pki.CA, error) {
 	}
 	return ca, nil
 }
+
+// security records a contested node in the audit trail of the controller.
+func (j *applianceJoins) security(node, msg string) {
+	e := store.SecurityEvent{At: j.now(), Level: "warn", Kind: securityKindEnrol, Subject: node, Message: msg, Node: j.node}
+	if err := j.st.AppendSecurityEvent(j.node, e); err != nil {
+		j.log.Warn().Err(err).Msg("recording a security event failed")
+	}
+}
+
+// securityKindEnrol is the kind of the security events of an enrolment, as
+// the agent endpoint records its own.
+const securityKindEnrol = "enrolment"
 
 func (j *applianceJoins) tell(node, msg string) {
 	if j.note != nil {

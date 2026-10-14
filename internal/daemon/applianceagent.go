@@ -19,6 +19,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
@@ -39,7 +40,7 @@ const agentCheckEvery = 30 * time.Second
 // container proves it is the one installed, on the node it was installed on,
 // with no principal able to reach into it. It runs no controller: the API on
 // its socket answers pco agent status and refuses the rest.
-func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app ApplianceDeps, st *store.Store, state applianceState) error {
+func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app ApplianceDeps, st *store.Store, state applianceState, lockCheck func() error) error {
 	log := cfg.Log
 	a := state.install.Appliance
 	client, err := pve.New(pve.Config{
@@ -74,10 +75,11 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	filter := newEgressFilter(deps.Nft, cfg.Paths.Local, deps.ConnectorUID, deps.Resolvers)
 	events := agent.NewEventLog(deps.Now)
 	r := &agentRun{log: log, now: deps.Now, flag: self.SetFlag}
+	checks := &agentDoctor{}
 	ag, err := agent.New(agent.Deps{
 		Node: a.Node, Kind: pki.KindAppliance, InstallID: state.install.ID, Store: st,
 		Resolver: res, Connectors: conns, Egress: filter, Blocked: filter.ov.Blocked, Gateway: agentGateway{gw},
-		Now: deps.Now, Log: log, Event: events.Add, Changed: r.trigger,
+		Now: deps.Now, Log: log, Event: events.Add, Changed: r.trigger, Doctor: checks.run,
 	})
 	if err != nil {
 		return fmt.Errorf("making the agent of node %s: %w", a.Node, err)
@@ -99,7 +101,7 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 		return eps
 	}}
 	r.guard = &agentGuard{
-		vmid: a.VMID, node: a.Node, ownUser: strings.SplitN(state.token.TokenID, "!", 2)[0],
+		vmid: a.VMID, node: a.Node, ownUser: tokenUser(state.token.TokenID),
 		verdict: func(ctx context.Context) appliance.Verdict { return self.Check(ctx, inv.Refresh(ctx)) },
 		placement: func(ctx context.Context) ([]pve.Resource, []pve.HAResource, error) {
 			res, err := client.Resources(ctx)
@@ -113,8 +115,32 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	}
 
 	gw.start(ctx)
+	env := &doctor.HostEnv{
+		Systemd: deps.Systemd, Proxmox: client, Interval: func() time.Duration { return agentCheckEvery }, Clock: deps.Now,
+		StoreCheck: applianceStore(app, cfg.Paths.Local, st), LockCheck: lockCheck, Binary: deps.Cloudflared, Dial: deps.Dial,
+		Timeout: deps.HostTimeout, Enabled: deps.UnitEnabled, FileState: deps.UnitFileState,
+		Cluster: agentContainerCluster{view: r.view},
+	}
+	user, _, _ := strings.Cut(state.token.TokenID, "!")
+	env.App = &doctor.ApplianceHost{
+		Host: env, Proxmox: client,
+		Install: doctor.Self{
+			VMID: a.VMID, Node: a.Node, Address: a.Endpoints[0].Address, ServerName: a.Endpoints[0].ServerName,
+			User: user, Token: state.token.TokenID, MACs: a.MACs,
+		},
+		StateDir: cfg.Paths.Local, Volume: app.Volume, Netlink: app.Netlink, NetNft: app.NetNft,
+		CloudflareURL: deps.CloudflareURL, Resolve: deps.Resolvers,
+	}
+	if app.Doctor != nil {
+		app.Doctor(env.App.(*doctor.ApplianceHost))
+	}
+	agentState := func() engine.State {
+		return engine.State{Profile: store.ProfileAppliance, Node: a.Node, At: deps.Now()}
+	}
+	doc := doctor.NewRunner(agentState, env, nil, deps.Now, log)
+	checks.set(doc)
 	gid, uids, webUID := socketAccess(deps.Accounts, log)
-	srv := api.New(&agentOnlyEngine{noStateEngine: newNoStateEngine(agentOnlyLine(a.Node), deps.Now(), agentCheckEvery), node: a.Node, view: r.view},
+	srv := api.New(&agentOnlyEngine{noStateEngine: newNoStateEngine(agentOnlyLine(a.Node), deps.Now(), agentCheckEvery), node: a.Node, view: r.view, doc: doc},
 		cfg.Version, uids, log)
 	srv.SetWebUID(webUID)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
@@ -127,6 +153,12 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
 	main := func(ctx context.Context) { r.run(ctx, deps.Sleep) }
 	return serve(ctx, srv, main, cfg.SocketPath, gid, deps.Notifier, nil, log, keep)
+}
+
+// tokenUser is the user of a token id.
+func tokenUser(tokenID string) string {
+	user, _, _ := strings.Cut(tokenID, "!")
+	return user
 }
 
 // agentOnlyLine is what an agent container answers for everything but its
@@ -151,7 +183,11 @@ type agentOnlyEngine struct {
 	*noStateEngine
 	node string
 	view func() agentproto.AgentView
+	doc  *doctor.Runner
 }
+
+// Doctor makes the checks of the container and its agent.
+func (e *agentOnlyEngine) Doctor(ctx context.Context) []doctor.Finding { return e.doc.AgentChecks(ctx) }
 
 func (e *agentOnlyEngine) RunsAs() (profile, node string) { return store.ProfileAppliance, e.node }
 

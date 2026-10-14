@@ -2,9 +2,7 @@ package daemon
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -14,7 +12,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // maxDoctorAnswer bounds the findings the controller reads of one agent's
@@ -49,24 +46,7 @@ func (d doctorCluster) Corosync() (members.Corosync, error) { return d.cp.readCo
 
 // CAExpires is when the current CA of the install ends; zero before setup
 // made one.
-func (d doctorCluster) CAExpires() (time.Time, error) {
-	ca, _, _, err := d.cp.st.CA()
-	switch {
-	case errors.Is(err, store.ErrNoCA):
-		return time.Time{}, nil
-	case err != nil:
-		return time.Time{}, err
-	}
-	b, _ := pem.Decode([]byte(ca.CertPEM))
-	if b == nil {
-		return time.Time{}, errors.New("the CA is not a certificate in PEM")
-	}
-	cert, err := x509.ParseCertificate(b.Bytes)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return cert.NotAfter, nil
-}
+func (d doctorCluster) CAExpires() (time.Time, error) { return caExpires(d.cp.st) }
 
 func (d doctorCluster) Facts() engine.ClusterFacts { return d.eng.ClusterFacts() }
 

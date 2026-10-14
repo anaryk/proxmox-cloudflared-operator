@@ -86,7 +86,7 @@ func newJoinTest(t *testing.T) *joinTest {
 		ID: "tok1", Node: "pve2", SecretSHA256: jt.tok.SecretHash(), CreatedAt: jt.now, Expires: jt.tok.Expires,
 	}))
 	jt.j = &applianceJoins{
-		st: st, px: jt.px, install: joinInstall, now: func() time.Time { return jt.now }, rand: rand.Reader, log: zerolog.Nop(),
+		st: st, px: jt.px, install: joinInstall, node: "pve1", now: func() time.Time { return jt.now }, rand: rand.Reader, log: zerolog.Nop(),
 		note: func(node, msg string) { jt.notes = append(jt.notes, node+": "+msg) },
 	}
 	return jt
@@ -185,6 +185,11 @@ func TestAContainerThatDoesNotMatchItsJoinIsContested(t *testing.T) {
 			require.Len(t, n.ContestedUses, 1, "every use of the token is shown")
 			require.Equal(t, tt.src, n.ContestedUses[0].Source)
 			require.Empty(t, n.CertSHA256, "no certificate was issued")
+			events, err := jt.st.SecurityEvents()
+			require.NoError(t, err)
+			require.Len(t, events, 1, "a security event")
+			require.Equal(t, "pve2", events[0].Subject)
+			require.Contains(t, events[0].Message, "node pve2 is contested")
 		})
 	}
 }
@@ -237,6 +242,10 @@ func TestATokenUsedTwiceHoldsItsNodeContested(t *testing.T) {
 	require.Equal(t, store.NodeContested, n.State)
 	require.Len(t, n.ContestedUses, 2)
 	require.Equal(t, agentVMID, n.VMID)
+	events, err := jt.st.SecurityEvents()
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Contains(t, events[0].Message, "its join token was used 2 times")
 }
 
 func TestAnEnrolledAgentRenewsAndTheOldCertificateIsNoLongerNamed(t *testing.T) {

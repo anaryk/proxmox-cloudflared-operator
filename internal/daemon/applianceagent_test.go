@@ -128,5 +128,14 @@ func TestAnAgentContainerWithoutATokenSaysWhatItNeeds(t *testing.T) {
 	_, err = d.client.Apply(t.Context(), false, "")
 	require.ErrorContains(t, err, "the pco agent of node pve1")
 	require.Empty(t, a.sysd.units(), "no connector")
+	findings, err := d.client.Doctor(t.Context())
+	require.NoError(t, err)
+	checks := map[string]string{}
+	for _, f := range findings {
+		checks[f.Check] = f.Detail
+	}
+	require.Contains(t, checks, "agent", "the agent container answers the doctor for its agent")
+	require.Contains(t, checks["agent"], "no certificate and no join token")
+	require.NotContains(t, checks, "state", "and not with the line of a container without state")
 	require.NoError(t, d.stop())
 }

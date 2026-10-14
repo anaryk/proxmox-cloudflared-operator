@@ -58,7 +58,7 @@ func newApplianceCluster(cfg Config, deps Deps, app ApplianceDeps, st *store.Sto
 		addrs: app.Net0Addrs, port: cmp.Or(deps.Cluster.Port, uint16(clusterapi.Port)), every: cmp.Or(deps.Cluster.Every, 10*time.Second),
 		now: deps.Now, rand: app.Rand, log: cfg.Log,
 	}
-	c.joins = &applianceJoins{st: st, px: px, install: c.install, now: deps.Now, rand: app.Rand, log: cfg.Log}
+	c.joins = &applianceJoins{st: st, px: px, install: c.install, node: c.node, now: deps.Now, rand: app.Rand, log: cfg.Log}
 	c.remote = newRemoteFleet(deps.Now, func() agentproto.Epoch {
 		w, found, err := st.Writer()
 		if err != nil || !found {
