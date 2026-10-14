@@ -476,7 +476,8 @@ func (f *fakeConnectors) Status(_ context.Context, id string) (connector.Status,
 	if !ok {
 		cid = defaultConnectorID
 	}
-	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, ConnectorID: cid, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
+	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, ConnectorID: cid, MetricsAddr: "127.0.0.1:20300", Install: testInstall,
+		TokenSHA256: connector.TokenDigest(f.tokens[id])}, nil
 }
 
 // setRefused makes Cloudflare refuse the token the connector of a tunnel runs

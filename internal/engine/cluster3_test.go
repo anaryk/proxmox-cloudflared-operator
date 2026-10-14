@@ -54,6 +54,9 @@ type agentAct struct {
 	legs map[string]string
 	// edit changes the status before it is reported.
 	edit func(st *agentproto.Status)
+	// tokens are, by tunnel, the run token the agent keeps: a snapshot
+	// gives one only when it changed.
+	tokens map[string]string
 }
 
 // world is three nodes of one install: this one, pve1, holds the lease;
@@ -152,7 +155,14 @@ func (w *world) statusOf(node string, act *agentAct) agentproto.Status {
 		st.EpochSeen, st.SeqApplied = snap.Epoch, snap.Seq
 		for _, tun := range snap.Tunnels {
 			if tun.Run {
-				st.Connectors = append(st.Connectors, connector.Status{TunnelID: tun.TunnelID, Active: true, Ready: true, Connections: 4, ConnectorID: node + "-" + tun.TunnelID})
+				if tok := tun.Token.Reveal(); tok != "" {
+					if act.tokens == nil {
+						act.tokens = map[string]string{}
+					}
+					act.tokens[tun.TunnelID] = tok
+				}
+				st.Connectors = append(st.Connectors, connector.Status{TunnelID: tun.TunnelID, Active: true, Ready: true, Connections: 4,
+					ConnectorID: node + "-" + tun.TunnelID, TokenSHA256: connector.TokenDigest(act.tokens[tun.TunnelID])})
 			}
 		}
 		for _, t := range snap.Targets {

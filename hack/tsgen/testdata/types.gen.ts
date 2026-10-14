@@ -206,6 +206,7 @@ export interface ConnectorStatus {
   install?: string
   tokenRefused?: boolean
   metricsPortHeld?: boolean
+  tokenSHA256?: string
 }
 
 // engine.CoverageView

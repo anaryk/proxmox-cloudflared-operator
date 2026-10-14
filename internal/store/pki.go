@@ -366,6 +366,10 @@ type TunnelsRotated struct {
 	// At is when a secret was last given: a connector runs with it only by
 	// a report sent after.
 	At time.Time `json:"at,omitzero"`
+	// Tokens are, by tunnel id, the digest of the run token of the new
+	// secret, as connector.TokenDigest makes it: a connector runs with the
+	// new secret only when it reports that digest.
+	Tokens map[string]string `json:"tokens,omitempty"`
 	// Connectors are, by tunnel id, the ids of the connectors the nodes
 	// ran, which are dropped at Cloudflare.
 	Connectors map[string][]string `json:"connectors,omitempty"`

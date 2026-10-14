@@ -196,7 +196,7 @@ func (e *Engine) rotateSecret(ctx context.Context, t reconcile.TunnelState) erro
 		return err
 	}
 	cleanErr := e.clients[t.CredentialID].CleanUpConnections(ctx, t.AccountID, t.ID)
-	if err := e.takeUpSecret(ctx, t); err != nil {
+	if _, err := e.takeUpSecret(ctx, t); err != nil {
 		return err
 	}
 	if cleanErr != nil {
@@ -228,10 +228,10 @@ func (e *Engine) patchSecret(ctx context.Context, t reconcile.TunnelState) error
 // takeUpSecret has the connectors of a tunnel whose secret was rotated take
 // the new token up: the connector on this node is restarted with it at once,
 // and the other nodes get it read anew for their next snapshot.
-func (e *Engine) takeUpSecret(ctx context.Context, t reconcile.TunnelState) error {
+func (e *Engine) takeUpSecret(ctx context.Context, t reconcile.TunnelState) (string, error) {
 	api := e.clients[t.CredentialID]
 	if api == nil {
-		return fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+		return "", fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
 	}
 	what := fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID)
 	// The connectors are listed in the next cycle: the rollout to the one
@@ -247,20 +247,20 @@ func (e *Engine) takeUpSecret(ctx context.Context, t reconcile.TunnelState) erro
 	}
 	if err != nil {
 		e.retries[t.ID] = tokenRetry{at: e.d.Now(), why: err.Error()}
-		return fmt.Errorf("the secret of %s was rotated, but its new token could not be read: %w; "+
+		return "", fmt.Errorf("the secret of %s was rotated, but its new token could not be read: %w; "+
 			"its connector on this node takes it up when Cloudflare refuses the old one", what, err)
 	}
 	if e.runsHere(t) {
 		a := e.fleet.made()
 		if a == nil {
-			return fmt.Errorf("the secret of %s was rotated, but the agent of this node does not run to restart its connector; "+
+			return "", fmt.Errorf("the secret of %s was rotated, but the agent of this node does not run to restart its connector; "+
 				"it takes the new token up when Cloudflare refuses the old one", what)
 		}
 		if err := a.Restart(ctx, t.ID, token); err != nil {
-			return fmt.Errorf("the secret of %s was rotated, but its connector on this node could not be restarted: %s", what, redact(err.Error(), token))
+			return "", fmt.Errorf("the secret of %s was rotated, but its connector on this node could not be restarted: %s", what, redact(err.Error(), token))
 		}
 	}
-	return nil
+	return connector.TokenDigest(token), nil
 }
 
 // rotateFor rotates the secret of a tunnel for nodes that are gone, as far
@@ -274,6 +274,11 @@ func (e *Engine) rotateFor(ctx context.Context, t reconcile.TunnelState, r *stor
 			return err
 		}
 		r.Rotated, r.At = append(r.Rotated, t.ID), e.d.Now()
+		// A secret given anew, as after a crash before the record showed
+		// the first, is taken up anew: the token taken up before is of a
+		// secret Cloudflare no longer takes.
+		r.TakenUp = slices.DeleteFunc(r.TakenUp, func(id string) bool { return id == t.ID })
+		delete(r.Tokens, t.ID)
 		if err := save(); err != nil {
 			return fmt.Errorf("recording the rotation of the secret of tunnel %s in account %s: %w", t.Name, t.AccountID, err)
 		}
@@ -286,9 +291,14 @@ func (e *Engine) rotateFor(ctx context.Context, t reconcile.TunnelState, r *stor
 		// follows it can be done too.
 		return err
 	}
-	if err := e.takeUpSecret(ctx, t); err != nil {
+	digest, err := e.takeUpSecret(ctx, t)
+	if err != nil {
 		return err
 	}
+	if r.Tokens == nil {
+		r.Tokens = map[string]string{}
+	}
+	r.Tokens[t.ID] = digest
 	if err := e.dropLost(ctx, t, r.Connectors[t.ID], r.At); err != nil {
 		return err
 	}

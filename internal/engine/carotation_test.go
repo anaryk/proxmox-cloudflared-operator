@@ -452,6 +452,11 @@ func TestTheConnectionsOfTheOldSecretEndAfterTheRollout(t *testing.T) {
 	require.NotContains(t, calls, "CleanUpConnections acc1 "+id)
 
 	w.acts["pve2"].edit = nil
+	// pve2 reports the new token only from the snapshot after the one it
+	// was given in: until then it runs the old one.
+	st = w.tick(time.Second)
+	require.Equal(t, stepRollout, st.Cluster.CARotation.Next, st.Problems)
+	require.NotContains(t, w.callsSince(n), "CleanUpConnections acc1 "+id)
 	st = w.tick(time.Second)
 	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
 	require.Equal(t, 1, count(w.callsSince(n), "CleanUpConnections acc1 "+id))

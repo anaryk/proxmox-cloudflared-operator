@@ -9,7 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -94,6 +96,45 @@ func TestARotationWhoseRecordCannotBeSavedIsNotGivenAgain(t *testing.T) {
 	_, found, err := w.store.RestoreRotation()
 	require.NoError(t, err)
 	require.False(t, found, "done")
+}
+
+// A connector counts as running with the new secret only when it reports
+// the token of it: one that is ready after the secret was given, with the
+// old token still, holds the end of the connections.
+func TestARotationWaitsForTheConnectorsToRunTheNewToken(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	stale := true
+	w.acts["pve2"].edit = func(st *agentproto.Status) {
+		for i := range st.Connectors {
+			if stale && st.Connectors[i].TunnelID == id {
+				st.Connectors[i].TokenSHA256 = connector.TokenDigest("the-old-token")
+			}
+		}
+	}
+	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+
+	var st State
+	for range 3 {
+		st = w.tick(time.Minute)
+	}
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id))
+	require.True(t, hasProblem(st, "the connectors of "+tunnelName+" do not run with the new secret yet"), st.Problems)
+	rec, found, err := w.store.RestoreRotation()
+	require.NoError(t, err)
+	require.True(t, found, "kept while a connector runs with the old token")
+	require.Empty(t, rec.Cleaned)
+	cleaned := count(w.cf.Calls(), "CleanUpConnections acc1 "+id)
+
+	stale = false
+	for range 2 {
+		w.tick(time.Minute)
+	}
+	require.Equal(t, cleaned+1, count(w.cf.Calls(), "CleanUpConnections acc1 "+id), "every connection ends once all run the new token")
+	_, found, err = w.store.RestoreRotation()
+	require.NoError(t, err)
+	require.False(t, found)
 }
 
 // In observe-only mode the rotation waits for pco apply, and says so.

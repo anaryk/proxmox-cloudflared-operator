@@ -2,10 +2,13 @@ package connector
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -35,6 +38,21 @@ type Status struct {
 	// last that another process holds its metrics port, so that it cannot
 	// start. The next Ensure gives it another port.
 	MetricsPortHeld bool `json:"metricsPortHeld,omitempty"`
+	// TokenSHA256 is TokenDigest of the token the connector was last
+	// started with, so that the controller knows which secret of the tunnel
+	// a ready connector runs with; empty without a token file.
+	TokenSHA256 string `json:"tokenSHA256,omitempty"`
+}
+
+// TokenDigest is the first 16 hex digits of the SHA-256 of a run token: it
+// tells two tokens apart without carrying either.
+func TokenDigest(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:8])
 }
 
 // Text says how a connector fares: "inactive", "active, not ready" or
@@ -71,6 +89,9 @@ func (m *Manager) Status(ctx context.Context, tunnelID string) (Status, error) {
 		return Status{}, fmt.Errorf("tunnel %s: reading env file: %w", tunnelID, err)
 	}
 	st.Install = values[installKey]
+	if b, err := m.readFile(m.path(tokenFile(tunnelID))); err == nil {
+		st.TokenSHA256 = TokenDigest(string(b))
+	}
 	addr, port, err := metricsOf(values)
 	if err != nil {
 		return st, nil

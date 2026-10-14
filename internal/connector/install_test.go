@@ -179,6 +179,27 @@ func TestStatusSaysWhichInstallAConnectorIsOf(t *testing.T) {
 	}
 }
 
+// The status names the token a connector runs with by its digest, which
+// changes with a new secret: the controller counts a connector as rolled out
+// only with the new one.
+func TestStatusNamesTheTokenByItsDigest(t *testing.T) {
+	m, sd, _ := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	delete(sd.active, UnitName(idA))
+
+	st, err := m.Status(t.Context(), idA)
+	require.NoError(t, err)
+	require.Equal(t, TokenDigest("token-a"), st.TokenSHA256)
+	require.Len(t, st.TokenSHA256, 16)
+	require.NotContains(t, st.TokenSHA256, "token")
+
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-b"))
+	st, err = m.Status(t.Context(), idA)
+	require.NoError(t, err)
+	require.Equal(t, TokenDigest("token-b"), st.TokenSHA256)
+	require.Empty(t, TokenDigest(" "))
+}
+
 func TestListNamesEveryConnectorOnTheNode(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))

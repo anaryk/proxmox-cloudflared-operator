@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -597,7 +598,7 @@ func (c *cycleRun) notRolledOut(r store.TunnelsRotated) []string {
 			continue
 		}
 		for _, node := range c.runners(t) {
-			if !c.readySince(node, t.ID, r.At) {
+			if !c.readySince(node, t.ID, r.At, r.Tokens[t.ID]) {
 				waiting[t.Name] = true
 			}
 		}
@@ -608,12 +609,31 @@ func (c *cycleRun) notRolledOut(r store.TunnelsRotated) []string {
 // readySince says whether node runs a ready connector of a tunnel by a
 // status read after since: this node's in this cycle, another's by a report
 // received after since. A status from before says nothing of a secret given
-// at since.
-func (c *cycleRun) readySince(node, tunnelID string, since time.Time) bool {
+// at since. With digest, the connector must also report that it runs with
+// the token of that digest: ready after since, it may still run with the
+// old one.
+func (c *cycleRun) readySince(node, tunnelID string, since time.Time, digest string) bool {
 	if node == c.e.d.Node {
-		return c.now.After(since) && c.readyOn(node, tunnelID)
+		return c.now.After(since) && c.readyWith(node, tunnelID, digest)
 	}
-	return c.fleet.node(node).report.ReceivedAt.After(since) && c.readyOn(node, tunnelID)
+	return c.fleet.node(node).report.ReceivedAt.After(since) && c.readyWith(node, tunnelID, digest)
+}
+
+// readyWith is readyOn for a connector that also runs with the token of
+// digest, when one is given.
+func (c *cycleRun) readyWith(node, tunnelID, digest string) bool {
+	if digest == "" {
+		return c.readyOn(node, tunnelID)
+	}
+	var conns []connector.Status
+	if node == c.e.d.Node {
+		conns = c.st.Connectors
+	} else if f := c.fleet.node(node); f.fresh {
+		conns = f.report.Status.Connectors
+	}
+	return slices.ContainsFunc(conns, func(s connector.Status) bool {
+		return s.TunnelID == tunnelID && s.Ready && s.TokenSHA256 == digest
+	})
 }
 
 // runners are the nodes that run a connector of a tunnel: the replicas of
