@@ -791,14 +791,15 @@ suspend mode, and the whole backup, about 29 seconds, in stop mode.
 
 ### The appliance on a cluster
 
-One appliance serves a cluster. It runs on one node and reaches the guests on its segments,
-whichever node they run on, all at `observed`. The installer says which cluster the node is a
+A combined appliance serves a cluster from one node, and reaches the guests on its segments,
+whichever node they run on, all at `observed`; a controller container with an agent container on
+each other node serves every node from that node, as [Appliance](appliance.md#a-cluster-of-appliances)
+describes. The installer says which cluster the node is a
 member of, and warns when it finds another appliance. As a host does, the appliance writes
 nothing while its cluster has no quorum: it reads `/cluster/status` in every cycle and holds
 while the cluster is not quorate, with the problem line
 `the cluster is not quorate; nothing is written`. A node that is in no cluster counts as
-quorate. When the node of the appliance is down, so is every hostname it serves: moving it to
-another node is a later release.
+quorate. When the node of a combined appliance is down, so is every hostname it serves.
 
 The appliance never publishes an address of a node. It learns them from `/cluster/status` and
 from the addresses each node is configured with in `/nodes/<node>/network`, and keeps every one

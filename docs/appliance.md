@@ -704,12 +704,113 @@ still there, leaves Cloudflare and the objects the original uses alone, and refu
 `--purge-cloudflare`, which would delete the original's records. An appliance of its own is
 installed anew, not made from a copy.
 
+## A cluster of appliances
+
+On a cluster the appliance comes in kinds, each a container of its own in pool `pco`, tagged
+with its kind:
+
+| Kind | Runs | How it is made |
+|---|---|---|
+| `combined` | Everything, for the node it runs on. The default, and what every appliance before kinds is. | `pco appliance install` |
+| `controller` | What `combined` runs, and the agent endpoint the agent containers of the other nodes join and follow: tcp/8644 on net0's address. | `pco appliance install --kind controller`, or `pco appliance convert --vmid <combined>` |
+| `agent` | The agent of one other node: its connectors, its egress filter, its gateway and legs, the proofs of its guests. No web interface, no store of routes or credentials. | `pco appliance install --kind agent --join-file <path>` on that node |
+
+The controller serves the node it runs on itself, so that node has no agent container. An agent
+container serves its node alone: it is bound to the node it was installed on.
+
+### From one appliance to a cluster
+
+1. On the node of the combined appliance, as root: [`pco appliance convert --vmid <vmid>`](cli/pco-appliance-convert.md). It
+   runs `pco appliance convert` inside the container, which records the kind and restarts the
+   daemon; the daemon makes the install's CA and serves the agent endpoint. On the node the
+   container is tagged a controller, its firewall gets an ipset `pco-agents` and one rule that
+   lets those addresses, and no others, reach tcp/8644, and its token may read its own storage
+   (`Datastore.Audit` on `/storage/<storage>`, and nothing else). Its store, credentials, routes
+   and connectors stay, and the connectors run on throughout. A fresh cluster installs
+   `--kind controller` instead.
+2. For each other node, on the controller:
+   `pct exec <vmid> -- pco cluster join-token --node <node> --file /root/<node>.join`. The token
+   is good once and for 15 minutes; the controller keeps only the hash of its secret.
+3. On that node, as root, with the file copied there:
+   `pco appliance install --kind agent --storage <storage> --join-file /root/<node>.join`, or
+   `--join -` to give it on standard input. The token is never an argument, an environment
+   variable or a line of the journal: it goes onto the agent's state volume with `pct push`,
+   mode 0600, and the agent removes it once the controller answered. The agent's token only
+   audits; `pco@pve` and the controller's token may put cards on the agent's container (role
+   `PCOManaged` on `/vms/<vmid>`), for the legs of the networks the controller attaches there;
+   the agent's address goes into the controller's ipset `pco-agents`.
+4. The agent joins: it makes a key on its volume and sends the controller the token's secret, a
+   request for its certificate, its VMID and its MACs, over TLS to the server name and the CA the
+   token names. The controller checks the token (unused, unexpired, for that node) and records
+   its use before it answers, then checks the container through the Proxmox API: an LXC on that
+   node, in pool `pco`, no HA resource, with every MAC it reported, the join coming from one of
+   its addresses, and no other agent serving the node. That check is one of consistency; the
+   token, which only root on the node could push, is what the trust rests on. The node is then
+   `joining`.
+5. Admit it on the controller with the fingerprint of its certificate, which
+   `pct exec <agent vmid> -- pco agent status` shows in the agent:
+   `pco node admit <node> --fingerprint <at least 8 hex digits>`.
+
+A second use of a token, and a first use from a container that does not match what it said,
+hold the node `contested`, with every use shown and a security event: nothing is admitted until
+`pco node forget <node>`, after which a new token enrols the node.
+
+### What an agent container does on its own
+
+Every 30 seconds it proves itself as the appliance does: its volume and its MACs, its uptime, no
+copy of it, and no principal but the admins and pco able to reach into it. It also checks that it
+runs on the node it was installed on and is no HA resource. When anything of that fails it stops
+following the controller, takes the identity flag away, empties its egress filter and stops its
+connectors, until it holds again: `agent <vmid> runs on <node>, enrolled for <node>; move it back
+or enrol it again`. The controller serves an agent nothing while Proxmox shows its container on
+another node, moving or gone, judged anew in every cycle and by every controller.
+
+`pco agent status` in the container shows whom it follows and its certificate. It renews that
+certificate over the channel 60 days after it was issued. A certificate that ended cannot be
+renewed: the node is forgotten and its agent installed again with a new token. `pco doctor` in
+the container makes its own checks and those of its agent; `pco doctor --cluster` on the
+controller asks every agent for them, and checks every agent container from the Proxmox API
+(`agent container <node>`: where it runs, HA, its console mode).
+
+### The controller and Proxmox HA
+
+Without HA, a lost controller is installed again on another node and adopts the install with
+`pco appliance repair --recover`, as a lost appliance does ([Restore and repair](#restore-and-repair));
+the agents follow its higher epoch. `--ha` on `install --kind controller` or on `convert` makes it a
+Proxmox HA resource, kept on `--ha-nodes` when given (a node-affinity rule on Proxmox VE 9, a
+restricted group on 8). Read this first: the node that runs an HA resource arms its watchdog and
+fences itself when it loses quorum, which resets every guest on that node.
+
+- On shared storage the relocated controller is the same volume; it draws its next epoch and goes
+  on writing, and the agents follow the higher epoch.
+- On replicated storage the volume may be one replication interval old, which may undo recent
+  decisions, revocations included. When more than half of the agents with a fresh report follow
+  an epoch above the controller's, it only observes, with the line under
+  [Problems](problems.md#the-appliance-in-a-cluster), until `pco appliance recover`. One agent
+  alone, broken or taken over, holds nobody. There is no opt-in to write anyway.
+- `pco doctor --cluster` says which applies (`controller ha`); the installer records the storage
+  and its replication in the install.
+
+Agents are never HA resources: the installer refuses `--ha` for one, the controller refuses one
+that joins as one, and an agent that becomes one stops serving.
+
+### Forgetting an agent container
+
+`pco node forget <node>` on the controller ends its connections and rotates the shared tunnel's
+secret, as for a host node. On the node, `pco appliance uninstall --vmid <vmid>` removes the
+container, its token and its address in the controller's ipset, and says to forget the node.
+`--compromised` for an agent container is refused while its Proxmox token is still there; once
+the uninstall removed it, the secrets of its tunnels are rotated whatever `cluster.rotateOnForget`
+says. The credentials, the controller's Proxmox secret and the CA stay, as an agent container
+never holds them.
+
 ## Limits of this release
 
-- One appliance for a cluster. It can run on a member of a cluster and reach the guests of every
-  node that are on its segments; when its node is down, so are the hostnames it serves. pco does
-  not make it a Proxmox HA resource, and moving it to another node when that node fails comes in
-  a later release. See [Operations](operations.md#the-appliance-on-a-cluster).
+- A controller container also serves the node it runs on, with its own connectors and legs, so
+  that node runs no agent container; an HA controller that the HA manager moves serves the node
+  it was installed on from wherever it runs. See [A cluster of appliances](#a-cluster-of-appliances).
+- The managed network on an agent container, and the DHCP server of the managed network there,
+  are not run: the managed network is the controller's node's.
 - Nine legs, `net1` to `net9`, admin-added cards counted, and a VLAN attached on a VLAN-aware
   bridge only. The managed network of the appliance needs the iptables backend of the Proxmox
   firewall, the datacenter firewall on and `pve-firewall` running on the node, and `filtered`
