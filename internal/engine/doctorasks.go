@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -10,6 +11,10 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 )
+
+// ErrDoctorBusy is an ask of the agents' checks that could not start
+// within its wait: another ran all along.
+var ErrDoctorBusy = errors.New("another doctor ask was running")
 
 // doctorAsks are the doctor actions the controller hands the agents of the
 // other nodes, by id, until they are answered or the asker stops waiting.
@@ -33,8 +38,9 @@ type doctorAsk struct {
 // it in their snapshots, and waits for at most wait for the answers. It
 // returns, by node, the answers that came; a node that did not answer in
 // time is not in it, and its action is taken back. One ask runs at a time:
-// another waits for it within its own wait.
-func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Duration) map[string]agentproto.ActionResult {
+// another waits for it within its own wait, and is ErrDoctorBusy when it
+// could not start.
+func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Duration) (map[string]agentproto.ActionResult, error) {
 	d := &e.asks
 	ctx, cancel := e.timeout(ctx, wait)
 	defer cancel()
@@ -43,7 +49,7 @@ func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Durati
 	case d.one <- struct{}{}:
 		defer func() { <-d.one }()
 	case <-ctx.Done():
-		return out
+		return out, ErrDoctorBusy
 	}
 	d.mu.Lock()
 	if d.acts == nil {
@@ -78,7 +84,7 @@ func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Durati
 			out[node] = *a.answer
 		}
 	}
-	return out
+	return out, nil
 }
 
 // actionsFor are the doctor actions node has not answered.

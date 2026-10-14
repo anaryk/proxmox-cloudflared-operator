@@ -54,7 +54,14 @@ func (d doctorCluster) Facts() engine.ClusterFacts { return d.eng.ClusterFacts()
 // and reads their findings.
 func (d doctorCluster) Ask(ctx context.Context, nodes []string, wait time.Duration) map[string]doctor.AgentAnswer {
 	out := map[string]doctor.AgentAnswer{}
-	for node, res := range d.eng.AskDoctor(ctx, nodes, wait) {
+	answers, err := d.eng.AskDoctor(ctx, nodes, wait)
+	if err != nil {
+		for _, node := range nodes {
+			out[node] = doctor.AgentAnswer{Why: err.Error()}
+		}
+		return out
+	}
+	for node, res := range answers {
 		a := doctor.AgentAnswer{Answered: true, Err: res.Error}
 		switch {
 		case res.Error != "":

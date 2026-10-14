@@ -37,7 +37,7 @@ const (
 func AgentChecks(ctx context.Context, st engine.State, env Env) []Finding {
 	src := clusterOf(env)
 	if src == nil {
-		return sorted(runNode(ctx, st, env))
+		return sorted(agentLocal(ctx, st, env, agentproto.AgentView{}))
 	}
 	view, err := src.Agent()
 	if err != nil {

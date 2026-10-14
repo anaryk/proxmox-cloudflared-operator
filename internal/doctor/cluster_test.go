@@ -403,6 +403,27 @@ func TestTheAgentOfANodeFindsFaults(t *testing.T) {
 
 // What the controller asks an agent for has no checks of the state of the
 // controller.
+// An agent not asked because another ask ran says so, not that it was
+// silent.
+func TestAnAgentNotAskedSaysWhy(t *testing.T) {
+	st, env := healthyCluster()
+	env.answers = map[string]AgentAnswer{"pve2": {Why: "another doctor ask was running"}, "pve3": {Why: "another doctor ask was running"}}
+
+	got := clusterFindings(RunWith(t.Context(), st, env, Options{Cluster: true}))
+
+	require.Equal(t, Finding{Check: "answer on pve2", Level: LevelWarn, Detail: "the agent was not asked: another doctor ask was running",
+		Fix: "run pco doctor --cluster again once the other run ended"}, got["answer on pve2"])
+}
+
+// Without a cluster the checks an agent answers with are still those an
+// answer may carry.
+func TestTheChecksOfANodeWithoutAClusterAreAnAgentsChecks(t *testing.T) {
+	names := agentCheckNames()
+	for _, f := range AgentChecks(t.Context(), healthyState(), healthyEnv()) {
+		require.True(t, names[f.Check], f.Check)
+	}
+}
+
 func TestTheChecksOfAnAgentLeaveTheInstallOut(t *testing.T) {
 	st, env := healthyCluster()
 	env.agent.Remote = true

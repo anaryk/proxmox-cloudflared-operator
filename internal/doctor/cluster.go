@@ -61,6 +61,9 @@ type AgentAnswer struct {
 	Answered bool
 	Findings []Finding
 	Err      string
+	// Why says why the agent was not asked, as while another ask ran;
+	// empty when it was asked and did not answer in time.
+	Why string
 }
 
 // clustered is an Env of a node that may be one of a cluster.
@@ -503,6 +506,8 @@ func askAgents(ctx context.Context, st engine.State, src ClusterSource) []Findin
 		a := answers[node]
 		var f Finding
 		switch {
+		case !a.Answered && a.Why != "":
+			f = warn(check, "the agent was not asked: "+a.Why, "run pco doctor --cluster again once the other run ended")
 		case !a.Answered:
 			f = warn(check, fmt.Sprintf("the agent did not answer within %s", AnswerWait), "pco doctor on "+node)
 		case a.Err != "":

@@ -28,7 +28,12 @@ func TestTheDoctorAsksTheAgentsOfTheOtherNodes(t *testing.T) {
 	epoch := r.last()["pve2"].Epoch
 
 	answers := make(chan map[string]agentproto.ActionResult)
-	go func() { answers <- e.eng.AskDoctor(t.Context(), []string{"pve2", "pve3"}, 30*time.Second) }()
+	asked := make(chan error, 1)
+	go func() {
+		got, err := e.eng.AskDoctor(t.Context(), []string{"pve2", "pve3"}, 30*time.Second)
+		asked <- err
+		answers <- got
+	}()
 	<-e.eng.trigger
 	e.cycle()
 
@@ -48,6 +53,7 @@ func TestTheDoctorAsksTheAgentsOfTheOtherNodes(t *testing.T) {
 	e.eng.TakeAgentEvents("pve3", agentproto.Status{Node: "pve3", AgentStartedAt: t0,
 		Actions: []agentproto.ActionResult{{ID: asked3[0].ID, Error: "the daemon is starting"}}}, epoch)
 
+	require.NoError(t, <-asked)
 	got := <-answers
 	require.Equal(t, map[string]agentproto.ActionResult{
 		"pve2": {ID: actions[0].ID, OK: true, Data: findings},
@@ -71,8 +77,9 @@ func TestTheDoctorStopsWaitingForAnAgent(t *testing.T) {
 		return ctx, cancel
 	}
 
-	got := e.eng.AskDoctor(t.Context(), []string{"pve2"}, 30*time.Second)
+	got, err := e.eng.AskDoctor(t.Context(), []string{"pve2"}, 30*time.Second)
 
+	require.NoError(t, err)
 	require.Empty(t, got)
 	require.Empty(t, e.eng.asks.actionsFor("pve2"))
 }
@@ -86,8 +93,9 @@ func TestOneDoctorAskRunsAtATime(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	got := e.eng.AskDoctor(ctx, []string{"pve2"}, 30*time.Second)
+	got, err := e.eng.AskDoctor(ctx, []string{"pve2"}, 30*time.Second)
 
+	require.ErrorIs(t, err, ErrDoctorBusy)
 	require.Empty(t, got)
 	e.eng.asks.mu.Lock()
 	require.Empty(t, e.eng.asks.acts, "nothing was handed out")
