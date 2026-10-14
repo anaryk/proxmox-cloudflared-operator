@@ -227,6 +227,9 @@ type cycleRun struct {
 	nets       map[string]store.Network
 	scoped     map[string]bool
 	remoteLegs map[string]*remoteLeg
+	// guestsSaid says that the cycle said guests were left out of the
+	// memory.
+	guestsSaid bool
 	// catchUpWhy says why the store may not hold all the nodes hold: no
 	// expanding write is made while it stands.
 	catchUpWhy string

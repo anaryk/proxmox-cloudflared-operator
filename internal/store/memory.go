@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"net/netip"
 	"slices"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -54,6 +55,8 @@ type EngineMemory struct {
 	// controller that takes over while the node of one is offline, and
 	// cannot read it, builds it from this.
 	Guests []RememberedGuest `json:"guests,omitempty"`
+	// GuestsAt is when the guests were last read as they are kept.
+	GuestsAt time.Time `json:"guestsAt,omitzero"`
 }
 
 // RememberedGuest is the configuration of a watched guest as the inventory

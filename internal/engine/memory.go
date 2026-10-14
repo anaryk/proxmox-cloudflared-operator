@@ -1,9 +1,13 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
@@ -53,7 +57,9 @@ func (e *Engine) recall(installID string) error {
 		e.gone[ref] = true
 	}
 	e.rememberEgress(m)
-	e.rememberGuests(m.Guests)
+	if len(m.Guests) > 0 && e.d.Now().Sub(m.GuestsAt) < rememberedFor {
+		e.rememberGuests(m.Guests)
+	}
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
 	for _, r := range m.Reports {
@@ -93,9 +99,7 @@ func (e *Engine) memory() store.EngineMemory {
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
 	e.egressMemory(&m)
 	if e.clustered {
-		for _, r := range e.d.Inventory.Remembered() {
-			m.Guests = append(m.Guests, store.RememberedGuest{Ref: r.Ref, Digest: r.Digest, Values: r.Values})
-		}
+		m.Guests, m.GuestsAt = e.guestsMemory()
 	}
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
@@ -103,6 +107,51 @@ func (e *Engine) memory() store.EngineMemory {
 		m.Reports = append(m.Reports, store.CheckedCredential{CredentialID: id, Report: cloneReport(e.reports[id])})
 	}
 	return m
+}
+
+const (
+	// guestsBudget is how much of the memory the guests take at most; the
+	// cluster filesystem takes no file over 1 MiB.
+	guestsBudget = 256 << 10
+	// rememberedFor is how long guests remembered by an earlier controller
+	// are given to the inventory: older, they say nothing safe of a guest
+	// now. guestsConfirmed is how often the time they were read is written
+	// again while they stay the same.
+	rememberedFor   = 24 * time.Hour
+	guestsConfirmed = time.Hour
+
+	problemGuestsLeftOut = "%d guests with routes are left out of the memory, past its %d KiB for them: " +
+		"a controller that takes over while the node of one is down holds until the node is back"
+)
+
+// guestsMemory is what the memory keeps of the guests: those the inventory
+// remembers, as many as guestsBudget takes, and when they were read. The
+// time is written again only when they change, or guestsConfirmed after it
+// was last written, so that the memory is not written every cycle.
+func (e *Engine) guestsMemory() ([]store.RememberedGuest, time.Time) {
+	var out []store.RememberedGuest
+	size, left := 0, 0
+	for _, r := range e.d.Inventory.Remembered() {
+		g := store.RememberedGuest{Ref: r.Ref, Digest: r.Digest, Values: r.Values}
+		raw, err := json.Marshal(g)
+		if err != nil || size+len(raw)+1 > guestsBudget {
+			left++
+			continue
+		}
+		size += len(raw) + 1
+		out = append(out, g)
+	}
+	e.guestsLeftOut = left
+	sum := sha256.New()
+	for _, g := range out {
+		raw, _ := json.Marshal(g)
+		sum.Write(raw)
+	}
+	digest, now := hex.EncodeToString(sum.Sum(nil)), e.d.Now()
+	if digest != e.guestsDigest || now.Sub(e.guestsAt) >= guestsConfirmed {
+		e.guestsDigest, e.guestsAt = digest, now
+	}
+	return out, e.guestsAt
 }
 
 // rememberGuests gives the inventory the guests an earlier controller read:
@@ -157,7 +206,20 @@ func (c *cycleRun) saveMemory() (string, bool) {
 	if !c.e.remembered {
 		return "what the engine remembered could not be read", false
 	}
-	if err := c.e.d.Store.SaveEngineMemory(c.e.memory()); err != nil {
+	m := c.e.memory()
+	if n := c.e.guestsLeftOut; n > 0 && !c.guestsSaid {
+		c.guestsSaid = true
+		c.problem(problemGuestsLeftOut, n, guestsBudget>>10)
+	}
+	err := c.e.d.Store.SaveEngineMemory(m)
+	if err != nil && len(m.Guests) > 0 {
+		// The guests are kept for a takeover alone: the rest of the memory
+		// is saved without them rather than holding the cycle.
+		c.problem("saving the guests with routes in what the engine remembers: %v; it is saved without them", err)
+		m.Guests, m.GuestsAt = nil, time.Time{}
+		err = c.e.d.Store.SaveEngineMemory(m)
+	}
+	if err != nil {
 		c.storeHold = true
 		return c.problem("saving what the engine remembers: %v; nothing is changed at Cloudflare until it is saved", err), false
 	}

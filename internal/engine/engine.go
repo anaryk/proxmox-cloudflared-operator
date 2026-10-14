@@ -262,6 +262,12 @@ type Engine struct {
 	// registry: only then does the memory keep the guests, for a
 	// controller on another node.
 	clustered bool
+	// guestsAt and guestsDigest are when the guests the memory keeps were
+	// last written as read, and what they were; guestsLeftOut how many
+	// did not fit its budget.
+	guestsAt      time.Time
+	guestsDigest  string
+	guestsLeftOut int
 	// setAside says that the memory read was of another install, until a
 	// cycle says so.
 	setAside string

@@ -4,6 +4,7 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/annotation"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 )
@@ -71,13 +72,28 @@ func builtFrom(values map[string]string) map[string]string {
 	out := map[string]string{}
 	for key, value := range values {
 		switch {
-		case key == "name", key == "hostname", key == "description", key == "tags", key == "template",
+		case key == "description":
+			out[key] = routeNotes(value)
+		case key == "name", key == "hostname", key == "tags", key == "template",
 			key == "smbios1", key == "meta",
 			numbered(key, "net"), numbered(key, "ipconfig"):
 			out[key] = value
 		}
 	}
 	return out
+}
+
+// routeNotes is what the routes of a guest are read from in its Notes: the
+// route text, and on a line of its own every hostname the Notes name, which
+// keeps a claim while its entry is broken. The prose around them is not
+// kept, so that a long description costs the memory nothing.
+func routeNotes(notes string) string {
+	text, _ := annotation.Block(notes)
+	hosts := annotation.Hostnames(notes)
+	if len(hosts) == 0 {
+		return text
+	}
+	return text + "\n" + strings.Join(hosts, " ") + "\n"
 }
 
 // numbered says whether key is prefix followed by a number, as net0.

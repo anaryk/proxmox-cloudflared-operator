@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/annotation"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 )
@@ -299,6 +300,31 @@ func TestRefreshOfAGuestOnAnOfflineNodeUsesWhatWasRemembered(t *testing.T) {
 	require.Equal(t, 1, src.count("config "+refApp.String()), "nothing more is asked of the offline node")
 	require.Equal(t, 2, src.count("config "+refWeb.String()), "a guest of an online node is read")
 	require.Contains(t, refsOf(inv.Remembered()), refApp, "what was remembered is remembered on")
+}
+
+// Of the Notes only what routes are read from is remembered: the route
+// text, and every hostname the Notes name, which keeps a claim while its
+// entry is broken. A long description costs the memory nothing more.
+func TestRememberedNotesKeepTheRouteTextAndTheHostnamesAlone(t *testing.T) {
+	src := newFake()
+	notes := strings.Repeat("A long story about the guest.\n", 2000) +
+		"Moved from old.example.com last year.\n```cf-tunnel\napp.example.com -> :8080\n```\nMore prose.\n"
+	src.configs[refApp].Values["description"] = notes
+	inv, _ := newInventory(src, Options{})
+	inv.Refresh(t.Context())
+
+	var kept string
+	for _, r := range inv.Remembered() {
+		if r.Ref == refApp {
+			kept = r.Values["description"]
+		}
+	}
+	require.Less(t, len(kept), 200, kept)
+	want, got := annotation.Parse(notes).Entries, annotation.Parse(kept).Entries
+	require.Len(t, got, 1)
+	require.Equal(t, want[0].Hosts, got[0].Hosts)
+	require.Equal(t, want[0].Target, got[0].Target)
+	require.Equal(t, annotation.Hostnames(notes), annotation.Hostnames(kept))
 }
 
 func refsOf(rs []Remembered) []model.GuestRef {

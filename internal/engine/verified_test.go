@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"encoding/json"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,6 +169,45 @@ func TestTheMemoryCarriesTheGuestsOverToTheNextController(t *testing.T) {
 	w.watchHere(t)
 	w.tick(time.Second)
 	require.Equal(t, []inventory.Remembered{web}, w.inv.given)
+}
+
+// The guests take at most guestsBudget of the memory: past it the rest are
+// left out and the cycle says so, and the memory is saved all the same,
+// without a hold; the file stays far below what the cluster filesystem
+// takes.
+func TestTheGuestsOfTheMemoryKeepToTheirBudget(t *testing.T) {
+	w := threeNodes(t)
+	big := strings.Repeat("x", 4096)
+	for vmid := range 200 {
+		w.inv.kept = append(w.inv.kept, inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 1000 + vmid}, Values: map[string]string{"name": big}})
+	}
+	st := w.settle()
+
+	require.Empty(t, st.Hold)
+	m, err := w.store.EngineMemory()
+	require.NoError(t, err)
+	require.NotEmpty(t, m.Guests)
+	require.Less(t, len(m.Guests), 200)
+	raw, err := json.Marshal(m.Guests)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(raw), guestsBudget)
+	require.True(t, hasProblem(st, "guests with routes are left out of the memory"), st.Problems)
+}
+
+// Guests remembered longer ago than rememberedFor are not given to the
+// inventory: a configuration that old says nothing safe of the guest now.
+func TestGuestsRememberedLongAgoAreNotUsed(t *testing.T) {
+	web := inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Values: map[string]string{"name": "web"}}
+	w := threeNodes(t)
+	w.inv.kept = []inventory.Remembered{web}
+	w.settle()
+	w.inv.kept = nil
+
+	w.clock.advance(rememberedFor + time.Minute)
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	w.tick(time.Second)
+	require.Empty(t, w.inv.given)
 }
 
 // A tunnel whose account the run reported on is not taken for unreported
