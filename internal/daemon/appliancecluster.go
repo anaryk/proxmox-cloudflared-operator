@@ -313,8 +313,7 @@ func (c *applianceCluster) endpoints() []string {
 // registered appliance agent that is not removed, the addresses of its
 // container while it runs on the node it was enrolled for and is no HA
 // resource; and to join, those of the containers in pool pco, but this one,
-// on a node with a join token that is unused, or used for a node the
-// registry does not hold yet.
+// on a node with an unexpired join token that joinOpen keeps open.
 //
 // A join records the use of its token before it registers the node, and the
 // two are read here one after the other. Were a used token closed at once, a
@@ -349,14 +348,14 @@ func (c *applianceCluster) sources(ctx context.Context) (clusterapi.Sources, err
 	if err != nil {
 		return src, nil
 	}
-	registered := map[string]bool{}
+	entries := map[string]store.NodeEntry{}
 	for _, n := range nodes {
-		registered[n.Name] = n.State != store.NodeRemoved
+		entries[n.Name] = n
 	}
 	now := c.now()
 	open := map[string]bool{}
 	for _, t := range tokens {
-		if now.Before(t.Expires) && (len(t.Uses) == 0 || !registered[t.Node]) {
+		if now.Before(t.Expires) && joinOpen(t, entries) {
 			open[t.Node] = true
 		}
 	}
@@ -371,6 +370,27 @@ func (c *applianceCluster) sources(ctx context.Context) (clusterapi.Sources, err
 	slices.SortFunc(src.Join, func(a, b netip.Addr) int { return a.Compare(b) })
 	src.Join = slices.Compact(src.Join)
 	return src, nil
+}
+
+// joinOpen says whether the containers of t's node may still reach the join:
+// while t is unused; once used, until the node its use made is admitted,
+// contested or removed. A join whose answer was lost is sent again, and the
+// controller answers it only while the node is joining, for the same
+// container, source and key, so a source kept open for it gives no one else
+// a certificate. A removed entry older than the use is a node that joins
+// again and has not replaced its entry yet.
+func joinOpen(t store.JoinRecord, entries map[string]store.NodeEntry) bool {
+	if len(t.Uses) == 0 {
+		return true
+	}
+	n, found := entries[t.Node]
+	switch {
+	case !found, n.State == store.NodeJoining:
+		return true
+	case n.State == store.NodeRemoved:
+		return n.StateSince.Before(t.Uses[0].At)
+	}
+	return false
 }
 
 func (c *applianceCluster) containerAddrs(ctx context.Context, node string, vmid int) ([]netip.Addr, error) {
