@@ -444,26 +444,28 @@ func testManagedIsolation(t *testing.T, s *suite) {
 	require.Greater(t, toAfter, toBefore, "the node did not drop what was forwarded into the transit link")
 
 	t.Log("a forged address, then a forged MAC: nothing, and the owner keeps serving")
+	// The leg answers a guest nothing but DHCP and ARP, so ARP is what
+	// tells a card the guard lets through from one it does not.
+	answers := func(iface, src string) bool {
+		_, ok := s.try(a.vmid, "arping -c 1 -w 2 -I "+iface+" -s "+src+" "+leg)
+		return ok
+	}
 	spoofed0 := s.counter(t, false, "bridge", "pco_guard", "dropped_spoofed")
 	s.exec(t, a.vmid, "ip addr add "+am.Addr.String()+"/24 dev "+ifaceA)
-	_, reached = s.try(a.vmid, "ping -c 1 -W 1 -I "+am.Addr.String()+" "+leg)
-	require.False(t, reached, "a forged address reaches the leg")
+	require.False(t, answers(ifaceA, am.Addr.String()), "a forged address reaches the leg")
 	spoofed1 := s.counter(t, false, "bridge", "pco_guard", "dropped_spoofed")
 	require.Greater(t, spoofed1, spoofed0, "the guard did not count the forged address")
 	s.exec(t, a.vmid, "ip addr del "+am.Addr.String()+"/24 dev "+ifaceA+" && ip link set dev "+ifaceA+" down && ip link set dev "+ifaceA+" address "+am.MAC+
 		" && ip link set dev "+ifaceA+" up && ip addr add "+am.Addr.String()+"/24 dev "+ifaceA+" && ip neigh flush dev "+ifaceA)
-	_, reached = s.try(a.vmid, "ping -c 1 -W 1 -I "+am.Addr.String()+" "+leg)
-	require.False(t, reached, "a forged MAC and address reach the leg")
+	require.False(t, answers(ifaceA, am.Addr.String()), "a forged MAC and address reach the leg")
 	spoofed2 := s.counter(t, false, "bridge", "pco_guard", "dropped_spoofed")
 	require.Greater(t, spoofed2, spoofed1, "the guard did not count the forged MAC")
 	require.Equal(t, lanPort(m.vmid, am.NIC, false), s.stickyPort(t, am.MAC), "the sticky entry of the owner moved")
 	s.requireAnswer(t, tm, m.body(8080), 10*time.Second)
 	s.exec(t, a.vmid, "ip addr del "+am.Addr.String()+"/24 dev "+ifaceA+" && ip link set dev "+ifaceA+" down && ip link set dev "+ifaceA+" address "+aa.MAC+
 		" && ip link set dev "+ifaceA+" up && ip addr replace "+aa.Addr.String()+"/24 dev "+ifaceA+" && ip neigh flush dev "+ifaceA)
-	require.Eventually(t, func() bool {
-		_, ok := s.try(a.vmid, "ping -c 1 -W 1 "+leg)
-		return ok
-	}, 30*time.Second, time.Second, "%s does not reach the leg again with its own card", a.owner())
+	require.Eventually(t, func() bool { return answers(ifaceA, aa.Addr.String()) },
+		30*time.Second, time.Second, "%s does not reach the leg again with its own card", a.owner())
 	t.Logf("dropped_spoofed %d -> %d -> %d", spoofed0, spoofed1, spoofed2)
 
 	t.Log("a card put on pconet by hand is seen within a cycle and set link down")
