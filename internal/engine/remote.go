@@ -70,7 +70,7 @@ func (c *cycleRun) publishRemote() {
 		s.Tunnels = c.withVerified(c.remoteTunnels(name), name)
 		s.Prune = c.pruned && len(s.Tunnels) > 0
 		s.Networks = c.networksFor(name)
-		s.Actions = c.e.writes.actionsFor(name, c.epoch())
+		s.Actions = append(c.e.writes.actionsFor(name, c.epoch()), c.e.asks.actionsFor(name)...)
 		s.Guests = c.withWritten(s.Guests, s.Targets, s.Actions)
 		rep := reports[name]
 		c.e.seqs.stamp(&s, rep.Status.EpochSeen, rep.Status.SeqApplied)

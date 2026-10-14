@@ -15,6 +15,16 @@ of pco, the store, cloudflared and the egress table. The rest is said not to hav
 and the exit status is 1 when one of these fails, as it is when pco.service does not run.
 It changes nothing.
 
+On a node of a cluster it also checks the agent of the node: whether it serves, its
+certificate, and on a node that is not the controller whether it hears the controller and
+reaches its agent endpoint on port 8644. The controller adds the checks of the cluster: the
+lease, quorum and its overrides, the members, the agent channel, the clocks, the versions, the
+certificates and the CA, coverage, the replicas of each shared tunnel, the pinned tunnels, an
+unfinished upgrade or rotation, and whether it reaches Cloudflare. With `--cluster` the
+controller also asks the agent of every other active node for its checks and waits 30
+seconds for them; their findings carry the name of the node, and an agent that did not answer
+is listed. On a node that is not the controller it says where to run it.
+
 With `--json` the answer of the daemon is printed as the daemon sent it, re-indented, with
 control and bidirectional characters escaped.
 
@@ -25,7 +35,7 @@ checks that need no daemon instead.
 ## Usage
 
 ```text
-pco doctor [flags]
+pco doctor [--cluster] [flags]
 ```
 
 ## Examples
@@ -36,12 +46,16 @@ pco doctor
 
 # The findings as JSON, for a script or a monitor
 pco doctor --json
+
+# On the controller of a cluster: every node's checks too
+pco doctor --cluster
 ```
 
 ## Flags
 
 ```text
--h, --help   help for doctor
+    --cluster   on the controller, also ask the agents of the other nodes for their checks
+-h, --help      help for doctor
 ```
 
 ## Global flags

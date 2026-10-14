@@ -1324,4 +1324,19 @@ func TestDoctor(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, string(want), rec.Body.String())
 	require.Equal(t, []string{"doctor"}, f.called())
+	require.False(t, doctor.OptionsOf(f.ctx).Cluster)
+}
+
+// cluster=1 has the doctor ask the agents of the other nodes too.
+func TestDoctorOfTheCluster(t *testing.T) {
+	f := &fakeEngine{}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/doctor?cluster=1", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.True(t, doctor.OptionsOf(f.ctx).Cluster)
+
+	rec = do(newServer(f), http.MethodGet, "/v1/doctor?cluster=yes", "")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, []string{"doctor"}, f.called(), "refused before the doctor runs")
 }

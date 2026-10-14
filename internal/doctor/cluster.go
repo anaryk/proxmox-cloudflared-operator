@@ -93,15 +93,20 @@ func RunWith(ctx context.Context, st engine.State, env Env, opts Options) []Find
 	case len(st.Nodes) <= 1:
 		return sorted(runNode(ctx, st, env))
 	}
+	// The other agents make their checks while the controller makes its
+	// own.
+	asked := make(chan []Finding, 1)
+	if opts.Cluster {
+		go func() { asked <- askAgents(ctx, st, src) }()
+	} else {
+		asked <- nil
+	}
 	out := runNode(ctx, st, env)
 	out = append(out, clusterChecks(st, src, env.Now())...)
 	if err == nil {
 		out = append(out, agentChecks(ctx, st, env, view)...)
 	}
-	if opts.Cluster {
-		out = append(out, askAgents(ctx, st, src)...)
-	}
-	return sorted(out)
+	return sorted(append(out, <-asked...))
 }
 
 func sorted(out []Finding) []Finding {

@@ -31,6 +31,12 @@ func (p *pass) actions() {
 			delete(next, act.ID)
 			continue
 		}
+		if act.Kind == agentproto.ActionDoctor && a.d.Doctor != nil {
+			// It runs beside the passes and is answered once done; marked
+			// done on disk, it is not run again by a later start.
+			a.startDoctor(p.ctx, act.ID)
+			continue
+		}
 		err := a.runAction(p.ctx, p.s, act)
 		res := agentproto.ActionResult{ID: act.ID, OK: err == nil}
 		if err != nil {
@@ -44,6 +50,7 @@ func (p *pass) actions() {
 	}
 	maps.DeleteFunc(next, func(id string, _ store.ActionDone) bool { return !listed[id] })
 	maps.DeleteFunc(a.answers, func(id string, _ agentproto.ActionResult) bool { return !listed[id] })
+	a.keepDoctors(listed)
 	if err := a.saveDone(next); err != nil {
 		p.problem("%v", err)
 	}
@@ -63,6 +70,9 @@ func (a *Agent) runAction(ctx context.Context, s agentproto.Snapshot, act agentp
 func (a *Agent) actionResults(s agentproto.Snapshot) []agentproto.ActionResult {
 	var out []agentproto.ActionResult
 	for _, act := range s.Actions {
+		if a.doctorOwn(act.ID) {
+			continue // the status adds it once done
+		}
 		if res, ok := a.answers[act.ID]; ok {
 			out = append(out, res)
 			continue

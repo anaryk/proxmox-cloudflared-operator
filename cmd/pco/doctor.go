@@ -132,8 +132,9 @@ func (n localNode) Egress(ctx context.Context) (engine.EgressView, error) {
 func (a *app) doctorCmd() *cobra.Command { return a.doctorCmdWith(a.defaultDoctorEnv()) }
 
 func (a *app) doctorCmdWith(d doctorEnv) *cobra.Command {
-	return &cobra.Command{
-		Use:   "doctor",
+	var cluster bool
+	cmd := &cobra.Command{
+		Use:   "doctor [--cluster]",
 		Short: "Check the installation",
 		Long: "Check what pco needs: the mode, the last cycle, the inventory, the credentials,\n" +
 			"cloudflared, the tunnels and their connectors, the way out to Cloudflare, the writer, the\n" +
@@ -147,18 +148,33 @@ func (a *app) doctorCmdWith(d doctorEnv) *cobra.Command {
 			"When the daemon is not running, root still gets the checks that need no daemon: the units\n" +
 			"of pco, the store, cloudflared and the egress table. The rest is said not to have been made,\n" +
 			"and the exit status is 1 when one of these fails, as it is when pco.service does not run.\n" +
-			"It changes nothing.\n\n" + jsonHelp + "\n\n" +
+			"It changes nothing.\n\n" +
+			"On a node of a cluster it also checks the agent of the node: whether it serves, its\n" +
+			"certificate, and on a node that is not the controller whether it hears the controller and\n" +
+			"reaches its agent endpoint on port 8644. The controller adds the checks of the cluster: the\n" +
+			"lease, quorum and its overrides, the members, the agent channel, the clocks, the versions, the\n" +
+			"certificates and the CA, coverage, the replicas of each shared tunnel, the pinned tunnels, an\n" +
+			"unfinished upgrade or rotation, and whether it reaches Cloudflare. With --cluster the\n" +
+			"controller also asks the agent of every other active node for its checks and waits 30\n" +
+			"seconds for them; their findings carry the name of the node, and an agent that did not answer\n" +
+			"is listed. On a node that is not the controller it says where to run it.\n\n" + jsonHelp + "\n\n" +
 			"It asks the daemon through its socket, which answers only root and pco-web, the user of the\n" +
 			"web interface. The exit status is 2 when the daemon could not be asked, unless root got the\n" +
 			"checks that need no daemon instead.",
 		Example: "  # Check the installation\n" +
 			"  pco doctor\n\n" +
 			"  # The findings as JSON, for a script or a monitor\n" +
-			"  pco doctor --json",
+			"  pco doctor --json\n\n" +
+			"  # On the controller of a cluster: every node's checks too\n" +
+			"  pco doctor --cluster",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			raw, err := a.client().DoctorRaw(ctx)
+			ask := a.client().DoctorRaw
+			if cluster {
+				ask = a.client().DoctorClusterRaw
+			}
+			raw, err := ask(ctx)
 			if apiclient.NotRunning(err) && d.euid() == 0 {
 				raw, err = json.Marshal(doctor.RunLocal(ctx, d.node))
 			}
@@ -186,6 +202,8 @@ func (a *app) doctorCmdWith(d doctorEnv) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&cluster, "cluster", false, "on the controller, also ask the agents of the other nodes for their checks")
+	return cmd
 }
 
 // renderFindings writes a finding a line, with what to do about it on the

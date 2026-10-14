@@ -22,6 +22,7 @@ var (
 	errBadAfter   = &httpError{http.StatusBadRequest, codeInvalid, "after must be the seq of an event, a whole number", false}
 	errBadLimit   = &httpError{http.StatusBadRequest, codeInvalid, fmt.Sprintf("limit must be a whole number from 1 to %d", engine.MaxEventLimit), false}
 	errBadHistory = &httpError{http.StatusBadRequest, codeInvalid, "history must be 1 or 0", false}
+	errBadCluster = &httpError{http.StatusBadRequest, codeInvalid, "cluster must be 1 or 0", false}
 	errNoHostname = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/diagnose?hostname=<name>", false}
 	errBadHolder  = &httpError{http.StatusBadRequest, codeInvalid, "owner names one route, the holder the caller expects: &owner=qemu/101", false}
 	errNoRouteOf  = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/traffic/route?hostname=<name>", false}
@@ -499,8 +500,19 @@ func (s *Server) getDiagnose(c *gin.Context) {
 	c.JSON(http.StatusOK, nonNil(steps))
 }
 
+// getDoctor runs the doctor; cluster=1 has the controller ask the agents of
+// the other nodes for their checks too.
 func (s *Server) getDoctor(c *gin.Context) {
-	c.JSON(http.StatusOK, nonNil(s.engine.Doctor(c.Request.Context())))
+	ctx := c.Request.Context()
+	switch raw, _ := c.GetQuery("cluster"); raw {
+	case "", "0":
+	case "1":
+		ctx = doctor.WithOptions(ctx, doctor.Options{Cluster: true})
+	default:
+		s.fail(c, errBadCluster)
+		return
+	}
+	c.JSON(http.StatusOK, nonNil(s.engine.Doctor(ctx)))
 }
 
 // nonNil makes a list that is missing an empty one, as every list of an

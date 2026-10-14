@@ -17,7 +17,7 @@ func TestTheAgentKeepsTheCacheOfTheGatewayItDrives(t *testing.T) {
 	b := &fakeBackend{}
 	local := t.TempDir()
 	g := newGatewayPart(b, local, func() time.Time { return t0 }, zerolog.Nop())
-	d := agentDeps(nil, nil, nil, g)
+	d := agentDeps(nil, nil, nil, g, nil)
 	require.NotNil(t, d.Runner, "the agent writes guests' cards with qm and pct")
 
 	_, err := d.Gateway.Sync(t.Context(), testCache.Legs, testCache.Services, nil, nil)

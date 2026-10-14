@@ -180,7 +180,7 @@ func (a *Agent) Status(context.Context) agentproto.Status {
 		LocalBlocks:    slices.Clone(r.localBlocks),
 		ServiceAddrs:   slices.Clone(r.services),
 		Clock:          now,
-		Actions:        slices.Clone(r.actions),
+		Actions:        append(slices.Clone(r.actions), a.doctorAnswers()...),
 		Problems:       a.problems(r, now),
 	}
 	for i, t := range st.Targets {

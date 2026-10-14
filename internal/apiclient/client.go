@@ -349,6 +349,13 @@ func (c *Client) DoctorRaw(ctx context.Context) (json.RawMessage, error) {
 	return c.raw(ctx, c.long, "/v1/doctor")
 }
 
+// DoctorClusterRaw is DoctorRaw on the controller of a cluster that also
+// asks the agents of the other nodes for their checks, as the daemon sent
+// it.
+func (c *Client) DoctorClusterRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.long, "/v1/doctor?cluster=1")
+}
+
 // Settings returns the settings with the revision they are at.
 func (c *Client) Settings(ctx context.Context) (engine.SettingsView, error) {
 	var v engine.SettingsView

@@ -71,6 +71,9 @@ type clusterPart struct {
 	// multiPVE is the client of the Proxmox API, whose fallbacks follow the
 	// members file.
 	multiPVE *pve.Multi
+	// doctor makes the checks of this node that the controller asks its
+	// agent for.
+	doctor agentDoctor
 }
 
 // clusterRun is a part that runs until stopped.

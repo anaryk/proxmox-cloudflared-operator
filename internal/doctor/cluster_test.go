@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -363,4 +364,21 @@ func TestTheChecksOfAnAgentLeaveTheInstallOut(t *testing.T) {
 	require.Equal(t, []string{
 		"agent", "agent certificate", "agent dial", "cloudflared", "controller", "egress", "nftables", "node lock", "outbound", "proxmox", "store",
 	}, checks)
+}
+
+// A run that asks the other nodes is not answered by a plain run that just
+// ended, nor the other way round; the options come with the request.
+func TestTheRunnerKeepsTheRunOfTheClusterApart(t *testing.T) {
+	st, env := healthyCluster()
+	r := NewRunner(func() engine.State { return st }, env, nil, func() time.Time { return now }, zerolog.Nop())
+
+	plain := r.Doctor(t.Context())
+	require.Nil(t, env.asked)
+
+	all := r.Doctor(WithOptions(t.Context(), Options{Cluster: true}))
+	require.Equal(t, []string{"pve2", "pve3"}, env.asked)
+	require.Greater(t, len(all), len(plain))
+
+	agent := r.AgentChecks(t.Context())
+	require.NotContains(t, clusterFindings(agent), "lease")
 }

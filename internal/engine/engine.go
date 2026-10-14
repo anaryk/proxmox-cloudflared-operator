@@ -267,6 +267,8 @@ type Engine struct {
 	// writes are the writes of guests' cards handed the agents of other
 	// nodes.
 	writes pveWrites
+	// asks are the doctor actions handed the agents of other nodes.
+	asks doctorAsks
 	// moving are the verifications of addresses whose MAC moved that the
 	// agent runs, which Run waits for.
 	moving sync.WaitGroup

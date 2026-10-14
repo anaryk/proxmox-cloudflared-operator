@@ -137,6 +137,31 @@ func TestDoctorGoldenOfAnAppliance(t *testing.T) {
 	requireGolden(t, "doctor_appliance.golden", res.out)
 }
 
+// --cluster has the controller ask the other nodes; their findings come
+// named with their node, in the shape of every other.
+func TestDoctorOfTheCluster(t *testing.T) {
+	e := &fakeEngine{state: healthyState(), findings: []doctor.Finding{
+		{Check: "answer on pve2", Level: doctor.LevelOK, Detail: "the agent answered with 1 finding"},
+		{Check: "answer on pve3", Level: doctor.LevelWarn, Detail: "the agent did not answer within 30s", Fix: "pco doctor on pve3"},
+		{Check: "clock skew", Level: doctor.LevelOK, Detail: "the clocks of the nodes agree within 2s"},
+		{Check: "cloudflared", Level: doctor.LevelOK, Detail: "cloudflared 2026.9.0"},
+		{Check: "cloudflared on pve2", Level: doctor.LevelFail, Detail: "cloudflared does not run: exec: no such file",
+			Fix: "install cloudflared from the package repository of Cloudflare"},
+		{Check: "lease", Level: doctor.LevelOK, Detail: "pve1 holds the lease at generation 4, refreshed 3s ago"},
+	}}
+	r := newRunner(t, serveFake(t, e))
+
+	res := r.run("", "doctor", "--cluster")
+
+	require.ErrorIs(t, res.err, errReported)
+	require.Equal(t, []string{"doctor --cluster"}, e.called())
+	requireGolden(t, "doctor_cluster.golden", res.out)
+
+	e.calls = nil
+	r.run("", "doctor")
+	require.Empty(t, e.called(), "a plain run asks no other node")
+}
+
 func TestADoctorWithWarningsOnlyExitsWithZero(t *testing.T) {
 	e := &fakeEngine{state: healthyState(), findings: someFindings()[1:]}
 	r := newRunner(t, serveFake(t, e))

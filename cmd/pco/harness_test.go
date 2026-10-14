@@ -297,7 +297,10 @@ func (f *fakeEngine) Diagnose(_ context.Context, hostname string) ([]doctor.Step
 	return f.steps, f.diagnoseErr
 }
 
-func (f *fakeEngine) Doctor(context.Context) []doctor.Finding {
+func (f *fakeEngine) Doctor(ctx context.Context) []doctor.Finding {
+	if doctor.OptionsOf(ctx).Cluster {
+		f.record("doctor --cluster")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.findings

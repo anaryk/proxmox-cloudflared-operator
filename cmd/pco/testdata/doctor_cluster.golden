@@ -1,0 +1,10 @@
+✓ answer on pve2       the agent answered with 1 finding
+! answer on pve3       the agent did not answer within 30s
+                       fix: pco doctor on pve3
+✓ clock skew           the clocks of the nodes agree within 2s
+✓ cloudflared          cloudflared 2026.9.0
+✗ cloudflared on pve2  cloudflared does not run: exec: no such file
+                       fix: install cloudflared from the package repository of Cloudflare
+✓ lease                pve1 holds the lease at generation 4, refreshed 3s ago
+
+1 failure, 1 warning.

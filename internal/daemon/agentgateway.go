@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
@@ -12,11 +13,13 @@ import (
 // resolver, the connectors and the egress filter, qm and pct for the writes
 // of guests' cards the controller hands it, and the gateway, which it drives
 // from the networks of its desired state while the controller runs on
-// another node.
-func agentDeps(res agent.Resolver, conns agent.Connectors, filter agent.Egress, gw *gatewayPart) agent.Deps {
+// another node. doctor makes the checks of the node a doctor action of the
+// controller asks for.
+func agentDeps(res agent.Resolver, conns agent.Connectors, filter agent.Egress, gw *gatewayPart,
+	doctor func(context.Context) (json.RawMessage, error)) agent.Deps {
 	run := setup.NewHostRunner()
 	d := agent.Deps{
-		Resolver: res, Connectors: conns, Egress: filter,
+		Resolver: res, Connectors: conns, Egress: filter, Doctor: doctor,
 		Runner: func(ctx context.Context, argv ...string) (string, error) {
 			return run.Run(ctx, argv[0], argv[1:]...)
 		},

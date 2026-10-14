@@ -137,8 +137,22 @@ func (r *Runner) Diagnose(ctx context.Context, name string) ([]Step, error) {
 	return await(ctx, f)
 }
 
-// Doctor checks the installation.
-func (r *Runner) Doctor(ctx context.Context) []Finding { return r.DoctorWith(ctx, Options{}) }
+type optionsKey struct{}
+
+// WithOptions has a run of the doctor that ctx is given to go by opts, as
+// the API asks for it.
+func WithOptions(ctx context.Context, opts Options) context.Context {
+	return context.WithValue(ctx, optionsKey{}, opts)
+}
+
+// OptionsOf are the options WithOptions gave ctx; none when it gave none.
+func OptionsOf(ctx context.Context) Options {
+	opts, _ := ctx.Value(optionsKey{}).(Options)
+	return opts
+}
+
+// Doctor checks the installation, with the options ctx names (WithOptions).
+func (r *Runner) Doctor(ctx context.Context) []Finding { return r.DoctorWith(ctx, OptionsOf(ctx)) }
 
 // DoctorWith checks the installation with options. A run that asks the
 // agents of the other nodes is one of its own: it waits for them.

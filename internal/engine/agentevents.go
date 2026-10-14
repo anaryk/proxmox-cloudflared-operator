@@ -49,8 +49,11 @@ type takenOf struct {
 // TakeAgentEvents puts the events of a status of node's agent into the
 // log, each tagged with the node, and returns the cursor to acknowledge in
 // the heartbeat: that of the last event the status carried. An event that
-// cannot be read is skipped and acknowledged with the others.
+// cannot be read is skipped and acknowledged with the others. The answers
+// to doctor actions the status carries are taken as it comes, for the
+// doctor that waits for them.
 func (e *Engine) TakeAgentEvents(node string, st agentproto.Status, epoch agentproto.Epoch) uint64 {
+	e.asks.take(node, st.Actions)
 	t := &e.taken
 	t.mu.Lock()
 	if t.nodes == nil {

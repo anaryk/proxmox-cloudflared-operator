@@ -3,8 +3,10 @@ package daemon
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -63,7 +65,34 @@ func (d doctorCluster) CAExpires() (time.Time, error) {
 
 func (d doctorCluster) Facts() engine.ClusterFacts { return d.eng.ClusterFacts() }
 
-// Ask asks no agent: this daemon does not hand out doctor actions.
-func (d doctorCluster) Ask(context.Context, []string, time.Duration) map[string]doctor.AgentAnswer {
-	return nil
+// Ask has the agents of nodes make their checks through a doctor action,
+// and reads their findings.
+func (d doctorCluster) Ask(ctx context.Context, nodes []string, wait time.Duration) map[string]doctor.AgentAnswer {
+	out := map[string]doctor.AgentAnswer{}
+	for node, res := range d.eng.AskDoctor(ctx, nodes, wait) {
+		a := doctor.AgentAnswer{Answered: true, Err: res.Error}
+		if res.Error == "" {
+			if err := json.Unmarshal(res.Data, &a.Findings); err != nil {
+				a.Err = "its findings cannot be read: " + err.Error()
+			}
+		}
+		out[node] = a
+	}
+	return out
+}
+
+// agentDoctor makes the checks of this node for a doctor action of the
+// controller, through the doctor of the daemon once it is made.
+type agentDoctor struct {
+	runner atomic.Pointer[doctor.Runner]
+}
+
+func (a *agentDoctor) set(r *doctor.Runner) { a.runner.Store(r) }
+
+func (a *agentDoctor) run(ctx context.Context) (json.RawMessage, error) {
+	r := a.runner.Load()
+	if r == nil {
+		return nil, errors.New("the daemon of the node is starting")
+	}
+	return json.Marshal(r.AgentChecks(ctx))
 }

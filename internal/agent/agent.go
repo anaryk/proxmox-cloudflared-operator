@@ -13,6 +13,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -149,6 +150,10 @@ type Deps struct {
 	// as when an address whose MAC moved failed its verification, so that it
 	// is reported soon. It may be nil.
 	Changed func()
+	// Doctor makes the checks of this node and its agent, for a doctor
+	// action of the controller, and returns the findings as JSON. Nil
+	// refuses the action.
+	Doctor func(ctx context.Context) (json.RawMessage, error)
 	// Event receives the agent's events. It may be nil: they are logged.
 	Event func(Event)
 	// After starts a wait, and Timeout gives a call its deadline. Both may
@@ -218,6 +223,8 @@ type Agent struct {
 
 	// obs is what the observer of the forwarding tables gave the agent.
 	obs observing
+	// docs are the doctor actions of this process.
+	docs doctorRuns
 }
 
 // New returns the agent of a node, with the desired state, the epoch, the

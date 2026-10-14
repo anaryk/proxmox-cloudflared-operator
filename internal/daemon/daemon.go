@@ -365,6 +365,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		beside = append(beside, func(ctx context.Context) { web.keep(ctx, deps.WebEvery) })
 	}
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
+	cp.doctor.set(doc)
 	gid, uids, web := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc, cp.agentView}, cfg.Version, uids, log)
 	srv.SetRole(api.LeaseRole(eng.State, hl.alone))
@@ -496,7 +497,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Inventory: inv,
 		StartOnly: func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Restart:   restart,
-		Fleet:     engine.NewLocalFleet(agentDeps(res, conns, filter, gw)),
+		Fleet:     engine.NewLocalFleet(agentDeps(res, conns, filter, gw, cp.doctor.run)),
 		NewClient: holdingClients(deps.clients(settings.CloudflareBudget, regate(hl)), hl.keeper),
 		Node:      cfg.Node,
 		Now:       deps.Now,
