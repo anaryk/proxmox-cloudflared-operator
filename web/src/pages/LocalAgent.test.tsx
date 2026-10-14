@@ -26,6 +26,7 @@ const agent: AgentView = {
   certFingerprint: 'deadbeef'.repeat(8),
   certExpires: '2026-12-20T12:00:00Z',
   readyReplicas: { '00000000-0000-4000-8000-000000000001': 2 },
+  heard: true,
   heartbeatAge: 1e9,
   problems: ['a problem of the agent'],
 }
@@ -56,6 +57,16 @@ test('a silent controller, and a node that stood down', async () => {
   const card = await screen.findByRole('region', { name: 'Agent' })
   await screen.findByText('stood down')
   expect(card.textContent).toContain('the controller named this node removed')
+})
+
+test('an agent no heartbeat came to yet says so, and no age of one', async () => {
+  stubApi({ 'GET /api/v1/local/agent': { status: 200, body: { ...agent, heard: false, heartbeatAge: 0, readyReplicas: undefined } } })
+  const { store } = await fakeStore({ state: cluster })
+  renderPage(store, <LocalAgent />)
+  const card = await screen.findByRole('region', { name: 'Agent' })
+  await screen.findByText('not heard')
+  expect(card.textContent).toContain('no heartbeat came yet')
+  expect(card.textContent).not.toContain('last heartbeat')
 })
 
 test('on a node that does not hold the lease the page says so, and the daemon’s refusal is shown', async () => {

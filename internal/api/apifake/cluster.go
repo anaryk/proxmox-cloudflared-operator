@@ -424,7 +424,7 @@ func (e *Engine) AgentView() (agentproto.AgentView, error) {
 		Epoch: agentproto.Epoch{InstallID: "abc123"}, Connectors: len(e.state.Connectors)}
 	if l := e.state.Lease; l != nil {
 		v.Epoch.Generation, v.Epoch.Nonce = l.Generation, l.Nonce
-		v.Seq, v.SeqAge, v.HeartbeatAge = 42, 3*time.Second, time.Second
+		v.Seq, v.SeqAge, v.Heard, v.HeartbeatAge = 42, 3*time.Second, true, time.Second
 	}
 	if len(e.state.Nodes) > 0 {
 		v.CertFingerprint = EnrolledFingerprint(e.state.Node)

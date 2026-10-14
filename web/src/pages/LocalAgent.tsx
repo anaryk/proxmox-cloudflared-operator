@@ -38,9 +38,9 @@ export function Agent({ agent }: { agent: AgentView }) {
           </p>
         ) : (
           <p>
-            <StatusBadge tone={silent ? 'warn' : 'ok'}>{silent ? 'silent' : 'heard'}</StatusBadge>{' '}
+            <StatusBadge tone={silent || !agent.heard ? 'warn' : 'ok'}>{!agent.heard ? 'not heard' : silent ? 'silent' : 'heard'}</StatusBadge>{' '}
             <span className="muted">
-              last heartbeat {age(agent.heartbeatAge)}
+              {agent.heard ? `last heartbeat ${age(agent.heartbeatAge)}` : 'no heartbeat came yet'}
               {silent && `; the controller has been silent for ${durationText(nanosToMs(agent.silentFor))}`}
             </span>
           </p>
