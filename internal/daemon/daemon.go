@@ -486,7 +486,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	log := cfg.Log
 	// The guests and the network of this node are read with pvesh while its
 	// pveproxy does not answer: no other node's can then.
-	onNode, err := pve.NewLocal(setup.NewHostRunner(), cfg.Node)
+	onNode, err := pve.NewLocal(pve.ExecPvesh(), cfg.Node)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the reader of this node: %w", err)
 	}
