@@ -507,24 +507,24 @@ func askAgents(ctx context.Context, st engine.State, src ClusterSource) []Findin
 		case a.Err != "":
 			f = fail(check, "the agent could not make its checks: "+a.Err, "pco doctor on "+node)
 		default:
-			kept, named, over := boundAnswer(a.Findings)
+			kept, unknown, over := boundAnswer(a.Findings)
 			for _, got := range kept {
 				got.Check += " on " + node
 				out = append(out, got)
 			}
 			detail := fmt.Sprintf("the agent answered with %s", count(len(a.Findings), "finding", "findings"))
-			if named+over == 0 {
+			if unknown+over == 0 {
 				f = ok(check, detail)
 				break
 			}
 			var why []string
-			if named > 0 {
-				why = append(why, fmt.Sprintf("%d named another node", named))
+			if unknown > 0 {
+				why = append(why, fmt.Sprintf("%d of no check an agent makes", unknown))
 			}
 			if over > 0 {
 				why = append(why, fmt.Sprintf("%d over the %d an answer may carry", over, maxAnswerFindings))
 			}
-			f = warn(check, fmt.Sprintf("%s; %d were left out: %s", detail, named+over, strings.Join(why, ", ")), "pco doctor on "+node)
+			f = warn(check, fmt.Sprintf("%s; %d were left out: %s", detail, unknown+over, strings.Join(why, ", ")), "pco doctor on "+node)
 		}
 		f.Check += " on " + node
 		out = append(out, f)
@@ -532,14 +532,34 @@ func askAgents(ctx context.Context, st engine.State, src ClusterSource) []Findin
 	return out
 }
 
+// agentCheckNames are the names of the checks an agent makes of its node
+// (AgentChecks): those of the node, of its agent, and of the appliance in a
+// container. An answer names no other.
+func agentCheckNames() map[string]bool {
+	names := map[string]bool{"doctor": true}
+	for _, n := range []string{
+		"cloudflared", "outbound", "proxmox", "store", "node lock", "egress", "nftables",
+		"agent", "agent certificate", "controller", "agent dial",
+	} {
+		names[n] = true
+	}
+	for _, r := range applianceRuns {
+		names[r.name] = true
+	}
+	return names
+}
+
 // boundAnswer is what the controller takes of the findings an agent
-// answered with: none that names another node, as "store on pve3" would, at
-// most maxAnswerFindings, each text clipped to maxAnswerText bytes and each
-// level one of the three. named and over count those left out.
-func boundAnswer(findings []Finding) (kept []Finding, named, over int) {
+// answered with: only those of a check an agent makes, by its exact name,
+// which the caller names with the node itself, so that no answer can pass a
+// finding off as one of another node or of the controller; at most
+// maxAnswerFindings, each text clipped to maxAnswerText bytes and each level
+// one of the three. unknown and over count those left out.
+func boundAnswer(findings []Finding) (kept []Finding, unknown, over int) {
+	names := agentCheckNames()
 	for _, f := range findings {
-		if strings.Contains(f.Check, " on ") {
-			named++
+		if !names[f.Check] {
+			unknown++
 			continue
 		}
 		if len(kept) == maxAnswerFindings {
@@ -551,10 +571,10 @@ func boundAnswer(findings []Finding) (kept []Finding, named, over int) {
 		default:
 			f.Level = LevelWarn
 		}
-		f.Check, f.Detail, f.Fix = clipText(f.Check), clipText(f.Detail), clipText(f.Fix)
+		f.Detail, f.Fix = clipText(f.Detail), clipText(f.Fix)
 		kept = append(kept, f)
 	}
-	return kept, named, over
+	return kept, unknown, over
 }
 
 // clipText cuts s to maxAnswerText bytes, at a whole character.

@@ -3,7 +3,6 @@ package doctor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -242,17 +241,21 @@ func TestTheChecksOfAClusterSayWhatTheyCouldNotRead(t *testing.T) {
 // pco doctor --cluster asks the other Active nodes, waits 30 seconds for
 // them, and names their findings with the node; an agent that does not
 // answer is listed.
-// What an agent answers is its own word: bounded in number and length, of
-// the three levels, and naming no other node.
+// What an agent answers is its own word: only findings of the checks an
+// agent makes, by their exact names, which the controller names with the
+// node itself; bounded in number and length, and of the three levels.
 func TestTheAnswerOfAnAgentIsBounded(t *testing.T) {
 	st, env := healthyCluster()
 	long := strings.Repeat("é", 400)
-	findings := []Finding{
-		{Check: "cloudflared", Level: "fine", Detail: long, Fix: long},
-		{Check: "store on pve3", Level: LevelFail, Detail: "a word about another node"},
+	findings := []Finding{{Check: "cloudflared", Level: "fine", Detail: long, Fix: long}}
+	for _, spoof := range []string{
+		"store on pve3", "cloudflared\u00a0on pve1", "cloudflared on pve1\u200b", "cloudflared ", "cloudflared\non pve1",
+		"c\u043eudflared", "lease", "answer",
+	} {
+		findings = append(findings, Finding{Check: spoof, Level: LevelFail, Detail: "a word about something else"})
 	}
-	for i := range maxAnswerFindings + 5 {
-		findings = append(findings, Finding{Check: fmt.Sprintf("extra %d", i), Level: LevelOK})
+	for range maxAnswerFindings + 5 {
+		findings = append(findings, Finding{Check: "egress", Level: LevelOK})
 	}
 	env.answers = map[string]AgentAnswer{"pve2": {Answered: true, Findings: findings}}
 
@@ -262,7 +265,9 @@ func TestTheAnswerOfAnAgentIsBounded(t *testing.T) {
 	for _, f := range got {
 		if strings.HasSuffix(f.Check, " on pve2") && !strings.HasPrefix(f.Check, "answer") {
 			mine = append(mine, f)
+			require.Contains(t, []string{"cloudflared on pve2", "egress on pve2"}, f.Check)
 		}
+		require.NotContains(t, f.Detail, "a word about something else")
 	}
 	require.Len(t, mine, maxAnswerFindings)
 	first := clusterFindings(got)["cloudflared on pve2"]
@@ -270,10 +275,19 @@ func TestTheAnswerOfAnAgentIsBounded(t *testing.T) {
 	require.LessOrEqual(t, len(first.Detail), maxAnswerText)
 	require.True(t, utf8.ValidString(first.Detail))
 	require.LessOrEqual(t, len(first.Fix), maxAnswerText)
-	require.NotContains(t, clusterFindings(got), "store on pve3 on pve2")
 	answer := clusterFindings(got)["answer on pve2"]
 	require.Equal(t, LevelWarn, answer.Level)
-	require.Equal(t, "the agent answered with 71 findings; 7 were left out: 1 named another node, 6 over the 64 an answer may carry", answer.Detail)
+	require.Equal(t, "the agent answered with 78 findings; 14 were left out: 8 of no check an agent makes, 6 over the 64 an answer may carry", answer.Detail)
+}
+
+// Every check AgentChecks makes is one an answer may carry.
+func TestTheChecksOfAnAgentAreTheOnesItMayAnswerWith(t *testing.T) {
+	st, env := healthyCluster()
+	env.agent.Remote = true
+	names := agentCheckNames()
+	for _, f := range AgentChecks(t.Context(), st, env) {
+		require.True(t, names[f.Check], f.Check)
+	}
 }
 
 func TestTheClusterRunAsksTheOtherAgents(t *testing.T) {
