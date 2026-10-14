@@ -1149,6 +1149,12 @@ open until the next one ends:
    ended, and the CA is rotated. The old CA is taken for ten more minutes, so that every
    node issues its certificate again; after that only certificates under the new CA are.
 
+A second node forgotten with `--compromised` while a rotation runs joins it. Every step that
+ran while that node was still a member is done again, since it may hold what each step made:
+new API tokens and a new Proxmox secret are needed again, every tunnel gets another secret, and
+a CA rotated already is rotated a second time once the ten minutes of its previous one ended.
+`pco cluster status` names every node of the rotation.
+
 The window of step 2 lasts as long as the rollout of the new run tokens, usually a minute
 per node. Keep it short: replace the API tokens and run `pco setup --repair` right after the
 forget, and follow it with `pco cluster status`.

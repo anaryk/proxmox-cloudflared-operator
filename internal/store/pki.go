@@ -330,7 +330,12 @@ type CARotation struct {
 	// joined it.
 	Also      []string  `json:"also,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
-	Actor     string    `json:"actor,omitempty"`
+	// Since is when the last node joined, from which every step counts:
+	// what ran before it, the node may hold. Zero is StartedAt.
+	Since time.Time `json:"since,omitzero"`
+	// StepsAt is when each step done ran.
+	StepsAt map[string]time.Time `json:"stepsAt,omitempty"`
+	Actor   string               `json:"actor,omitempty"`
 	// Done are the steps finished, in their order.
 	Done       []string  `json:"done,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitzero"`
@@ -358,6 +363,15 @@ type TunnelsRotated struct {
 	// Connectors are, by tunnel id, the ids of the connectors the nodes
 	// ran, which are dropped at Cloudflare.
 	Connectors map[string][]string `json:"connectors,omitempty"`
+}
+
+// From is when the steps of a rotation count from: the last node that
+// joined it, or its start.
+func (r CARotation) From() time.Time {
+	if r.Since.After(r.StartedAt) {
+		return r.Since
+	}
+	return r.StartedAt
 }
 
 // CARotation returns the rotation under way or last made.

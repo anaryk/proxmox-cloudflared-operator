@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
@@ -89,13 +90,41 @@ func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResul
 	return res, nil
 }
 
+// redoneOnJoin are the steps a node that joins a rotation has done again
+// when they ran while it was a member: it may hold what each of them made.
+var redoneOnJoin = []string{stepCredentials, stepProxmox, stepTunnels, stepRollout, stepCA}
+
 // joinRotation adds a node forgotten as compromised to the rotation under
-// way: it keeps when it began and what it did, so that the CA it made, or
-// makes, is the one new CA, and the connectors of the node are dropped as
-// the tunnels it has yet to rotate are.
+// way. Every step that ran while the node was still a member is done again
+// from now: the credentials and the Proxmox secret count from the values of
+// now, every tunnel gets a secret again, and a CA rotated already is rotated
+// a second time once the window of its previous one ended, never a third
+// at once. The rotation keeps when it began.
 func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARotation, res ForgetResult) (ForgetResult, error) {
+	now := e.d.Now()
 	if name != rec.Node && !slices.Contains(rec.Also, name) {
 		rec.Also = append(rec.Also, name)
+	}
+	var redo []string
+	for _, step := range redoneOnJoin {
+		if slices.Contains(rec.Done, step) && !rec.StepsAt[step].After(now) {
+			redo = append(redo, step)
+		}
+	}
+	rec.Done = slices.DeleteFunc(rec.Done, func(step string) bool { return slices.Contains(redo, step) })
+	for _, step := range redo {
+		delete(rec.StepsAt, step)
+	}
+	if slices.Contains(redo, stepTunnels) || slices.Contains(redo, stepRollout) {
+		rec.Rotated, rec.TakenUp, rec.At, rec.Cleaned = nil, nil, time.Time{}, nil
+	}
+	// The baselines are what the node may have seen: the credentials stored
+	// and the Proxmox secret of now.
+	rec.Since, rec.PVESecretSHA256 = now, ""
+	if tok, found, err := e.d.Store.PVEToken(); err != nil {
+		return res, fmt.Errorf("reading the Proxmox token: %w", err)
+	} else if found {
+		rec.PVESecretSHA256 = secretHash(tok.Secret.Reveal())
 	}
 	for tunnel, ids := range e.connectorIDsOf(name) {
 		if rec.Connectors == nil {
@@ -106,11 +135,14 @@ func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARota
 	if err := e.d.Store.SaveCARotation(rec); err != nil {
 		return res, fmt.Errorf("recording the rotation: %w", err)
 	}
-	e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx),
-		Message: fmt.Sprintf("node %s was forgotten as compromised: it joins the rotation of every secret that began at %s for node %s",
-			name, rec.StartedAt.UTC().Format(time.RFC3339), rec.Node)})
-	res.Done = append(res.Done, fmt.Sprintf("the node joins the rotation of every secret under way since %s for node %s; pco cluster status follows it",
-		rec.StartedAt.UTC().Format(time.RFC3339), rec.Node))
+	msg := fmt.Sprintf("node %s was forgotten as compromised: it joins the rotation of every secret that began at %s for node %s",
+		name, rec.StartedAt.UTC().Format(time.RFC3339), rec.Node)
+	if len(redo) > 0 {
+		msg += fmt.Sprintf(", whose steps that ran while it was a member are done again: %s", strings.Join(redo, ", "))
+	}
+	e.events.add(Event{At: now, Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx), Message: msg})
+	res.Done = append(res.Done, fmt.Sprintf("the node joins the rotation of every secret under way since %s for node %s; "+
+		"what it ran while the node was a member is done again; pco cluster status follows it", rec.StartedAt.UTC().Format(time.RFC3339), rec.Node))
 	res.Pending = []string{}
 	for _, step := range rotationSteps {
 		if !slices.Contains(rec.Done, step) {
@@ -178,6 +210,10 @@ func (c *cycleRun) rotationStep() {
 		if !slices.Contains(rec.Done, step) {
 			rec.Done = append(rec.Done, step)
 		}
+		if rec.StepsAt == nil {
+			rec.StepsAt = map[string]time.Time{}
+		}
+		rec.StepsAt[step] = c.now
 		if step == stepPrevious {
 			rec.FinishedAt = c.now
 		}
@@ -253,12 +289,12 @@ func (c *cycleRun) caFacts() (caFactsView, error) {
 // made for the rotation and not yet named in leader.json or in the record
 // is what the next cycle finishes, not drift.
 func rotationDrift(rec store.CARotation, f caFactsView) string {
-	rotated := !f.rotatedAt.IsZero() && !f.rotatedAt.Before(rec.StartedAt)
+	rotated := !f.rotatedAt.IsZero() && !f.rotatedAt.Before(rec.From())
 	caDone := slices.Contains(rec.Done, stepCA)
 	switch {
 	case caDone && !rotated:
 		return fmt.Sprintf("the record says the CA was rotated, but the store's CA was not since the rotation began at %s: the store was restored from an earlier copy",
-			rec.StartedAt.UTC().Format(time.RFC3339))
+			rec.From().UTC().Format(time.RFC3339))
 	case caDone && f.leader != f.current:
 		return fmt.Sprintf("the record says the CA was rotated, but leader.json names CA %s where the store's current CA is %s", caName(f.leader), f.current)
 	case !caDone && rotated && !f.previous:
@@ -292,7 +328,7 @@ func (m *nodeMemory) noteDrift(c *cycleRun, node, why string) {
 func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bool, wait string) {
 	switch step {
 	case stepCredentials:
-		if c.credentialsReplaced(rec.StartedAt) {
+		if c.credentialsReplaced(rec.From()) {
 			return true, ""
 		}
 		return false, fmt.Sprintf(problemRotationCredentials, rec.Node)
@@ -318,7 +354,7 @@ func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bo
 		if why := c.rotationHeld(); why != "" {
 			return false, fmt.Sprintf(problemRotationHeld, rec.Node, "the CA", why)
 		}
-		if err := c.rotateCA(rec.StartedAt); err != nil {
+		if err := c.rotateCA(rec.From()); err != nil {
 			return false, fmt.Sprintf(problemRotationCA, rec.Node, err)
 		}
 		return true, ""
@@ -588,7 +624,7 @@ func (c *cycleRun) rotationView() *CARotationView {
 	if err != nil || !found {
 		return nil
 	}
-	v := &CARotationView{Node: rec.Node, StartedAt: rec.StartedAt, Done: slices.Clone(rec.Done), FinishedAt: rec.FinishedAt}
+	v := &CARotationView{Node: rec.Node, Also: slices.Clone(rec.Also), StartedAt: rec.StartedAt, Done: slices.Clone(rec.Done), FinishedAt: rec.FinishedAt}
 	for _, step := range rotationSteps {
 		if !slices.Contains(rec.Done, step) {
 			v.Next = step

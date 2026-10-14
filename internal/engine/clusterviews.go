@@ -160,7 +160,10 @@ type UpgradeView struct {
 // CARotationView is the rotation of every secret a node forgotten as
 // compromised held, under way or last made.
 type CARotationView struct {
-	Node      string    `json:"node"`
+	Node string `json:"node"`
+	// Also are the nodes forgotten as compromised while it ran, which
+	// joined it.
+	Also      []string  `json:"also,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitzero"`
 	Done      []string  `json:"done,omitempty"`
 	// Next is the step it waits on; empty once finished.
@@ -294,7 +297,7 @@ func (c *ClusterView) clone() *ClusterView {
 	}
 	if r := c.CARotation; r != nil {
 		copied := *r
-		copied.Done, copied.Refused = slices.Clone(r.Done), slices.Clone(r.Refused)
+		copied.Also, copied.Done, copied.Refused = slices.Clone(r.Also), slices.Clone(r.Done), slices.Clone(r.Refused)
 		v.CARotation = &copied
 	}
 	return &v

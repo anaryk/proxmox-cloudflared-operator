@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -469,39 +470,109 @@ func TestTheRolloutWaitsForAReportAfterTheRotation(t *testing.T) {
 	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
 }
 
-// A second node forgotten as compromised while a rotation runs joins it:
-// the record keeps when it began and what it did, and the CA it made is
-// never replaced by a third one, which would put the agents out of the
-// window of the previous one.
-func TestASecondCompromisedNodeJoinsTheRotationUnderWay(t *testing.T) {
+// A second node forgotten as compromised while a rotation runs joins it,
+// and every step that ran while that node was still a member is done again
+// from the time it joined: it may hold the credentials, the Proxmox secret,
+// the run tokens and the CA those steps made. A CA rotated already is
+// rotated a second time once the window of its previous one ended, never a
+// third one at once; a crash anywhere in between changes nothing of that.
+func TestASecondCompromisedNodeHasEveryStepItSawDoneAgain(t *testing.T) {
 	w, old := compromisedWorld(t)
+	id := w.eng.State().Tunnels[0].ID
 	require.NoError(t, w.store.DeleteCredential(testCred))
 	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
 	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
 	st := w.settle()
 	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
 	before := w.rotationRecord(t)
-	made, _, rotatedAt, err := w.store.CA()
+	for _, step := range before.Done {
+		require.False(t, before.StepsAt[step].IsZero(), "the time %s ran is recorded", step)
+	}
+	first, _, firstAt, err := w.store.CA()
 	require.NoError(t, err)
 	*w.listed = []members.Member{{Name: "pve1", ID: 1, Online: true}}
 	w.acts["pve2"].silent = true
+	w.clock.advance(time.Second)
+	joined := w.clock.now()
 
 	res, err := w.eng.ForgetNode(t.Context(), "pve2", true)
 
 	require.NoError(t, err)
-	require.Equal(t, []string{stepPrevious}, res.Pending)
+	require.Equal(t, rotationSteps, res.Pending, "every step ran while pve2 was a member")
 	rec := w.rotationRecord(t)
 	require.Equal(t, before.StartedAt, rec.StartedAt)
-	require.Equal(t, before.Done, rec.Done)
-	require.Equal(t, before.Rotated, rec.Rotated)
-	require.Equal(t, "pve3", rec.Node)
+	require.Equal(t, joined, rec.Since)
+	require.Empty(t, rec.Done)
+	require.Empty(t, rec.Rotated)
 	require.Equal(t, []string{"pve2"}, rec.Also)
-	w.tick(time.Second)
-	again, prev, rotatedAgain, err := w.store.CA()
+	st = w.tick(time.Second)
+	require.Equal(t, []string{"pve2"}, st.Cluster.CARotation.Also)
+	require.True(t, hasProblem(st, fmt.Sprintf(problemRotationCredentials, "pve3")), st.Problems)
+
+	// The credentials added before pve2 left count for nothing.
+	w.restart(t)
+	require.NoError(t, w.store.DeleteCredential("new1"))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new2", Label: "newer", Kind: "scoped", Token: store.NewSecret("a-newer-token-of-twenty"), AddedAt: w.clock.now().Add(time.Second)}))
+	st = w.tick(time.Second)
+	require.Equal(t, stepProxmox, st.Cluster.CARotation.Next, "the secret pve2 saw is no new one")
+
+	w.restart(t)
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("newer-secret")}))
+	st = w.tick(time.Second)
+	require.Equal(t, 2, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id), "the tunnel is rotated again")
+	st = w.tick(time.Second)
+	require.Equal(t, stepCA, st.Cluster.CARotation.Next, st.Problems)
+	require.True(t, hasProblem(st, "the previous CA of an earlier rotation is taken until"), st.Problems)
+	cur, prev, _, err := w.store.CA()
 	require.NoError(t, err)
-	require.Equal(t, made.CertPEM, again.CertPEM, "no third CA")
-	require.Equal(t, rotatedAt, rotatedAgain)
+	require.Equal(t, first.CertPEM, cur.CertPEM, "no third CA at once")
 	require.Equal(t, old.SHA256(), fingerprintOf(t, prev.CertPEM))
+
+	// The window of the first new CA ends: its previous goes, and the CA is
+	// rotated a second time.
+	w.clock.advance(caRotationWindow - (w.clock.now().Sub(firstAt)))
+	st = w.tick(time.Second)
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+	second, prev, secondAt, err := w.store.CA()
+	require.NoError(t, err)
+	require.NotEqual(t, first.CertPEM, second.CertPEM)
+	require.Equal(t, first.CertPEM, prev.CertPEM, "the first new CA is the previous one")
+
+	// A crash after the second CA was made and before the record said so
+	// makes no third.
+	rec = w.rotationRecord(t)
+	rec.Done = slices.DeleteFunc(rec.Done, func(s string) bool { return s == stepCA })
+	require.NoError(t, w.store.SaveCARotation(rec))
+	w.restart(t)
+	st = w.tick(time.Second)
+	again, _, againAt, err := w.store.CA()
+	require.NoError(t, err)
+	require.Equal(t, second.CertPEM, again.CertPEM)
+	require.Equal(t, secondAt, againAt)
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+
+	st = w.tick(caRotationWindow)
+	require.False(t, st.Cluster.CARotation.FinishedAt.IsZero(), st.Problems)
+	_, prev, _, err = w.store.CA()
+	require.NoError(t, err)
+	require.Nil(t, prev)
+}
+
+// A node that joins a rotation before any step ran changes nothing of it
+// but the nodes it names.
+func TestANodeThatJoinsBeforeAnyStepRedoesNothing(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	before := w.rotationRecord(t)
+	*w.listed = []members.Member{{Name: "pve1", ID: 1, Online: true}}
+	w.acts["pve2"].silent = true
+
+	_, err := w.eng.ForgetNode(t.Context(), "pve2", true)
+
+	require.NoError(t, err)
+	rec := w.rotationRecord(t)
+	require.Equal(t, before.StartedAt, rec.StartedAt)
+	require.Equal(t, before.PVESecretSHA256, rec.PVESecretSHA256)
+	require.Equal(t, []string{"pve2"}, rec.Also)
 }
 
 // A CA step of a new rotation that finds the previous CA of an earlier one

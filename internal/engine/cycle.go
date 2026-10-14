@@ -261,6 +261,13 @@ func (c *cycleRun) run() State {
 	}
 	if c.fleet != nil {
 		c.st.Cluster = c.clusterView()
+	} else if !c.clustered() {
+		// A node left alone, as after every other was forgotten, still
+		// shows the rotation that runs for them.
+		c.st.Cluster = nil
+		if v := c.rotationView(); v != nil {
+			c.st.Cluster = &ClusterView{Controller: c.e.d.Node, CARotation: v}
+		}
 	}
 	c.st.FinishedAt = c.e.d.Now()
 	c.e.lastVerdict = cmp.Or(c.gateVerdict, verdictNoRun)
