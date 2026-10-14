@@ -124,6 +124,17 @@ func (r *run) takeOver() error {
 	if err := r.nameCA(made); err != nil {
 		return err
 	}
+	// A rotation the lost cluster left unfinished would go on here with
+	// steps meant for its nodes and its CA; the new CA and the rotation of
+	// the tunnel secrets the promotion asks for take its place.
+	switch rot, found, err := r.st.CARotation(); {
+	case err != nil:
+		return fmt.Errorf("reading the rotation of the lost cluster: %w", err)
+	case found && rot.FinishedAt.IsZero():
+		if err := r.st.DeleteCARotation(); err != nil {
+			return fmt.Errorf("dropping the rotation of the lost cluster: %w", err)
+		}
+	}
 	nodes, err := r.st.Nodes()
 	if err != nil {
 		return fmt.Errorf("reading the node registry: %w", err)
@@ -135,7 +146,7 @@ func (r *run) takeOver() error {
 		entry := store.NodeEntry{Name: n.Name, Index: n.Index, Since: r.now(), Kind: n.Kind}
 		if n.Name != r.o.Node {
 			entry = n
-			entry.State, entry.StateSince = string(agentproto.Removed), r.now()
+			entry.State, entry.StateSince, entry.Rotation = string(agentproto.Removed), r.now(), nil
 		}
 		if err := r.st.SaveNode(entry); err != nil {
 			return fmt.Errorf("retiring node %s of the lost cluster: %w", n.Name, err)

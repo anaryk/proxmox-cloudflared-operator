@@ -385,6 +385,40 @@ func (s *Store) CARotation() (CARotation, bool, error) {
 	return getOne[CARotation](s.cluster, kindMeta, idCARotation)
 }
 
+// DeleteCARotation removes the record of a rotation. A missing one is not an
+// error.
+func (s *Store) DeleteCARotation() error { return s.cluster.Delete(kindMeta, idCARotation) }
+
+// RestoreRotation is the rotation of the secret of every tunnel of an install
+// restored from a bundle, which its promotion asks for: the run tokens that
+// copies of the lost install hold stop working. Since is when the promotion
+// asked; the cycles keep the progress until every tunnel was rotated, taken
+// up and cleaned.
+type RestoreRotation struct {
+	Since time.Time `json:"since"`
+	TunnelsRotated
+	// Cleaned are the tunnels rotated whose connections were all ended once
+	// every connector that remains ran with the new secret.
+	Cleaned []string `json:"cleaned,omitempty"`
+}
+
+// RestoreRotation returns the rotation of a restored install under way.
+func (s *Store) RestoreRotation() (RestoreRotation, bool, error) {
+	return getOne[RestoreRotation](s.cluster, kindMeta, idRestoreRot)
+}
+
+// SaveRestoreRotation stores the progress of that rotation.
+func (s *Store) SaveRestoreRotation(r RestoreRotation) error {
+	if r.Since.IsZero() {
+		return errors.New("the rotation of a restored install has no time it was asked at")
+	}
+	return s.cluster.put(kindMeta, idRestoreRot, r, true)
+}
+
+// DeleteRestoreRotation removes it once it is done. A missing one is not an
+// error.
+func (s *Store) DeleteRestoreRotation() error { return s.cluster.Delete(kindMeta, idRestoreRot) }
+
 // SaveCARotation stores the progress of a rotation.
 func (s *Store) SaveCARotation(r CARotation) error {
 	switch {

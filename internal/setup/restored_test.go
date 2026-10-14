@@ -321,3 +321,34 @@ func TestACredentialThatNoLongerWorksIsPassedOver(t *testing.T) {
 	require.Equal(t, testNode, e.install().Restored.TakenOverBy)
 	e.requireNoSecret()
 }
+
+// What the lost cluster left unfinished does not go on in the new one: its
+// rotation of every secret, and the rotations of the forgets of its nodes.
+// The take-over makes a new CA, and the promotion gives every tunnel a new
+// secret anyway.
+func TestATakeOverDropsWhatTheLostClusterLeftUnfinished(t *testing.T) {
+	for _, finished := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unfinished", true: "finished"}[finished], func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit(serviceUnit)
+			e.restoredElsewhere()
+			rot := store.CARotation{Node: "pve9", StartedAt: t0.Add(-2 * time.Hour), Done: []string{"pve token"}}
+			if finished {
+				rot.FinishedAt = t0.Add(-time.Hour)
+			}
+			require.NoError(t, e.st.SaveCARotation(rot))
+			n := e.node(firstNode)
+			n.Rotation = &store.ForgetRotation{Since: t0.Add(-time.Hour)}
+			require.NoError(t, e.st.SaveNode(n))
+			e.script(joined()...)
+
+			require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+			e.done()
+
+			_, found, err := e.st.CARotation()
+			require.NoError(t, err)
+			require.Equal(t, finished, found, "a finished rotation is only a record of what was done")
+			require.Nil(t, e.node(firstNode).Rotation)
+		})
+	}
+}

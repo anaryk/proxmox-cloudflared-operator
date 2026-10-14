@@ -71,6 +71,7 @@ const (
 	idNetState   = "state"
 	idPins       = "pins"
 	idCARotation = "ca-rotation"
+	idRestoreRot = "restore-rotation"
 	idUpgrade    = "upgrade"
 )
 
