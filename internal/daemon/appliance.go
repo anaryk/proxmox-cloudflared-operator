@@ -214,7 +214,11 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	dh.allowed = parts.gw.mayChange
 	defer dh.start(ctx)()
 	wd := newWatchdog(deps.Notifier, eng.Healthy, deps.Now, log)
-	return serve(ctx, srv, runEngine(eng), cfg.SocketPath, gid, deps.Notifier, nil, log, watch, keep, traffic.run, keepWeb, sources.keep, wd.run)
+	beside := []func(context.Context){watch, keep, traffic.run, keepWeb, sources.keep, wd.run}
+	if parts.cluster != nil {
+		beside = append(beside, parts.cluster.run)
+	}
+	return serve(ctx, srv, runEngine(eng), cfg.SocketPath, gid, deps.Notifier, nil, log, beside...)
 }
 
 // applianceStore is the check of the store the doctor makes in the appliance:
@@ -318,6 +322,9 @@ type applianceParts struct {
 	conns  *connector.Manager
 	self   *appliance.Self
 	gw     *gatewayPart
+	// cluster is the agent endpoint of a controller container; nil in a
+	// combined appliance.
+	cluster *applianceCluster
 }
 
 // buildAppliance makes the engine of the appliance: the Proxmox client dials
@@ -420,12 +427,20 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		HoldCycle:       holdHook(cfg, deps.Sleep, log),
 	}
 	managedReaders(&ed, client, a.Node)
+	var cluster *applianceCluster
+	if a.KindName() == store.ApplianceController {
+		cluster = newApplianceCluster(cfg, deps, app, st, state, client)
+		cluster.wire(&ed)
+	}
 	eng, err = engine.New(ed)
 	if err != nil {
 		return applianceParts{}, fmt.Errorf("building the engine: %w", err)
 	}
 	gw.allowed = eng.GatewayAllowed
-	return applianceParts{eng: eng, client: client, filter: filter, conns: conns, self: self, gw: gw}, nil
+	if cluster != nil {
+		cluster.attach(eng)
+	}
+	return applianceParts{eng: eng, client: client, filter: filter, conns: conns, self: self, gw: gw, cluster: cluster}, nil
 }
 
 // quorate reads whether the cluster is quorate; a node that is not in a
