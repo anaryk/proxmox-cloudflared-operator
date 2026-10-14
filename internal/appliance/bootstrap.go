@@ -79,18 +79,18 @@ type Bootstrap struct {
 
 // bootstrapFile is a bootstrap as the file holds it, secrets in the clear.
 type bootstrapFile struct {
-	SchemaVersion   int              `json:"schemaVersion"`
-	Mode            string           `json:"mode"`
-	InstallID       string           `json:"installId"`
-	VMID            int              `json:"vmid"`
-	Node            string           `json:"node"`
-	MACs            []string         `json:"macs"`
-	Endpoints       []store.Endpoint `json:"endpoints"`
-	NodeAddrs       []netip.Addr     `json:"nodeAddrs"`
-	PVEToken        bootstrapToken   `json:"pveToken"`
-	CloudflareToken string           `json:"cloudflareToken"`
-	GateTag         string           `json:"gateTag"`
-	Manifest        json.RawMessage  `json:"manifest"`
+	SchemaVersion   int                     `json:"schemaVersion"`
+	Mode            string                  `json:"mode"`
+	InstallID       string                  `json:"installId"`
+	VMID            int                     `json:"vmid"`
+	Node            string                  `json:"node"`
+	MACs            []string                `json:"macs"`
+	Endpoints       []store.Endpoint        `json:"endpoints"`
+	NodeAddrs       []netip.Addr            `json:"nodeAddrs"`
+	PVEToken        bootstrapToken          `json:"pveToken"`
+	CloudflareToken string                  `json:"cloudflareToken"`
+	GateTag         string                  `json:"gateTag"`
+	Manifest        json.RawMessage         `json:"manifest"`
 	Kind            string                  `json:"kind,omitempty"`
 	Storage         *store.ApplianceStorage `json:"storage,omitempty"`
 }
