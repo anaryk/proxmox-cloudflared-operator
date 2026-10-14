@@ -266,9 +266,14 @@ func (s *suite) removeAddress(t testing.TB) {
 	if !s.addressAdded {
 		return
 	}
-	if _, err := s.run("ip", "addr", "del", s.lay.nodeCIDR(), "dev", bridge); err != nil {
-		t.Errorf("removing %s from %s: %v", s.lay.nodeCIDR(), bridge, err)
-		return
+	// A reload of the node's network, as the uninstall's SDN apply makes,
+	// took it already.
+	held, _ := s.run("ip", "-o", "addr", "show", "dev", bridge, "to", s.lay.nodeCIDR())
+	if strings.TrimSpace(held) != "" {
+		if _, err := s.run("ip", "addr", "del", s.lay.nodeCIDR(), "dev", bridge); err != nil {
+			t.Errorf("removing %s from %s: %v", s.lay.nodeCIDR(), bridge, err)
+			return
+		}
 	}
 	s.addressAdded = false
 	unmark(t, addressFile)

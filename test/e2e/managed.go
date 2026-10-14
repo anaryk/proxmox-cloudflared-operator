@@ -47,6 +47,9 @@ func (s *suite) enableManaged(t testing.TB) {
 	out, err := s.pcoCombined("network", "managed", "enable", "--yes")
 	t.Logf("pco network managed enable:\n%s", out)
 	require.NoError(t, err)
+	// The SDN apply reloads the node's network, which takes the address
+	// the run gave the bridge.
+	s.restoreAddress(t)
 	s.must(t, "pvesh", "get", "/cluster/sdn/vnets/"+gateway.ManagedBridge)
 	s.sync(t)
 	s.waitState(t, "the managed network with its leg up and DHCP listening", 3*time.Minute, func(st engine.State) bool {
