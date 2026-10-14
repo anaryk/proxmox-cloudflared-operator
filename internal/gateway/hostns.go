@@ -65,6 +65,9 @@ type hostBackend struct {
 	// pendingSince is, by port, since when a guest's port is there and not
 	// a port of its bridge.
 	pendingSince map[string]time.Time
+	// erred are the cards whose entry the last placing could not give: the
+	// guard admits nothing of theirs until it can.
+	erred []Sticky
 }
 
 // legRecord is what Sync did with a leg.

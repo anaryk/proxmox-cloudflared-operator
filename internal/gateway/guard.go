@@ -68,6 +68,15 @@ func withGuardNames(s string) string {
 	return strings.NewReplacer("@BRIDGE@", ManagedBridge, "@LEGPORTS@", bridgePortPrefix+"*").Replace(s)
 }
 
+// guardedCards are the cards the guard admits: those of the sticky entries
+// but the ones whose entry could not be placed, whose frames it drops until
+// the entry is there.
+func (b *hostBackend) guardedCards() []Sticky {
+	return slices.DeleteFunc(slices.Clone(b.sticky), func(s Sticky) bool {
+		return slices.ContainsFunc(b.erred, func(e Sticky) bool { return e.Port == s.Port && macEqual(e.MAC, s.MAC) })
+	})
+}
+
 // guardElements are the elements of the guard's sets for the sticky entries:
 // those of a card on the managed bridge with its port and its address.
 func guardElements(sticky []Sticky) elements {
@@ -132,7 +141,7 @@ func (b *hostBackend) ensureGuard(ctx context.Context) error {
 	if !guarded(b.legs) {
 		return b.removeGuard(ctx)
 	}
-	want := guardElements(b.sticky)
+	want := guardElements(b.guardedCards())
 	l, err := b.listGuard(ctx)
 	if err != nil {
 		return err
@@ -197,5 +206,5 @@ func (v *verifier) guard(ctx context.Context) {
 		v.differs("table bridge %s cannot be read: %v", guardTable, err)
 		return
 	}
-	v.d = append(v.d, guardDifferences(l, guardElements(v.b.sticky))...)
+	v.d = append(v.d, guardDifferences(l, guardElements(v.b.guardedCards()))...)
 }

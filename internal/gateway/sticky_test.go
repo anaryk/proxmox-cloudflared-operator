@@ -351,7 +351,26 @@ func TestOneCardThatFailsLeavesTheOthersTheirEntriesAndTheGuard(t *testing.T) {
 			require.True(t, parked(h, mac("06:50:43:4f:76:02")), "a port on another bridge leaves its MAC pinned to the leg")
 			require.True(t, parked(h, mac("06:50:43:4f:76:05")), "an entry that failed keeps the one it had")
 			require.NotNil(t, h.hostNft.tables[guardFamilyName], "the guard is loaded")
+			require.Equal(t, guardElements(sticky[1:3])[setCards], h.hostNft.tables[guardFamilyName].elems[setCards],
+				"the cards that failed are left out of it, so it drops their frames")
+			require.Equal(t, guardElements(sticky[1:3])[setCardMACs], h.hostNft.tables[guardFamilyName].elems[setCardMACs])
+			for name, l := range h.sys.host.links {
+				if IsGuestPort(name) {
+					for _, m := range []string{"06:50:43:4f:76:02", "06:50:43:4f:76:05"} {
+						require.False(t, slices.ContainsFunc(l.fdb, func(e fdbEntry) bool { return macEqual(e.mac, mac(m)) }), "%s on %s", m, name)
+					}
+				}
+			}
+			var changed *ChangedError
+			require.ErrorAs(t, h.b.Verify(t.Context()), &changed, "Verify names what failed")
+			require.Contains(t, strings.Join(changed.Differences, "\n"), "tap101i1 is a port of vmbr0, not of pconet")
+			require.Contains(t, strings.Join(changed.Differences, "\n"), "the sticky entry of 0650434f7605 on veth104i1 is missing")
+
+			delete(h.sys.fail, "sticky veth104i1")
+			h.sys.host.links["tap101i1"].master = ManagedBridge
+			require.NoError(t, ApplySticky(t.Context(), h.b, sticky), "the next placing tries again")
 			require.Equal(t, guardElements(sticky)[setCards], h.hostNft.tables[guardFamilyName].elems[setCards])
+			require.NoError(t, h.b.Verify(t.Context()))
 		})
 	}
 }

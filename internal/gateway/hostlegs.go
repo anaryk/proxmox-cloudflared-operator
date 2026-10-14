@@ -693,6 +693,7 @@ func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 			placed = append(placed, s)
 		}
 	}
+	b.erred = slices.Clone(failed)
 	ports, err := b.stalePorts(sticky, every)
 	if err != nil {
 		return errors.Join(append(errs, err)...)
