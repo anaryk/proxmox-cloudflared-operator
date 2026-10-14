@@ -73,9 +73,11 @@ when what is in the way was left by a run of its own.
   `pconet`, applied with an SDN reload) and lets the daemon put cards on its guests,
   with `managed.detachGrace` at one minute for the run; adds `cf-tunnel-managed` to
   the registered tags and takes them away for a while, putting them back as they
-  were before pco is uninstalled; sets `net.bridge.bridge-nf-call-iptables=1` and
-  `net.ipv4.ip_forward=1` and puts them back; starts `pve-firewall` when it is not
-  running and stops it again; restarts `pco-netns` and `pco`, and reinstalls the
+  were before pco is uninstalled; sets `net.bridge.bridge-nf-call-iptables=1`,
+  `net.ipv4.ip_forward=1` and `net.ipv4.conf.all.rp_filter=0` and puts them back,
+  and `rp_filter` of `pconet` for a while in S22; starts `pve-firewall` when it is not
+  running and stops it again; restarts `pco-netns` and `pco`, and stops `pco` while
+  it clones a guest of the managed network; reinstalls the
   package when `PCO_E2E_DEB` names it (or one `pco_*_amd64.deb` is in the working
   directory); runs `ifreload -a` and `pvesh set /cluster/sdn`.
 
