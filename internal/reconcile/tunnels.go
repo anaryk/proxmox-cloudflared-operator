@@ -51,6 +51,17 @@ func (r *TunnelReconciler) SetRecoverHint(hint string) {
 	r.hint = hint
 }
 
+// ListPinned has the runs list the pinned tunnels of an account once a
+// minute from now on, as a pinned plan there does: a caller that knows of
+// pinned tunnels no plan names any more asks for them to be found.
+func (r *TunnelReconciler) ListPinned(account string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.listed[account]; !ok {
+		r.listed[account] = pinnedListing{}
+	}
+}
+
 // NewTunnelReconciler returns a reconciler that reaches each account through
 // the client of its credential.
 //

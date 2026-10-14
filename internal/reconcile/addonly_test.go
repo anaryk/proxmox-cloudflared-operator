@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,25 @@ func TestARunThatMayOnlyAddKeepsWhatTheTunnelServes(t *testing.T) {
 }
 
 func anyHost(string) bool { return true }
+
+// An account the caller asks to list has its pinned tunnels listed without
+// a pinned plan there, so that a pinned tunnel left from before, which no
+// plan names after a restart, is found and emptied.
+func TestAPinnedTunnelLeftFromBeforeIsFoundWhenAsked(t *testing.T) {
+	ctx := context.Background()
+	f := newFake("acct1")
+	left := f.SeedTunnel("acct1", pinnedName("pve2"), rulesOf(ours, app))
+	r := newReconciler(Clients{"cred1": f}, &clock{t0})
+	known := map[string]string{"acct1": "cred1"}
+
+	r.ListPinned("acct1")
+	res := r.Run(ctx, []planner.TunnelPlan{planFor("acct1", "cred1", web)}, known, Enforce)
+
+	require.Empty(t, res.Problems)
+	require.Equal(t, []string{"Tunnels acct1 pco-abc-"}, pinnedListings(f))
+	require.Equal(t, rulesOf(ours), configOf(t, f, left).Ingress, "emptied")
+	require.True(t, slices.ContainsFunc(res.Tunnels, func(st TunnelState) bool { return st.Name == pinnedName("pve2") && st.Exists }))
+}
 
 // A run that may only add keeps nothing the caller does not name as its own,
 // and nothing of a configuration pco did not write: a rule someone put into
