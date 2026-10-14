@@ -282,3 +282,30 @@ func TestAJoinedCertificateIsCheckedBeforeItIsKept(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ca.Cert.Raw, creds.CA.Raw)
 }
+
+// A join whose answer never came is sent again with the key it was made
+// with, which the volume keeps, so that the controller can tell it for a
+// repeat; the key goes once the certificate is kept.
+func TestAJoinSentAgainKeepsItsKey(t *testing.T) {
+	e := newJoinEnv(t)
+	j := e.joiner()
+	j.Dial = func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("connection reset") }
+	_, err := j.Join(context.Background())
+	require.Error(t, err)
+	keyFile := filepath.Join(e.dir, "agent", "join.key")
+	info, err := os.Stat(keyFile)
+	require.NoError(t, err, "the key is on the volume before anything is sent")
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	kept, err := os.ReadFile(keyFile)
+	require.NoError(t, err)
+
+	creds, err := e.joiner().Join(context.Background())
+
+	require.NoError(t, err)
+	block, _ := pem.Decode(kept)
+	require.NotNil(t, block)
+	key, err := x509.ParseECPrivateKey(block.Bytes)
+	require.NoError(t, err)
+	require.True(t, key.PublicKey.Equal(creds.Cert.PublicKey), "the certificate is for the key made before the first send")
+	require.NoFileExists(t, keyFile)
+}

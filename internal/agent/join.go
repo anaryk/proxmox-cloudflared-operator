@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +37,9 @@ const (
 	// controllerFile keeps where the controller answers once the token that
 	// said so is gone.
 	controllerFile = "controller.json"
+	// joinKeyFile keeps the key of a join until its certificate is kept, so
+	// that a join sent again after a lost answer is for the same key.
+	joinKeyFile = "join.key"
 )
 
 // ErrNoJoinToken is a join without a token on the volume.
@@ -135,7 +141,7 @@ func (j Joiner) Join(ctx context.Context) (Creds, error) {
 		return Creds{}, j.drop("the token expired at " + tok.Expires.UTC().Format(time.RFC3339))
 	}
 	id := pki.Identity{Kind: pki.KindAppliance, InstallID: j.InstallID, Node: j.Node, VMID: j.VMID}
-	key, err := pki.NewKey(j.rand())
+	key, err := j.joinKey()
 	if err != nil {
 		return Creds{}, err
 	}
@@ -176,6 +182,7 @@ func (j Joiner) Join(ctx context.Context) (Creds, error) {
 	if err := j.removeToken(); err != nil {
 		return Creds{}, err
 	}
+	j.removeKey()
 	j.Log.Info().Str("serial", creds.Cert.SerialNumber.Text(16)).Str("sha256", pki.Fingerprint(creds.Cert)).
 		Msg("joined the controller; an admin admits this node with the fingerprint")
 	return creds, nil
@@ -300,8 +307,44 @@ func joined(key *ecdsa.PrivateKey, answer clusterapi.CertificateResponse, id pki
 	return Creds{Key: key, Cert: cert, CA: ca}, nil
 }
 
+// joinKey is the key of this join: the one kept on the volume by a join
+// sent before, or a new one, kept before anything is sent.
+func (j Joiner) joinKey() (*ecdsa.PrivateKey, error) {
+	path := filepath.Join(j.Dir, joinKeyFile)
+	if data, err := os.ReadFile(path); err == nil {
+		if block, _ := pem.Decode(data); block != nil {
+			if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil && key.Curve == elliptic.P256() {
+				return key, nil
+			}
+		}
+		j.Log.Warn().Msg("the key of an earlier join cannot be read; a new one is made")
+	}
+	key, err := pki.NewKey(j.rand())
+	if err != nil {
+		return nil, err
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(j.Dir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := atomicfile.Write(path, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), atomicfile.Options{Mode: 0o600}); err != nil {
+		return nil, fmt.Errorf("keeping the key of the join: %w", err)
+	}
+	return key, nil
+}
+
+func (j Joiner) removeKey() {
+	if err := os.Remove(filepath.Join(j.Dir, joinKeyFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		j.Log.Warn().Err(err).Msg("removing the key of the join")
+	}
+}
+
 // drop removes the token and returns why the join is refused for good.
 func (j Joiner) drop(why string) error {
+	j.removeKey()
 	if err := j.removeToken(); err != nil {
 		return errors.Join(&JoinRefusedError{Why: why}, err)
 	}
