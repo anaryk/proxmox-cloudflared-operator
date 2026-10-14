@@ -26,25 +26,30 @@ const (
 // network would hold up, and are answered in the status once done.
 type doctorRuns struct {
 	mu   sync.Mutex
-	runs map[string]*agentproto.ActionResult // nil while it runs
+	runs map[string]*agentproto.ActionResult // nil while it runs or waits
+	// one is held by the run that makes its checks: one at a time.
+	one chan struct{}
 }
 
-// startDoctor runs the checks of the doctor action id, once, and has the
-// status sent soon when they are done.
+// startDoctor runs the checks of the doctor action id, once, after the run
+// before it ended, and has the status sent soon when they are done.
 func (a *Agent) startDoctor(ctx context.Context, id string) {
 	d := &a.docs
 	d.mu.Lock()
 	if d.runs == nil {
-		d.runs = map[string]*agentproto.ActionResult{}
+		d.runs, d.one = map[string]*agentproto.ActionResult{}, make(chan struct{}, 1)
 	}
 	if _, ok := d.runs[id]; ok {
 		d.mu.Unlock()
 		return
 	}
 	d.runs[id] = nil
+	one := d.one
 	d.mu.Unlock()
 	ctx = context.WithoutCancel(ctx)
 	go func() {
+		one <- struct{}{}
+		defer func() { <-one }()
 		ctx, cancel := a.timeout(ctx, doctorTimeout)
 		defer cancel()
 		res := agentproto.ActionResult{ID: id}

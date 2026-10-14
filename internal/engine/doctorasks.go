@@ -14,6 +14,9 @@ import (
 // doctorAsks are the doctor actions the controller hands the agents of the
 // other nodes, by id, until they are answered or the asker stops waiting.
 type doctorAsks struct {
+	// one is held by the ask that runs: one at a time hands the agents
+	// actions, so that the doctor cannot be made to flood them.
+	one  chan struct{}
 	mu   sync.Mutex
 	n    uint64
 	acts map[string]*doctorAsk
@@ -29,9 +32,19 @@ type doctorAsk struct {
 // AskDoctor hands the agent of each node a doctor action, has a cycle put
 // it in their snapshots, and waits for at most wait for the answers. It
 // returns, by node, the answers that came; a node that did not answer in
-// time is not in it, and its action is taken back.
+// time is not in it, and its action is taken back. One ask runs at a time:
+// another waits for it within its own wait.
 func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Duration) map[string]agentproto.ActionResult {
 	d := &e.asks
+	ctx, cancel := e.timeout(ctx, wait)
+	defer cancel()
+	out := map[string]agentproto.ActionResult{}
+	select {
+	case d.one <- struct{}{}:
+		defer func() { <-d.one }()
+	case <-ctx.Done():
+		return out
+	}
 	d.mu.Lock()
 	if d.acts == nil {
 		d.acts = map[string]*doctorAsk{}
@@ -52,15 +65,12 @@ func (e *Engine) AskDoctor(ctx context.Context, nodes []string, wait time.Durati
 		}
 	}()
 	e.Trigger()
-	ctx, cancel := e.timeout(ctx, wait)
-	defer cancel()
 	for _, node := range slices.Sorted(maps.Keys(mine)) {
 		select {
 		case <-mine[node].done:
 		case <-ctx.Done():
 		}
 	}
-	out := map[string]agentproto.ActionResult{}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for node, a := range mine {

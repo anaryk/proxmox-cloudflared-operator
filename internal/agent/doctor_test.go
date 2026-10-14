@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -64,4 +65,34 @@ func TestAnAgentWithoutTheChecksRefusesTheDoctorAction(t *testing.T) {
 	st := e.apply(withAction(e.snapshot(), "d1", agentproto.ActionDoctor, `{}`))
 
 	require.Equal(t, []agentproto.ActionResult{{ID: "d1", Error: "this agent does not carry out doctor actions"}}, st.Actions)
+}
+
+// The agent makes the checks of one doctor action at a time.
+func TestDoctorActionsRunOneAtATime(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	running, most := 0, 0
+	release := make(chan struct{})
+	changed := make(chan struct{}, 4)
+	e.agent.d.Changed = func() { changed <- struct{}{} }
+	e.agent.d.Doctor = func(context.Context) (json.RawMessage, error) {
+		mu.Lock()
+		running++
+		most = max(most, running)
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		running--
+		mu.Unlock()
+		return json.RawMessage(`[]`), nil
+	}
+
+	e.apply(withAction(withAction(e.snapshot(), "d1", agentproto.ActionDoctor, `{}`), "d2", agentproto.ActionDoctor, `{}`))
+	release <- struct{}{}
+	<-changed
+	release <- struct{}{}
+	<-changed
+
+	require.Equal(t, 1, most)
+	require.Len(t, e.agent.Status(t.Context()).Actions, 2)
 }

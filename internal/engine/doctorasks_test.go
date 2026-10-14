@@ -76,3 +76,21 @@ func TestTheDoctorStopsWaitingForAnAgent(t *testing.T) {
 	require.Empty(t, got)
 	require.Empty(t, e.eng.asks.actionsFor("pve2"))
 }
+
+// One ask runs at a time: another that cannot start within its wait hands
+// no agent anything.
+func TestOneDoctorAskRunsAtATime(t *testing.T) {
+	one := 1
+	e, _, _ := clusterOf(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeActive, StateSince: t0, Index: &one})
+	e.eng.asks.one <- struct{}{} // an ask that runs
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	got := e.eng.AskDoctor(ctx, []string{"pve2"}, 30*time.Second)
+
+	require.Empty(t, got)
+	e.eng.asks.mu.Lock()
+	require.Empty(t, e.eng.asks.acts, "nothing was handed out")
+	e.eng.asks.mu.Unlock()
+	require.Empty(t, e.eng.trigger, "no cycle was asked for")
+}
