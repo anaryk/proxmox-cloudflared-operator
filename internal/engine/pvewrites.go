@@ -30,7 +30,10 @@ type pveWrites struct {
 	mu     sync.Mutex
 	acts   map[string]*pveAct
 	agents map[string]bool
-	said   map[string]bool // what the managed step said of writes handed an agent
+	// said is what the managed step said of writes handed an agent in the
+	// epoch saidIn, forgotten with it.
+	said   map[string]bool
+	saidIn agentproto.Epoch
 }
 
 // pveAct is one write, the epoch it was issued under and the agent's answer.
@@ -121,10 +124,13 @@ func (p *pveWrites) actionsFor(node string, epoch agentproto.Epoch) []agentproto
 // note takes the agents' answers to the writes from their reports, each from
 // the report of the node the write was for, and which nodes take writes:
 // the host nodes that are Active and report fresh. Writes of another epoch
-// are dropped.
+// are dropped, and so is what was said of them.
 func (p *pveWrites) note(fleet *fleetView, epoch agentproto.Epoch) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.saidIn != epoch {
+		p.said, p.saidIn = nil, epoch
+	}
 	p.agents = map[string]bool{}
 	if fleet == nil {
 		return
