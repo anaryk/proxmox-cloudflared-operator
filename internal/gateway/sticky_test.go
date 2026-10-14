@@ -203,6 +203,36 @@ func TestAnEntryWaitsWhileItsPortIsNotOnTheBridgeYet(t *testing.T) {
 	}
 }
 
+// Only the entry waits for a port that is not on the bridge yet: the guard
+// admits from the port its card's pair alone in the same Sync, before the
+// port can carry a frame, and a guard that cannot be loaded fails the Sync
+// as ever. The entry stays in what Verify compares with, so the port that
+// joins without it is a difference.
+func TestAPendingPortWaitsForNothingButItsEntry(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	guest := mac("06:50:43:4f:76:05")
+	sticky := []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "veth101i1", Addr: addr("10.203.118.10")}}
+	h.sync(t, []Leg{legM}, nil, nil, nil)
+	h.sys.host.links["veth101i1"] = &fakeLink{link: link{name: "veth101i1", kind: "veth", up: true}}
+
+	h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.Equal(t, guardElements(sticky)[setCards], h.hostNft.tables[guardFamilyName].elems[setCards], "the card is in the guard already")
+	require.True(t, parked(h, guest))
+
+	h.hostNft.fail = errors.New("nft: no memory")
+	_, err := h.b.Sync(t.Context(), []Leg{legM}, nil, nil, append(sticky, Sticky{MAC: mac("06:50:43:4f:76:06"), Bridge: ManagedBridge, Port: "veth102i1", Addr: addr("10.203.118.11")}))
+	require.ErrorContains(t, err, "loading table bridge pco_guard")
+	h.hostNft.fail = nil
+	h.sync(t, []Leg{legM}, nil, nil, sticky)
+
+	h.sys.host.links["veth101i1"].master = ManagedBridge
+	err = h.b.Verify(t.Context())
+	var changed *ChangedError
+	require.True(t, errors.As(err, &changed), "%v", err)
+	require.Contains(t, strings.Join(changed.Differences, "\n"), "the sticky entry of 0650434f7605 on veth101i1 is missing")
+}
+
 // parked reports whether the guest's MAC has its sticky entry on the bridge
 // end of the managed leg.
 func parked(h *harness, guest net.HardwareAddr) bool {
