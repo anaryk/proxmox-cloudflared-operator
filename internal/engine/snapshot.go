@@ -202,22 +202,49 @@ func (c *cycleRun) chosen(rt model.Route, resolver string, own []string) (netip.
 				mac = res.Binding.MAC
 			}
 		}
-	} else if tr, ok := c.fleet.node(resolver).targets[rt.Hostname]; ok && tr.Addr.IsValid() {
+	} else if tr, ok := c.resolvedOn(resolver, rt); ok {
 		addr = tr.Addr
 		if res, err := agent.DecodeResult(tr.Result); err == nil && res.Binding != nil {
 			mac = res.Binding.MAC
 		}
 	}
-	if p, ok := c.placements[rt.Hostname]; !addr.IsValid() && ok && p.ResolvingNode == resolver {
-		addr = p.Addr
-	}
 	if !addr.IsValid() {
 		return netip.Addr{}, nil
+	}
+	if mac == "" || own == nil {
+		return addr, own
 	}
 	if mac, err := model.NormalizeMAC(mac); err == nil && slices.Contains(own, mac) {
 		return addr, []string{mac}
 	}
-	return addr, own
+	// Chosen with a MAC that is no card of the guest now: it vouches for
+	// nothing until the node resolves the route again.
+	return netip.Addr{}, nil
+}
+
+// resolvedOn is what a node resolved of a route in its last report: only
+// a fresh report of this controller's epoch, of a snapshot that listed the
+// target, that says it resolved it. Nothing older or stored stands for it.
+func (c *cycleRun) resolvedOn(node string, rt model.Route) (agentproto.TargetReport, bool) {
+	tr, ok := c.reportOn(node, rt, true)
+	if !ok || !tr.Addr.IsValid() || !tr.OK {
+		return agentproto.TargetReport{}, false
+	}
+	return tr, true
+}
+
+// reportOn is what a node said of a route in its last report, when that
+// report is fresh, of this controller's epoch and of a snapshot that listed
+// the target.
+func (c *cycleRun) reportOn(node string, rt model.Route, resolve bool) (agentproto.TargetReport, bool) {
+	f := c.fleet.node(node)
+	tr, ok := f.targets[rt.Hostname]
+	st := f.report.Status
+	since, listed := c.e.place.listed(node, rt.Hostname, resolve)
+	if !ok || !listed || !f.fresh || st.EpochSeen != c.epoch() || st.SeqApplied < since {
+		return agentproto.TargetReport{}, false
+	}
+	return tr, true
 }
 
 // guestMACs are the MACs of a guest's own cards.

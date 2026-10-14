@@ -179,7 +179,8 @@ func (c *cycleRun) reaches(node string, rt model.Route) reach {
 	}
 	tr, ok := f.targets[rt.Hostname]
 	st := f.report.Status
-	if !ok || st.EpochSeen != c.epoch() || st.SeqApplied < c.e.place.listed(node, rt.Hostname) {
+	since, listed := c.e.place.listed(node, rt.Hostname, c.resolverOf(rt) == node)
+	if !ok || !listed || st.EpochSeen != c.epoch() || st.SeqApplied < since {
 		return reachUnknown
 	}
 	if !tr.OK || !tr.InEgressSet {
@@ -509,7 +510,7 @@ func (c *cycleRun) baseTarget(rt model.Route) planner.ResolvedTarget {
 		t.Level = string(res.Level)
 		return t
 	}
-	tr, ok := c.fleet.node(resolver).targets[rt.Hostname]
+	tr, ok := c.reportOn(resolver, rt, true)
 	if !ok {
 		return planner.ResolvedTarget{Owner: rt.Owner(), Reason: "not resolved on " + resolver + " yet"}
 	}

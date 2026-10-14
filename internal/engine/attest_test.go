@@ -8,9 +8,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -201,6 +203,69 @@ func (w *world) attestationOn(t *testing.T, node, host string) *agentproto.Attes
 		}
 	}
 	return nil
+}
+
+// A snapshot names only the address this cycle's resolving node chose for
+// a route now: when the guest moves to another node, no node is told the
+// address the old one chose; until the new one reports, none is told any;
+// a new address reaches every node with the next report, and one chosen
+// with a MAC the guest no longer has reaches none.
+func TestASnapshotNamesOnlyTheAddressChosenNow(t *testing.T) {
+	addrIn := func(w *world, node string) netip.Addr {
+		s, _ := w.r.lastOf(node)
+		for _, tg := range s.Targets {
+			if tg.Key == "db.example.com" {
+				return tg.Addr
+			}
+		}
+		return netip.Addr{}
+	}
+	t.Run("the guest moves", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		require.Equal(t, dbAddr, addrIn(w, "pve3"))
+		snap := w.inv.snapshot()
+		snap.Guests[1].Node = "pve3"
+		w.inv.set(snap)
+		w.acts["pve3"].silent = true
+		w.clock.advance(time.Second)
+		w.r.reportStatus("pve2", w.clock.now(), w.statusOf("pve2", w.acts["pve2"]))
+		w.cycle()
+		require.False(t, addrIn(w, "pve2").IsValid(), "pve3 resolves db now and has not said")
+
+		w.acts["pve3"].silent = false
+		moved := netip.MustParseAddr("10.0.0.33")
+		w.acts["pve3"].addrs = map[string]netip.Addr{"db.example.com": moved}
+		w.settle()
+		require.Equal(t, moved, addrIn(w, "pve2"))
+	})
+	t.Run("a new address", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		changed := netip.MustParseAddr("10.0.0.44")
+		w.acts["pve2"].addrs = map[string]netip.Addr{"db.example.com": changed}
+		w.tick(time.Second)
+		w.tick(time.Second)
+		require.Equal(t, changed, addrIn(w, "pve3"))
+		require.Equal(t, changed, w.localVerify(t, "db.example.com").Addr)
+	})
+	t.Run("a MAC the guest no longer has", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve2"].edit = func(st *agentproto.Status) {
+			for i := range st.Targets {
+				if st.Targets[i].Key != "db.example.com" {
+					continue
+				}
+				raw, err := agent.EncodeResult(resolve.Result{Binding: &resolve.Binding{MAC: "bc:24:11:77:77:77", Addr: dbAddr}})
+				require.NoError(t, err)
+				st.Targets[i].Result = raw
+			}
+		}
+		w.tick(time.Second)
+		w.tick(time.Second)
+		require.False(t, addrIn(w, "pve3").IsValid())
+	})
 }
 
 // dbAttested is node's attestation of db's card.

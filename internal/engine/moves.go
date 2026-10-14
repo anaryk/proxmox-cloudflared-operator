@@ -226,9 +226,18 @@ func moveView(m store.Move) *MoveView {
 }
 
 // listed is the seq of the first snapshot of this epoch that listed host to
-// node; a report of an earlier one says nothing of it.
-func (m *placementMemory) listed(node, host string) uint64 {
-	return m.listedAt[node][host]
+// node for it to resolve, or to verify; false when none did. A report of an
+// earlier snapshot, or of the target in the other role, says nothing of it.
+func (m *placementMemory) listed(node, host string, resolve bool) (uint64, bool) {
+	seq, ok := m.listedAt[node][listedKey(host, resolve)]
+	return seq, ok
+}
+
+func listedKey(host string, resolve bool) string {
+	if resolve {
+		return host + " resolve"
+	}
+	return host + " verify"
 }
 
 // noteListed keeps, for the snapshot s served to its node, the seq that
@@ -243,10 +252,11 @@ func (m *placementMemory) noteListed(s agentproto.Snapshot) {
 	had := m.listedAt[s.Node]
 	now := make(map[string]uint64, len(s.Targets))
 	for _, t := range s.Targets {
-		if seq, ok := had[t.Key]; ok {
-			now[t.Key] = seq
+		key := listedKey(t.Key, t.Resolve)
+		if seq, ok := had[key]; ok {
+			now[key] = seq
 		} else {
-			now[t.Key] = s.Seq
+			now[key] = s.Seq
 		}
 	}
 	m.listedAt[s.Node] = now
