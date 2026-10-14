@@ -13,10 +13,11 @@ const (
 	ArgOwner      = "owner"
 	ArgHostname   = "hostname"
 	ArgCredential = "credential id"
+	ArgNode       = "node name"
 )
 
 // ArgKinds are the kinds that have a form, in a fixed order.
-var ArgKinds = []string{ArgAccount, ArgOwner, ArgHostname, ArgCredential}
+var ArgKinds = []string{ArgAccount, ArgOwner, ArgHostname, ArgCredential, ArgNode}
 
 // argForms are the forms of the kinds. The patterns mean the same in
 // JavaScript, which the web interface reads them in. A credential id is
@@ -27,6 +28,8 @@ var argForms = map[string]*regexp.Regexp{
 	ArgOwner:      regexp.MustCompile(`^(qemu|lxc)/[0-9]+$`),
 	ArgHostname:   regexp.MustCompile(`^([a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$`),
 	ArgCredential: regexp.MustCompile(`^[0-9a-f]{8}$`),
+	// A node is named as Proxmox names it: a label of a host name.
+	ArgNode: regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`),
 }
 
 // noForm is the pattern of a kind that has none. It matches nothing, so that

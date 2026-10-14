@@ -80,6 +80,7 @@ export const argForms: ReadonlyMap<string, string> = new Map([
   ["account id", "^[0-9a-f]{32}$"],
   ["credential id", "^[0-9a-f]{8}$"],
   ["hostname", "^([a-z0-9-]{1,63}\\.)+[a-z0-9-]{2,63}$"],
+  ["node name", "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"],
   ["owner", "^(qemu|lxc)/[0-9]+$"],
 ])
 

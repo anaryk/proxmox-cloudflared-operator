@@ -121,6 +121,9 @@
   {"fn": "rotationText", "name": "finished, with nodes refused", "input": {"node": "pve3", "startedAt": "2026-10-01T11:50:00Z", "done": ["credentials", "proxmox", "tunnels", "rollout", "ca", "previous"], "finishedAt": "2026-10-01T12:05:00Z", "refused": ["pve2"]}, "want": "finished for node pve3; the new CA refuses 1 nodes still"},
 
   {"fn": "commandArg", "name": "an account id", "input": {"kind": "account id", "value": "0123456789abcdef0123456789abcdef"}, "want": {"value": "0123456789abcdef0123456789abcdef", "refused": ""}},
+  {"fn": "commandArg", "name": "a node name", "input": {"kind": "node name", "value": "pve-lab-1"}, "want": {"value": "pve-lab-1", "refused": ""}},
+  {"fn": "commandArg", "name": "a node name with a dot", "input": {"kind": "node name", "value": "pve1.example.com"}, "want": {"value": "", "refused": "the node name has an unexpected form"}},
+  {"fn": "commandArg", "name": "a node name in capitals", "input": {"kind": "node name", "value": "PVE1"}, "want": {"value": "", "refused": "the node name has an unexpected form"}},
   {"fn": "commandArg", "name": "an account id with a command after it", "input": {"kind": "account id", "value": "abc; rm -rf /"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
   {"fn": "commandArg", "name": "an account id in capitals", "input": {"kind": "account id", "value": "0123456789ABCDEF0123456789ABCDEF"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
   {"fn": "commandArg", "name": "an account id too short", "input": {"kind": "account id", "value": "0123456789abcdef0123456789abcde"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
@@ -187,7 +190,7 @@
   {"fn": "commandArg", "name": "a credential id with a command after it", "input": {"kind": "credential id", "value": "a1b2c3d4;reboot"}, "want": {"value": "", "refused": "the credential id has an unexpected form"}},
   {"fn": "commandArg", "name": "a credential id with a full-width digit", "input": {"kind": "credential id", "value": "a1b2c3d\uff14"}, "want": {"value": "", "refused": "the credential id has an unexpected form"}},
   {"fn": "commandArg", "name": "a credential id that begins with a dash", "input": {"kind": "credential id", "value": "-1b2c3d4"}, "want": {"value": "", "refused": "the credential id begins with a dash, which a command would take for an option"}},
-  {"fn": "commandArgEveryPosition", "name": "a shell character in place of each character and between any two", "input": {"chars": [" ", "\t", "\n", "\r", "'", "\"", "`", "$", ";", "&", "|", "<", ">", "(", ")", "{", "}", "[", "]", "\\", "*", "?", "#", "~", "!", "=", "^", "%", "@", ":", "/", ",", "+", "\u0000", "\u202e"], "values": {"account id": "0123456789abcdef0123456789abcdef", "owner": "qemu/101", "hostname": "www.example.com", "credential id": "a1b2c3d4"}}, "want": []},
+  {"fn": "commandArgEveryPosition", "name": "a shell character in place of each character and between any two", "input": {"chars": [" ", "\t", "\n", "\r", "'", "\"", "`", "$", ";", "&", "|", "<", ">", "(", ")", "{", "}", "[", "]", "\\", "*", "?", "#", "~", "!", "=", "^", "%", "@", ":", "/", ",", "+", "\u0000", "\u202e"], "values": {"account id": "0123456789abcdef0123456789abcdef", "owner": "qemu/101", "hostname": "www.example.com", "credential id": "a1b2c3d4", "node name": "pve-lab-1"}}, "want": []},
 
   {"fn": "rotateCommand", "name": "a checked tunnel", "input": {"account": "0123456789abcdef0123456789abcdef", "tunnels": [
     {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": true, "unknown": false, "unchecked": false},
