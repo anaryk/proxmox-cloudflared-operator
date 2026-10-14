@@ -48,6 +48,8 @@ func TestHealthy(t *testing.T) {
 // s that began before it.
 func TestALoopWaitingBehindAnAdminActionIsNotRunning(t *testing.T) {
 	e := newEnv(t)
+	read := make(chan struct{})
+	e.eng.d.Access = &signalAccess{fakeAccess: e.acc, read: read}
 	due := e.clock.now()
 	e.eng.progress.due(due)
 	require.NoError(t, e.eng.acquire(t.Context()))
@@ -56,6 +58,10 @@ func TestALoopWaitingBehindAnAdminActionIsNotRunning(t *testing.T) {
 		defer close(done)
 		e.eng.timedCycle(t.Context())
 	}()
+	// The read of the access control before the lock runs; then the loop
+	// waits.
+	<-read
+	require.Eventually(t, func() bool { return !e.eng.Progress().Running }, 5*time.Second, time.Millisecond)
 
 	require.Never(t, func() bool { return e.eng.Progress().Running }, 50*time.Millisecond, 5*time.Millisecond,
 		"no cycle runs while it waits for the lock")
@@ -201,4 +207,16 @@ func TestTheReadsBeforeACycleCountAsRunning(t *testing.T) {
 	require.True(t, checking[0], "the first check of the credential")
 	require.Equal(t, []bool{true}, acc.running, "the access control")
 	require.LessOrEqual(t, firstCheckTimeout+accessTimeout, 60*time.Second, "both fit in a running stretch")
+}
+
+// signalAccess is the access control of Proxmox, which says when it is read.
+type signalAccess struct {
+	*fakeAccess
+	read chan struct{}
+	once sync.Once
+}
+
+func (a *signalAccess) ACL(ctx context.Context) ([]pve.ACLEntry, error) {
+	a.once.Do(func() { close(a.read) })
+	return a.fakeAccess.ACL(ctx)
 }
