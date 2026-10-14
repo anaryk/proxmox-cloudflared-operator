@@ -766,7 +766,11 @@ last cycle found it, and [`pco node list`](cli/pco-node-list.md) the registry:
 `Coverage` says whether every node's forwarding-table watch runs, which the proofs of guests on
 other nodes need, and names the nodes whose watch does not. `Upgrade`, `Rotation` and `Blocks`
 appear when an upgrade is not finished, the secrets of a forgotten node are being rotated, or
-addresses are blocked on every node. Both commands exit 1
+addresses are blocked on every node. `Held` appears while the cycles of the controller hold
+before they hear the agents, as while a lost node keeps the inventory from being read whole:
+the controller and the quorum are current, the coverage and the blocks are as judged at the
+time it names. A controller whose own lease is no longer valid says `its lease expired`. Both
+commands exit 1
 when a node is `unknown`, `down` or `contested`. `pco doctor --cluster` on the controller adds the
 checks of every active node to its own ([Problems](problems.md#checks-of-a-cluster)).
 

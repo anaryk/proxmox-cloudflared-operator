@@ -215,6 +215,7 @@ func (c *cycleRun) clusterView() *ClusterView {
 	v.Blocks = c.blockViews()
 	v.CARotation = c.rotationView()
 	v.Upgrade = c.upgradeView()
+	v.JudgedAt = c.now
 	return v
 }
 
@@ -222,7 +223,8 @@ func (c *cycleRun) clusterView() *ClusterView {
 // agents' reports shows it, as while a lost node keeps the inventory from
 // being read whole: the controller, the generation, the members and the
 // quorum are known without the reports; the coverage, the blocks, the
-// rotation and the upgrade are what the last cycle that judged them found.
+// rotation and the upgrade are what the last cycle that judged them found,
+// and the view says since when the cycles hold.
 func (c *cycleRun) heldClusterView() *ClusterView {
 	controller, generation := c.e.d.Node, c.e.us.Generation
 	if c.leaseHeld {
@@ -232,9 +234,16 @@ func (c *cycleRun) heldClusterView() *ClusterView {
 		}
 	}
 	v := c.quorumView(controller)
-	v.Generation = generation
+	v.Generation, v.HeldSince = generation, c.now
+	if l := c.st.Lease; controller == c.e.d.Node && l != nil && !l.Valid {
+		v.LeaseExpired = true
+	}
 	if prev := c.st.Cluster; prev != nil {
 		v.Coverage, v.Blocks, v.CARotation, v.Upgrade = prev.Coverage, prev.Blocks, prev.CARotation, prev.Upgrade
+		v.JudgedAt = prev.JudgedAt
+		if !prev.HeldSince.IsZero() {
+			v.HeldSince = prev.HeldSince
+		}
 	}
 	return v
 }

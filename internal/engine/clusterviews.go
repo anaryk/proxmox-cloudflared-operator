@@ -134,6 +134,14 @@ type ClusterView struct {
 	Upgrade    *UpgradeView    `json:"upgrade,omitempty"`
 	CARotation *CARotationView `json:"caRotation,omitempty"`
 	Blocks     []BlockView     `json:"blocks,omitempty"`
+	// JudgedAt is when a cycle last judged the coverage, the blocks, the
+	// rotation and the upgrade; HeldSince when the cycles began to hold
+	// before they took the agents' reports, while they do, which shows
+	// those as judged then. LeaseExpired says that the lease of this node,
+	// named the controller, is not valid.
+	JudgedAt     time.Time `json:"judgedAt,omitzero"`
+	HeldSince    time.Time `json:"heldSince,omitzero"`
+	LeaseExpired bool      `json:"leaseExpired,omitempty"`
 }
 
 // CoverageView says whether every node has an agent with a running watch,
@@ -341,6 +349,7 @@ func (s *State) clusterWithoutTimes() {
 	}
 	if c := s.Cluster; c != nil {
 		c.Coverage.Since, c.Coverage.PromoteAt = time.Time{}, time.Time{}
+		c.JudgedAt, c.HeldSince = time.Time{}, time.Time{}
 		if c.Upgrade != nil {
 			c.Upgrade.Since = time.Time{}
 		}

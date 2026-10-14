@@ -150,8 +150,8 @@ var nodeFields = map[string]decision{
 // guests a reader sees.
 var clusterFields = map[string]decision{
 	"controller": kept, "generation": kept, "members": kept, "quorate": kept, "quorumDevice": kept,
-	"overrides": kept,
-	"blocks":    filteredBy("cluster"),
+	"overrides": kept, "judgedAt": kept, "heldSince": kept, "leaseExpired": kept,
+	"blocks": filteredBy("cluster"),
 	// Each by its own table below.
 	"coverage": filteredBy("cluster"), "upgrade": filteredBy("cluster"), "caRotation": filteredBy("cluster"),
 }

@@ -711,7 +711,8 @@ systemd to start it again. The connectors keep running.
 
 `GET /v1/cluster` answers `{"lease", "cluster", "nodes"}`: the lease as the state shows it, the
 cluster (`controller`, `generation`, `members`, `quorate`, `quorumDevice`, `overrides`,
-`coverage`, `upgrade`, `caRotation`, `blocks`) and the nodes of the registry, each with its
+`coverage`, `upgrade`, `caRotation`, `blocks`, and `judgedAt`, `heldSince` and `leaseExpired`
+for a controller whose cycles hold) and the nodes of the registry, each with its
 state and since when, its kind, index and agent address, what its agent last reported (`build`,
 `protocol`, `statusAge`, `watchRunning`, `covered`, `replicaReady`, the targets `verified`,
 `failing` and `belowMinimum`, `clockSkew`), the routes `pinned` to it, when its certificate

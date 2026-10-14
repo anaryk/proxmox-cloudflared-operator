@@ -88,6 +88,40 @@ func TestTheClusterViewOfACycleThatHeldShowsTheControllerAndTheQuorum(t *testing
 	require.True(t, cs.Cluster.Quorate)
 }
 
+// The view of a cycle that held says since when the cycles hold and when
+// what it carries was judged, and that the lease of the controller it names
+// is not valid when it is not.
+func TestTheHeldClusterViewSaysSinceWhenAndAnExpiredLease(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	judged := w.clock.now()
+	snap := w.inv.snapshot()
+	snap.Complete = false
+	w.inv.set(snap)
+
+	w.tick(time.Second)
+	held := w.clock.now()
+	w.tick(time.Second)
+	cs := w.eng.ClusterStatus()
+	require.Equal(t, held, cs.Cluster.HeldSince)
+	require.Equal(t, judged, cs.Cluster.JudgedAt)
+	require.False(t, cs.Cluster.LeaseExpired)
+
+	w.lease.set(func(st *lease.State) { st.Valid = false })
+	w.tick(time.Second)
+	cs = w.eng.ClusterStatus()
+	require.Equal(t, testNode, cs.Cluster.Controller)
+	require.True(t, cs.Cluster.LeaseExpired)
+
+	snap.Complete = true
+	w.inv.set(snap)
+	w.lease.set(func(st *lease.State) { st.Valid = true })
+	w.settle()
+	cs = w.eng.ClusterStatus()
+	require.Zero(t, cs.Cluster.HeldSince)
+	require.Equal(t, w.clock.now(), cs.Cluster.JudgedAt)
+}
+
 // The cluster view says what corosync.conf says of the quorum.
 func TestTheClusterViewShowsTheQuorumDeviceAndTheOverrides(t *testing.T) {
 	w := threeNodes(t)

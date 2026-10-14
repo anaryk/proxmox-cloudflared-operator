@@ -185,6 +185,9 @@ export interface ClusterView {
   upgrade?: UpgradeView
   caRotation?: CARotationView
   blocks?: BlockView[]
+  judgedAt?: string
+  heldSince?: string
+  leaseExpired?: boolean
 }
 
 // reconcile.Conflict

@@ -88,9 +88,16 @@ func (a *app) renderCluster(s *screen, cs engine.ClusterStatus) {
 		s.println("This node alone runs the install; there is no cluster to show.")
 		return
 	}
-	statusLine(s, "Controller", dash(c.Controller))
+	controller := dash(c.Controller)
+	if c.LeaseExpired {
+		controller += ", its lease expired"
+	}
+	statusLine(s, "Controller", controller)
 	if c.Generation > 0 {
 		statusLine(s, "Generation", fmt.Sprint(c.Generation))
+	}
+	if !c.HeldSince.IsZero() {
+		statusLine(s, "Held", fmt.Sprintf("the cycles hold since %s; coverage and blocks as judged at %s", a.when(c.HeldSince), a.when(c.JudgedAt)))
 	}
 	if l := cs.Lease; l != nil {
 		statusLine(s, "Lease", leaseText(l))

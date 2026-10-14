@@ -57,6 +57,19 @@ func TestClusterStatusGolden(t *testing.T) {
 	require.Contains(t, res.out, `"nodes": [`)
 }
 
+// A controller whose cycles hold says since when, how old what it shows is,
+// and that its lease expired.
+func TestClusterStatusOfACycleThatHeld(t *testing.T) {
+	st := clusterState()
+	st.Cluster.HeldSince, st.Cluster.JudgedAt, st.Cluster.LeaseExpired = t0.Add(-time.Minute), t0.Add(-2*time.Minute), true
+	r, _ := daemonWith(t, st)
+
+	res := r.run("", "cluster", "status")
+
+	require.Contains(t, res.out, "Controller:  pve1, its lease expired")
+	require.Regexp(t, `Held:        the cycles hold since 2026-\S+; coverage and blocks as judged at 2026-\S+\n`, res.out)
+}
+
 func TestClusterStatusOfANodeAlone(t *testing.T) {
 	r, _ := daemonWith(t, healthyState())
 
