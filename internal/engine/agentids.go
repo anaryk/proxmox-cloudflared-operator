@@ -21,12 +21,24 @@ type agentIDs map[string]map[string]map[string]time.Time
 // a restart; a further id it reports is not taken, and named. A connector a
 // node reports of a tunnel pinned to another node is never its own.
 func (c *cycleRun) noteAgentIDs(own func(tunnel, id string)) {
+	mem := &c.e.place
+	if c.leaseHeld {
+		// What was heard while another controller ruled is not this
+		// process's word: a takeover hears the agents anew.
+		mem.heard, mem.heardSince = nil, time.Time{}
+		return
+	}
+	if mem.heardSince.IsZero() {
+		mem.heardSince = c.now
+	}
 	if c.fleet == nil {
 		return
 	}
-	mem := &c.e.place
 	if mem.ids == nil {
 		mem.ids = agentIDs{}
+	}
+	if mem.heard == nil {
+		mem.heard = map[string]bool{}
 	}
 	ids := map[string]string{} // tunnel id -> name, of the tunnels this cycle knows
 	for _, t := range slices.Concat(c.tunnels, c.shown) {
@@ -39,6 +51,7 @@ func (c *cycleRun) noteAgentIDs(own func(tunnel, id string)) {
 		if !f.fresh || !servedState(f.entry.State) {
 			continue
 		}
+		mem.heard[node] = true
 		byTunnel := mem.ids[node]
 		if byTunnel == nil {
 			byTunnel = map[string]map[string]time.Time{}
@@ -63,6 +76,13 @@ func (c *cycleRun) noteAgentIDs(own func(tunnel, id string)) {
 			own(st.TunnelID, st.ConnectorID)
 		}
 	}
+}
+
+// hearConnectors notes the connector ids this node and the agents of the
+// others run before the rotations drop any connector: a controller that
+// took over knows them from its first cycle.
+func (c *cycleRun) hearConnectors() {
+	c.noteOwnIDs(c.st.Connectors)
 }
 
 // mayRun says whether the agent of node may run a connector of the tunnel

@@ -281,6 +281,11 @@ func (e *Engine) rotateFor(ctx context.Context, t reconcile.TunnelState, r *stor
 	if slices.Contains(r.TakenUp, t.ID) {
 		return nil
 	}
+	if _, _, err := e.ownedConnectors(t); errors.Is(err, errNotHeard) {
+		// The connector here is restarted with the new token once what
+		// follows it can be done too.
+		return err
+	}
 	if err := e.takeUpSecret(ctx, t); err != nil {
 		return err
 	}

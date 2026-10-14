@@ -58,8 +58,15 @@ type placementMemory struct {
 	// nothing.
 	tokens     map[string]string
 	emptySince map[tunnelRef]time.Time
-	// ids are the connector ids the agents of other nodes reported.
-	ids agentIDs
+	// ids are the connector ids the agents of other nodes reported;
+	// heard are the nodes whose agent reported to this process while it
+	// controlled, and heardSince when its first such cycle noted them.
+	// self are, by tunnel id, the ids of this node's ready connectors as
+	// the cycle that last noted them saw them.
+	ids        agentIDs
+	heard      map[string]bool
+	heardSince time.Time
+	self       map[string][]string
 	// decided is where the last placement put each owner's routes.
 	decided map[string]decidedPlace
 	// pointedAt is, by hostname, the tunnel its record pointed at when a

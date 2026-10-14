@@ -75,13 +75,19 @@ func (c *cycleRun) noteOwnIDs(statuses []connector.Status) {
 		}
 		c.e.ownIDs[tunnel][id] = c.now
 	}
+	self := map[string][]string{}
 	for _, st := range statuses {
 		if !st.Ready || st.ConnectorID == "" {
 			continue
 		}
 		own(st.TunnelID, st.ConnectorID)
+		self[st.TunnelID] = append(self[st.TunnelID], st.ConnectorID)
 	}
-	c.noteAgentIDs(own)
+	c.e.place.self = self
+	if !c.agentsNoted {
+		c.agentsNoted = true
+		c.noteAgentIDs(own)
+	}
 	for tunnel, ids := range c.e.ownIDs {
 		maps.DeleteFunc(ids, func(_ string, seen time.Time) bool { return !c.ownStill(seen) })
 		if len(ids) == 0 {

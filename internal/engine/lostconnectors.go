@@ -29,6 +29,12 @@ type lostView struct {
 // token reports its id within it.
 const ownGrace = 2 * time.Minute
 
+// errNotHeard says that this process has not yet heard the connectors the
+// nodes still in the install run, as a controller that just took over: a
+// connector of theirs would look lost.
+var errNotHeard = errors.New("this controller has not heard the connectors the remaining nodes run yet; " +
+	"nothing is dropped until it has")
+
 // lostConnectors lists the connectors of a tunnel the nodes that are gone
 // may run: those of ids, and every other one no node still in the install
 // owns. One Cloudflare says started after since, when the secret was given,
@@ -76,6 +82,8 @@ func (e *Engine) dropLost(ctx context.Context, t reconcile.TunnelState, ids []st
 	}
 	v, err := e.lostConnectors(ctx, t, ids, since)
 	switch {
+	case errors.Is(err, errNotHeard):
+		return err
 	case err != nil:
 	case v.listed == 0:
 		// A listing may lag a connection: nothing in it tells that the
@@ -102,10 +110,19 @@ func (e *Engine) dropLost(ctx context.Context, t reconcile.TunnelState, ids []st
 }
 
 // ownedConnectors are the ids of the connectors of a tunnel that this node
-// runs, as the last state shows them, or that the agent of a node still
-// served reported as its own, and whether every node that runs one was
-// heard of: the replicas for the shared tunnel, the node of a pinned one.
+// runs, as the last state or this cycle shows them, or that the agent of a
+// node still served reported as its own, and whether every node that runs
+// one was heard of: the replicas for the shared tunnel, the node of a
+// pinned one.
+// Until this process heard every such node, or takeoverHold passed since
+// it first could, it says errNotHeard: a node it did not hear yet is not
+// one that reported nothing.
 func (e *Engine) ownedConnectors(t reconcile.TunnelState) (map[string]bool, bool, error) {
+	mem := &e.place
+	if mem.heardSince.IsZero() {
+		return nil, false, errNotHeard
+	}
+	waits := e.d.Now().Sub(mem.heardSince) < takeoverHold
 	nodes, err := e.d.Store.Nodes()
 	if err != nil {
 		return nil, false, fmt.Errorf("reading the node registry: %w", err)
@@ -121,6 +138,9 @@ func (e *Engine) ownedConnectors(t reconcile.TunnelState) (map[string]bool, bool
 			owned[st.ConnectorID] = true
 		}
 	}
+	for _, id := range mem.self[t.ID] {
+		owned[id] = true
+	}
 	if e.runsHere(t) && len(owned) == 0 && runsConnector(store.NodeEntry{Name: e.d.Node, State: store.NodeActive}, t, s) {
 		sure = false
 	}
@@ -132,7 +152,11 @@ func (e *Engine) ownedConnectors(t reconcile.TunnelState) (map[string]bool, bool
 		for id := range ids {
 			owned[id] = true
 		}
-		if len(ids) == 0 && runsConnector(n, t, s) {
+		switch {
+		case len(ids) > 0 || !runsConnector(n, t, s):
+		case !mem.heard[n.Name] && waits:
+			return nil, false, errNotHeard
+		default:
 			sure = false
 		}
 	}

@@ -150,3 +150,78 @@ func TestAForgetEndsEveryConnectionWhenAReplicaIsNotHeardOf(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, w.callsSince(n), "CleanUpConnections acc1 "+id)
 }
+
+// A controller that takes over while a forget's rotation is pending hears
+// the replicas before it drops anything: in its first cycle it drops the
+// forgotten node's connector alone. While a replica is not heard yet
+// nothing is dropped and the rotation stays pending.
+func TestATakeoverDropsNothingBeforeItHeardTheReplicas(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		silent bool
+	}{
+		{"every replica reports", false},
+		{"a replica not heard yet", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := threeNodes(t)
+			w.settle()
+			id := w.tunnelID(t, tunnelName)
+			w.conn.setConnectorID(id, "c-pve1")
+			w.listAt(t, tunnelName, "c-pve1", "pve2-"+id, "pve3-"+id)
+			w.tick(time.Second)
+			w.cf.Deny("tunnel.write")
+			_, err := w.eng.ForgetNode(t.Context(), "pve3", false)
+			require.NoError(t, err)
+			require.NotNil(t, entryOf(t, w.env, "pve3").Rotation)
+
+			w.restart(t)
+			w.cf.Allow("tunnel.write")
+			w.acts["pve2"].silent = tt.silent
+			n := len(w.cf.Calls())
+			w.tick(time.Second)
+			calls := w.callsSince(n)
+			require.NotContains(t, calls, "CleanUpConnections acc1 "+id, "the replicas keep their connections")
+			require.NotContains(t, calls, "CleanUpConnector acc1 "+id+" pve2-"+id)
+			if tt.silent {
+				require.NotContains(t, calls, "CleanUpConnector acc1 "+id+" pve3-"+id)
+				require.NotNil(t, entryOf(t, w.env, "pve3").Rotation, "pending until the replica is heard")
+				return
+			}
+			require.Contains(t, calls, "CleanUpConnector acc1 "+id+" pve3-"+id)
+			require.Equal(t, []string{"c-pve1", "pve2-" + id}, w.listedIDs(t, id))
+			w.tick(time.Second)
+			require.Nil(t, entryOf(t, w.env, "pve3").Rotation)
+		})
+	}
+}
+
+// A replica this process has not heard since it took over is not one that
+// reported no connector: its connectors cannot be told apart until it
+// reports, or until the takeover hold is over, when it counts as unsure.
+func TestAReplicaNotHeardSinceTheTakeoverHoldsTheDrop(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	tun := w.eng.State().Tunnels[0].TunnelState
+	require.Equal(t, tunnelName, tun.Name)
+	w.eng.place.ids, w.eng.place.heard = nil, nil
+
+	w.eng.place.heardSince = time.Time{}
+	_, _, err := w.eng.ownedConnectors(tun)
+	require.ErrorIs(t, err, errNotHeard, "nothing heard by this process yet")
+
+	w.eng.place.heardSince = w.clock.now()
+	_, _, err = w.eng.ownedConnectors(tun)
+	require.ErrorIs(t, err, errNotHeard)
+
+	w.eng.place.heard = map[string]bool{"pve2": true, "pve3": true}
+	_, sure, err := w.eng.ownedConnectors(tun)
+	require.NoError(t, err)
+	require.False(t, sure, "heard, and reported no connector")
+
+	w.eng.place.heard = nil
+	w.clock.advance(takeoverHold)
+	_, sure, err = w.eng.ownedConnectors(tun)
+	require.NoError(t, err)
+	require.False(t, sure)
+}

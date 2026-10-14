@@ -166,6 +166,9 @@ type cycleRun struct {
 	// read it; leaseHeld says that the lease let the cycle write nothing.
 	cluster   store.ClusterIdentity
 	leaseHeld bool
+	// agentsNoted says that the cycle took the connector ids the agents
+	// reported.
+	agentsNoted bool
 	// nodes are the entries of the node registry as this cycle read and
 	// wrote them, by name, and reports what the agents reported, read once
 	// by the cycle.
@@ -237,6 +240,7 @@ func (c *cycleRun) run() State {
 		c.advanceMoves()
 		c.savePlacements()
 		c.retirePinned()
+		c.hearConnectors()
 		c.rotationStep()
 		c.forgetRotations()
 		c.expireJoinTokens()
