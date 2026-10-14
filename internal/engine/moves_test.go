@@ -13,6 +13,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -292,4 +293,45 @@ func TestAMoveWantedAtAThirdTunnelGoesOnToItsEnd(t *testing.T) {
 	for _, ev := range w.placementEvents() {
 		require.NotContains(t, ev, "given up", ev)
 	}
+}
+
+// A record pco will not change, as one of someone else at a hostname of
+// the owner, never points at the tunnel moved to: the move does not wait
+// for it, and goes on once the records pco writes were switched.
+func TestAMoveDoesNotWaitForARecordInConflict(t *testing.T) {
+	pinned1, _ := planner.PinnedTunnelName(testInstall, "pve1")
+	w := twoNames(t)
+	for _, r := range w.records() {
+		if r.Name == "web2.example.com" {
+			r.Type, r.Content, r.Comment = "A", "192.0.2.10", ""
+			w.cf.SeedRecord(testZone, r)
+		}
+	}
+	w.acts["pve3"].fail = map[string]string{"www.example.com": "not reached"}
+	w.untilMove(t, "qemu/101", store.MoveRolledOut, 40, "www.example.com")
+	st := w.tick(5 * time.Second)
+	require.True(t, slices.ContainsFunc(st.Conflicts, func(c reconcile.Conflict) bool { return c.Name == "web2.example.com" }), st.Conflicts)
+
+	w.untilMove(t, "qemu/101", store.MoveCNAMEsSwitched, 10, "www.example.com")
+	require.Equal(t, pinned1, w.recordTunnel(t, "www.example.com"))
+}
+
+// A move that waits at its rollout for a record says so once it has waited
+// long, naming the move and the hostname.
+func TestAMoveThatWaitsLongForARecordSaysSo(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].fail = map[string]string{"db.example.com": "not reached"}
+	w.untilMove(t, "qemu/102", store.MoveRolledOut, 40, hosts3...)
+
+	w.cf.FailNext("dns.read", 1000, errors.New("connection reset"))
+	st := w.tick(5 * time.Second)
+	require.False(t, hasProblem(st, "the move of qemu/102"), st.Problems)
+	for range 10 {
+		st = w.tick(time.Minute)
+	}
+	m, _ := w.moveOf(t, "qemu/102")
+	require.Equal(t, store.MoveRolledOut, m.Step)
+	require.True(t, hasProblem(st, "the move of qemu/102 from "+tunnelName), st.Problems)
+	require.True(t, hasProblem(st, "db.example.com"), st.Problems)
 }

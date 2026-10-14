@@ -23,6 +23,11 @@ const (
 	// to must be ready on every replica when Cloudflare cannot confirm the
 	// configuration they run.
 	rolloutWait = 30 * time.Second
+	// recordsWaitLong is how long a move may wait at its rollout for the
+	// records of its owner before it says which one it waits for.
+	recordsWaitLong = 10 * time.Minute
+
+	problemMoveWaits = "the move of %s from %s to %s waits for the record of %s: %s"
 )
 
 // startMoves reads the moves stored. The first cycle of this process gives
@@ -180,7 +185,13 @@ func (c *cycleRun) advanceMoves() {
 			}
 			next.Step, next.At = store.MoveRolledOut, c.now
 		case store.MoveRolledOut:
-			if !c.checked || c.recordsPending(m) {
+			if !c.checked {
+				continue
+			}
+			if host, why := c.recordPending(m); host != "" {
+				if c.now.Sub(m.At) >= recordsWaitLong {
+					c.problem(problemMoveWaits, owner, m.From, m.To, host, why)
+				}
 				continue
 			}
 			next.Step, next.At, next.CNAMEAt = store.MoveCNAMEsSwitched, c.now, c.now
@@ -292,18 +303,25 @@ type agentStatusConnector struct {
 	ready  bool
 }
 
-// recordsPending says whether a record of the owner of a move is not known
-// to point at the tunnel the move goes to after the DNS run of this cycle:
-// its zone could not be listed, the run left it unwritten, or it neither
-// pointed there when the run listed the zone nor was written there by the
-// run. A zone that was not listed says nothing of its records.
-func (c *cycleRun) recordsPending(m store.Move) bool {
+// recordPending names a record of the owner of a move that is not known
+// to point at the tunnel the move goes to after the DNS run of this cycle,
+// and why: its zone could not be listed, the run left it unwritten, or it
+// neither pointed there when the run listed the zone nor was written there
+// by the run. A zone that was not listed says nothing of its records. A
+// record the run found in conflict, or whose adoption waits, is not pco's
+// to switch and is not waited for; one that lost its marker and still
+// points at a tunnel of the install is, as the old rules serve it.
+func (c *cycleRun) recordPending(m store.Move) (host, why string) {
 	for _, rt := range c.claims.Winners {
-		if rt.Owner() != m.Owner {
+		if rt.Owner() != m.Owner || c.notSwitched(rt.Hostname) {
 			continue
 		}
-		if z, ok := c.zoneOf(rt.Hostname); !ok || slices.Contains(c.dnsUnlisted, z.Name) {
-			return true
+		z, ok := c.zoneOf(rt.Hostname)
+		switch {
+		case !ok:
+			return rt.Hostname, "no zone of the install holds it"
+		case slices.Contains(c.dnsUnlisted, z.Name):
+			return rt.Hostname, fmt.Sprintf("zone %s could not be listed", z.Name)
 		}
 		var written bool
 		for _, a := range c.st.Actions {
@@ -311,15 +329,25 @@ func (c *cycleRun) recordsPending(m store.Move) bool {
 				continue
 			}
 			if !a.Applied {
-				return true
+				return rt.Hostname, "the DNS run left it unwritten"
 			}
 			written = true
 		}
 		if !written && c.dnsPointsAt[strings.ToLower(rt.Hostname)] != m.To {
-			return true
+			return rt.Hostname, "it does not point there yet"
 		}
 	}
-	return false
+	return "", ""
+}
+
+// notSwitched says that pco leaves the record of a hostname as it is: the
+// DNS run found it in conflict, its marker not lost, or its adoption waits.
+func (c *cycleRun) notSwitched(host string) bool {
+	if _, waits := c.adoptWaits[host]; waits {
+		return true
+	}
+	lost := slices.ContainsFunc(c.st.Lost, func(name string) bool { return strings.EqualFold(name, host) })
+	return !lost && slices.ContainsFunc(c.st.Conflicts, func(x reconcile.Conflict) bool { return strings.EqualFold(x.Name, host) })
 }
 
 // moveView is a move under way as the state shows it.
