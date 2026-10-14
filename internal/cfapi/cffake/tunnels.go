@@ -364,6 +364,32 @@ func (f *Fake) CleanUpConnections(ctx context.Context, accountID, tunnelID strin
 	return nil
 }
 
+// CleanUpConnector drops one connector of a tunnel; one it does not list is
+// nothing to drop. A tunnel left without connectors is down.
+func (f *Fake) CleanUpConnector(ctx context.Context, accountID, tunnelID, connectorID string) error {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return err
+	}
+	if err := cfapi.CheckID("connector id", connectorID); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin(ctx, opTunnelWrite, "CleanUpConnector", accountID, tunnelID, connectorID); err != nil {
+		return err
+	}
+	t, err := f.tunnelIn(accountID, tunnelID)
+	if err != nil {
+		return err
+	}
+	had := len(t.connectors)
+	t.connectors = slices.DeleteFunc(t.connectors, func(c cfapi.Connector) bool { return c.ID == connectorID })
+	if had > 0 && len(t.connectors) == 0 {
+		t.Status = "down"
+	}
+	return nil
+}
+
 func (f *Fake) TunnelConfig(ctx context.Context, accountID, tunnelID string) (cfapi.TunnelConfig, error) {
 	if err := checkTunnelID(accountID, tunnelID); err != nil {
 		return cfapi.TunnelConfig{}, err

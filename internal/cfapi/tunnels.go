@@ -223,6 +223,22 @@ func (c *Client) CleanUpConnections(ctx context.Context, accountID, tunnelID str
 	return nil
 }
 
+// CleanUpConnector ends the connections of one connector of a tunnel, the
+// one whose id Cloudflare lists; the others keep theirs.
+func (c *Client) CleanUpConnector(ctx context.Context, accountID, tunnelID, connectorID string) error {
+	path, err := tunnelPath(accountID, tunnelID, "connections")
+	if err != nil {
+		return fmt.Errorf("cleaning up a connector: %w", err)
+	}
+	if err := CheckID("connector id", connectorID); err != nil {
+		return fmt.Errorf("cleaning up a connector of tunnel %s: %w", tunnelID, err)
+	}
+	if err := c.do(ctx, http.MethodDelete, path, url.Values{"client_id": {connectorID}}, nil, nil); err != nil {
+		return fmt.Errorf("cleaning up connector %s of tunnel %s: %w", connectorID, tunnelID, err)
+	}
+	return nil
+}
+
 // TunnelConfig returns the ingress configuration of a tunnel. A tunnel that
 // has none yet has no rules and the version Cloudflare reports for it.
 func (c *Client) TunnelConfig(ctx context.Context, accountID, tunnelID string) (TunnelConfig, error) {

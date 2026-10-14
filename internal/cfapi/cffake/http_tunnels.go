@@ -159,9 +159,18 @@ func (h *handler) updateTunnel(r *http.Request, p params) (reply, error) {
 	return reply{result: newWireTunnel(p["account"], listedTunnel{Tunnel: t})}, nil
 }
 
+// cleanUpConnections ends the connections of every connector of a tunnel,
+// or with client_id of that one connector.
 func (h *handler) cleanUpConnections(r *http.Request, p params) (reply, error) {
-	if err := checkQuery(r.URL.Query()); err != nil {
+	q := r.URL.Query()
+	if err := checkQuery(q, "client_id"); err != nil {
 		return reply{}, err
+	}
+	if q.Has("client_id") {
+		if err := h.f.CleanUpConnector(r.Context(), p["account"], p["tunnel"], q.Get("client_id")); err != nil {
+			return reply{}, err
+		}
+		return reply{result: nil}, nil
 	}
 	if err := h.f.CleanUpConnections(r.Context(), p["account"], p["tunnel"]); err != nil {
 		return reply{}, err

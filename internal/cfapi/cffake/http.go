@@ -70,6 +70,7 @@ func WithIgnoredIsDeleted() Option {
 //	GET    /accounts/{account}/cfd_tunnel/{tunnel}/configurations
 //	PUT    /accounts/{account}/cfd_tunnel/{tunnel}/configurations
 //	GET    /accounts/{account}/cfd_tunnel/{tunnel}/connections
+//	DELETE /accounts/{account}/cfd_tunnel/{tunnel}/connections (client_id)
 //	GET    /zones/{zone}/dns_records           (type, name, comment.startswith)
 //	POST   /zones/{zone}/dns_records
 //	PATCH  /zones/{zone}/dns_records/{record}

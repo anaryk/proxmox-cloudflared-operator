@@ -381,6 +381,10 @@ func cleanUp(id string) call {
 	return func(a cfapi.API) (any, error) { return nil, a.CleanUpConnections(ctx, acct, id) }
 }
 
+func cleanUpConnector(id, connector string) call {
+	return func(a cfapi.API) (any, error) { return nil, a.CleanUpConnector(ctx, acct, id, connector) }
+}
+
 func connectors(account, id string) call {
 	return func(a cfapi.API) (any, error) { return a.Connectors(ctx, account, id) }
 }
@@ -939,6 +943,33 @@ func cleanUpScenarios() []scenario {
 		refused("CleanUpConnections", "blank tunnel", isInvalid, func(f *cffake.Fake) call {
 			std(f)
 			return cleanUp("")
+		}),
+		ok("CleanUpConnector", "one connector of a tunnel", func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Version: "2026.9.0", ConfigVersion: 1, Connections: 4}, {ID: "c2", Connections: 1}})
+			return cleanUpConnector(tun.ID, "c1")
+		}).injecting("tunnel.write"),
+		ok("CleanUpConnector", "the last connector of a tunnel", func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Connections: 4}})
+			return cleanUpConnector(tun.ID, "c1")
+		}),
+		ok("CleanUpConnector", "a connector the tunnel does not list", func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Connections: 4}})
+			return cleanUpConnector(tun.ID, "c9")
+		}),
+		refused("CleanUpConnector", "unknown tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			return cleanUpConnector("no-such-tunnel", "c1")
+		}),
+		refused("CleanUpConnector", "blank connector", isInvalid, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			return cleanUpConnector(tun.ID, "")
 		}),
 	}
 }

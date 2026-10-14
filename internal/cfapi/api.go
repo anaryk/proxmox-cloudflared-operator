@@ -110,6 +110,7 @@ type API interface {
 	TunnelToken(ctx context.Context, accountID, tunnelID string) (string, error)
 	RotateTunnelSecret(ctx context.Context, accountID, tunnelID string, secret []byte) error
 	CleanUpConnections(ctx context.Context, accountID, tunnelID string) error
+	CleanUpConnector(ctx context.Context, accountID, tunnelID, connectorID string) error
 	TunnelConfig(ctx context.Context, accountID, tunnelID string) (TunnelConfig, error)
 	PutTunnelConfig(ctx context.Context, accountID, tunnelID string, rules []planner.IngressRule) (int, error)
 	Connectors(ctx context.Context, accountID, tunnelID string) ([]Connector, error)

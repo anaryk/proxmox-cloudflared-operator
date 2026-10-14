@@ -657,6 +657,17 @@ func TestCleanUpConnectionsFailure(t *testing.T) {
 	require.True(t, IsAuth(env.c.CleanUpConnections(context.Background(), "a1", "t1")))
 }
 
+func TestCleanUpConnector(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(`null`)))
+
+	require.NoError(t, env.c.CleanUpConnector(context.Background(), "a1", "t1", "c1"))
+
+	req := only(t, env)
+	require.Equal(t, http.MethodDelete, req.method)
+	require.Equal(t, "/client/v4/accounts/a1/cfd_tunnel/t1/connections?client_id=c1", req.uri)
+	require.Empty(t, req.body)
+}
+
 // ruleCases pair the wire form of an ingress rule with the rule it maps to.
 var ruleCases = []struct {
 	name string
@@ -1379,6 +1390,8 @@ func TestEmptyArgumentsAreRejectedBeforeAnyRequest(t *testing.T) {
 		{"RotateTunnelSecret without secret", func(c *Client) error { return c.RotateTunnelSecret(ctx, "a1", "t1", nil) }},
 		{"CleanUpConnections without account", func(c *Client) error { return c.CleanUpConnections(ctx, "", "t1") }},
 		{"CleanUpConnections without tunnel", func(c *Client) error { return c.CleanUpConnections(ctx, "a1", "") }},
+		{"CleanUpConnector without tunnel", func(c *Client) error { return c.CleanUpConnector(ctx, "a1", "", "c1") }},
+		{"CleanUpConnector without connector", func(c *Client) error { return c.CleanUpConnector(ctx, "a1", "t1", "") }},
 		{"Records without zone", func(c *Client) error { _, err := c.Records(ctx, "", RecordFilter{}); return err }},
 		{"CreateRecord without zone", func(c *Client) error { _, err := c.CreateRecord(ctx, "", withID); return err }},
 		{"CreateRecord without name", func(c *Client) error { _, err := c.CreateRecord(ctx, "z1", noName); return err }},
