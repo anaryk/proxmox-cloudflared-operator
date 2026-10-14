@@ -107,6 +107,7 @@ func (a *app) webCmd() *cobra.Command {
 				return err
 			}
 			gw := gateway.New(a.socket, sessions, cfg.Log)
+			cfg.Role = gw.Role
 			srv, err := web.New(cfg, sessions, gw)
 			if err != nil {
 				return err

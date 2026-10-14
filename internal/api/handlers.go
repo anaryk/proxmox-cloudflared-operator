@@ -46,7 +46,7 @@ func (s *Server) routes() http.Handler {
 	r.NoRoute(func(c *gin.Context) { s.fail(c, errNoRoute) })
 	r.NoMethod(func(c *gin.Context) { s.fail(c, errNoMethod) })
 
-	v1 := r.Group("/v1", s.acceptJSON)
+	v1 := r.Group("/v1", s.atController, s.acceptJSON)
 	v1.GET("/version", s.getVersion)
 	v1.GET("/state", s.getState)
 	v1.GET("/events", s.getEvents)
@@ -75,6 +75,7 @@ func (s *Server) routes() http.Handler {
 	s.configRoutes(v1)
 	s.networkRoutes(v1)
 	s.managedRoutes(v1)
+	s.router = r
 	return s.logRequests(s.guard(s.stamp(r)))
 }
 

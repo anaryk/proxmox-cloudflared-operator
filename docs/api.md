@@ -97,6 +97,8 @@ A client acts on the code:
 | `method_not_allowed` | 405 | The route takes another method. |
 | `refused` | 409 | The daemon refuses, and says why: a revision or an offer that is not the current one, a guest that changed since it was shown, a credential that still manages something. Read again, and decide again. |
 | `holder_changed` | 409 | A diagnosis named the route it expected to hold the hostname, and another holds it now. |
+| `not_controller` | 409 | On a cluster, this node does not hold the lease, and the call is the controller's: the message names the node to run it on, and its address. See [On a node that is not the controller](#on-a-node-that-is-not-the-controller). |
+| `no_controller` | 503 | On a cluster, this node does not hold the lease and no controller answers: the message names the node that held the lease last, and since when. |
 | `too_large` | 413 | The body is larger than 1 MiB. |
 | `unsupported_media_type` | 415 | A `POST` or `PUT` without `Content-Type: application/json`. |
 | `internal` | 500 | Something went wrong in the daemon; `journalctl -u pco` has it. |
@@ -157,6 +159,24 @@ has the rest.
 | `POST /v1/managed/enable` | 200 | `pco network managed enable` | admin |
 
 A route that changes something and has nothing to say answers `{}`.
+
+### On a node that is not the controller
+
+On a cluster one node, the holder of the lease, is the controller: it runs the cycle and is the
+only node that writes. The daemon on every other node answers what its own process knows:
+`GET /v1/version`, `GET /v1/state`, `GET /v1/events`, `GET /v1/stream`, `GET /v1/traffic`,
+`GET /v1/traffic/route` and `GET /v1/doctor`. Every other route is refused before the body of
+the request is read:
+
+- `409 not_controller`, `this node is not the controller; run it on <node> (<address>)`, while
+  the controller answers. The `pco` commands print it; the same command on the node it names
+  does the work.
+- `503 no_controller`, `no controller is reachable (lease held by <node> since <time>)`, while
+  none does, or `no controller is reachable (no node holds the lease)` while the lease is free.
+
+Nothing is passed on between nodes: a call that changes something is made on the controller,
+by root there or through its web interface, which [sends the browser there](web-ui.md#opening-it).
+A node on its own is its controller.
 
 ### Version and state
 

@@ -49,8 +49,12 @@ type Config struct {
 	KeyFile  string   // pco web's default: $CREDENTIALS_DIRECTORY/tls.key
 	HSTS     bool     // PCO_WEB_HSTS=1
 	Assets   fs.FS    // dist as built: ui.Assets(), or an fstest.MapFS in tests
-	Now      func() time.Time
-	Log      zerolog.Logger
+	// Role is what the daemon says about the node: whether it is the
+	// controller, and else the controller's address when one is known. Every
+	// page goes there while it is another node; nil is a node on its own.
+	Role func() (controller bool, addr string, ok bool)
+	Now  func() time.Time
+	Log  zerolog.Logger
 }
 
 // Server is the web process.
@@ -94,7 +98,9 @@ func (s *Server) routes(files *assets, mounts []Mounter) http.Handler {
 	// header such as X-Forwarded-For is whatever the client wrote.
 	r.ForwardedByClientIP = false
 	r.RemoteIPHeaders = nil
-	r.Use(s.logRequests, s.recoverPanics, securityHeaders(s.cfg.HSTS))
+	// The redirect to the controller stands before the sign-in: the browser
+	// signs in on the node that answers.
+	r.Use(s.logRequests, s.recoverPanics, securityHeaders(s.cfg.HSTS), RedirectToController(s.cfg.Role))
 	r.NoRoute(notFound)
 	r.NoMethod(func(c *gin.Context) { plain(c, http.StatusMethodNotAllowed, "method not allowed") })
 	for _, m := range mounts {

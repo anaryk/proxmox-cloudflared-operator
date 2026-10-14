@@ -30,6 +30,11 @@ const (
 	codeTooLarge             = "too_large"
 	codeInternal             = "internal"
 	codeHolderChanged        = "holder_changed"
+	// A node that is not the controller refuses what the controller answers:
+	// not_controller names the node to run it on, no_controller says none
+	// answers.
+	codeNotController = "not_controller"
+	codeNoController  = "no_controller"
 )
 
 const redacted = "[redacted]"

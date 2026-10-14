@@ -493,6 +493,14 @@ func (h *hub) readers() bool {
 	return false
 }
 
+// digest is the digest of the daemon's state as the stream last announced
+// it; "" before the first hello.
+func (h *hub) digest() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.hello.Digest
+}
+
 func (h *hub) digestChanged(digest string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
@@ -114,6 +115,11 @@ type Server struct {
 	webUID      uint32 // the user of the web UI; 0 for none
 	log         zerolog.Logger
 	handler     http.Handler
+	// router is the routes behind the peer check; tests list them.
+	router *gin.Engine
+	// role is what the daemon says about its node; nil is the controller.
+	roleMu sync.RWMutex
+	role   Role
 
 	// checkPeers is whether a request is answered only when its peer is one
 	// of allowedUIDs. It starts as what the platform can do; tests set it.
