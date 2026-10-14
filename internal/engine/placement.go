@@ -101,14 +101,17 @@ type decidedPlace struct {
 }
 
 // listsFor says whether the snapshot of node lists the target of a route:
-// the node that resolves it always has it, wherever the route is placed,
-// as a guest that moved to it is found there only; a node of its placement
-// runs it; a replica of the shared tunnel, and a
-// node joining to become one, verifies a shared route, one not placed yet,
-// and a pinned one that may be shared again, which takes every replica to
-// have it in its set first. Any other node does not have it: a node that
-// left a route's placement, by a drain, a demotion or as long as coverage
-// is lost, has it leave its egress set in the same cycle.
+// the node a guest runs on, when it resolves the guest's route, always has
+// it, wherever the route is placed, as a guest that moved there is found
+// there only, and a drained node keeps the routes of its own guests that
+// way; a node of its placement runs it; a replica of the shared tunnel,
+// and a node joining to become one, verifies a shared route, one not
+// placed yet, and a pinned one that may be shared again, which takes every
+// replica to have it in its set first. Any other node does not have it: a
+// node that left a route's placement, by a drain, a demotion or as long as
+// coverage is lost, has it leave its egress set in the same cycle. A route
+// this node resolves only in another's stead, of a guest whose node's
+// agent is silent, or a manual one, is listed by those rules alone.
 func (c *cycleRun) listsFor(node string, rt model.Route) bool {
 	decided := c.e.place.decided
 	if c.placing != nil {
@@ -121,7 +124,7 @@ func (c *cycleRun) listsFor(node string, rt model.Route) bool {
 		}
 		return replica
 	}
-	if c.resolverOf(rt) == node {
+	if rt.Guest != nil && c.hostingNode([]model.Route{rt}) == node && c.resolverOf(rt) == node {
 		return true
 	}
 	d, ok := decided[rt.Owner()]

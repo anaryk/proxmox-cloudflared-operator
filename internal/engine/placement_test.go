@@ -13,6 +13,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -955,4 +956,47 @@ func TestAPinnedGuestFollowsItsNodeWithoutCoverage(t *testing.T) {
 	st := w.tick(time.Second)
 	require.Equal(t, "pve3", route(st, "db.example.com").Placement.Node, fmt.Sprint(w.placementEvents()))
 	require.Equal(t, pinned3, w.recordTunnel(t, "db.example.com"))
+}
+
+// inEgress says whether the last set this node gave its egress filter
+// holds addr at port.
+func (w *world) inEgress(addr netip.Addr, port uint16) bool {
+	set, _ := w.egr.last()
+	return slices.ContainsFunc(set, func(t egress.Target) bool { return t.Addr == addr && t.Port == port })
+}
+
+// Without coverage this node proves no other node's guest, also when it
+// resolves the route because the guest's node has gone silent: the address
+// stays out of this node's egress set.
+func TestTheControllerDoesNotResolveASilentNodesGuestWithoutCoverage(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].noWatch = true
+	for range 100 {
+		w.tick(5 * time.Second)
+	}
+	require.False(t, w.inEgress(dbAddr, 8080))
+
+	w.acts["pve2"].silent = true
+	w.clock.advance(silentAfter)
+	for range 3 {
+		w.tick(5 * time.Second)
+	}
+	require.False(t, w.inEgress(dbAddr, 8080), "a guest of another node is not proven here without coverage")
+}
+
+// A manual route to an address of another node is pinned to that node and
+// stays out of this node's egress set, though this node resolves it.
+func TestAManualRouteToAnotherNodeStaysOutOfThisNodesSet(t *testing.T) {
+	w := threeNodes(t)
+	pve2 := netip.MustParseAddr("10.0.0.3")
+	require.NoError(t, w.store.SaveManualRoute(model.Route{
+		Hostname: "pve2.example.com", ManualID: "pve2", Source: model.SourceManual,
+		Target:  model.Target{Scheme: model.SchemeHTTPS, Addr: pve2, Port: 8006},
+		Options: model.RouteOptions{AllowNode: true, NoTLSVerify: true},
+	}))
+	for range 10 {
+		w.tick(5 * time.Second)
+	}
+	require.False(t, w.inEgress(pve2, 8006))
 }
