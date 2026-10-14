@@ -9,9 +9,11 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -37,6 +39,11 @@ func (a *app) statusCmd() *cobra.Command {
 			"routes by state, the tunnels with their connectors, the credentials, the issues found in\n" +
 			"guest notes and the problems. The exit status is 1 when there are problems or the egress\n" +
 			"filter does not confine the connectors.\n\n" +
+			"On a node of a cluster it also says which node is the controller and at which address, and\n" +
+			"how the agent of this node fares: whether it hears the controller, the snapshot it applied\n" +
+			"and how old it is, its connectors and egress targets, and its problems. On a node that is\n" +
+			"not the controller the rest is what that node last found; pco cluster status on the\n" +
+			"controller shows the cluster.\n\n" +
 			"With --json the state of the daemon is printed as the daemon sent it, re-indented, with\n" +
 			"control and bidirectional characters escaped.\n\n" + askHelp,
 		Example: "  # What the daemon found and did\n" +
@@ -65,7 +72,14 @@ func (a *app) statusCmd() *cobra.Command {
 				return couldNotAsk{fmt.Errorf("decoding the state of the daemon: %w", decodeErr)}
 			}
 			if !a.json {
-				if err := a.renderStatus(cmd.OutOrStdout(), st); err != nil {
+				// The agent of a node that follows another node's controller
+				// says so also while no node holds the lease.
+				var agent *agentAnswer
+				v, err := a.client().AgentStatus(cmd.Context())
+				if inCluster(st) || err == nil && v.Remote {
+					agent = &agentAnswer{view: v, err: err}
+				}
+				if err := a.renderStatus(cmd.OutOrStdout(), st, agent); err != nil {
 					return err
 				}
 			}
@@ -149,7 +163,87 @@ func unconfined(st engine.State) bool {
 	return false
 }
 
-func (a *app) renderStatus(w io.Writer, st engine.State) error {
+// agentAnswer is what the daemon said of the agent of this node.
+type agentAnswer struct {
+	view agentproto.AgentView
+	err  error
+}
+
+// inCluster says whether the state is of a node of a cluster: the registry
+// has other nodes, Proxmox lists other members, or another node holds the
+// lease.
+func inCluster(st engine.State) bool {
+	switch {
+	case len(st.Nodes) > 1:
+		return true
+	case st.Cluster != nil && len(st.Cluster.Members) > 1:
+		return true
+	}
+	return st.Lease != nil && st.Lease.Holder != "" && st.Lease.Holder != st.Node
+}
+
+// controllerText says which node is the controller: the holder of the lease
+// and its agent address on the host, what the agent follows in the
+// appliance.
+func controllerText(st engine.State, agent *agentAnswer) string {
+	l := st.Lease
+	switch {
+	case l == nil && agent != nil && agent.err == nil && agent.view.Controller != "":
+		if !agent.view.Remote {
+			return "this node"
+		}
+		return agent.view.Controller
+	case l == nil:
+		return "not known"
+	case l.Holder == "":
+		return "none: no node holds the lease"
+	}
+	where := l.Holder
+	if l.Holder == st.Node {
+		where = "this node"
+	}
+	if l.Address.IsValid() {
+		where += fmt.Sprintf(" (%s)", l.Address)
+	}
+	return fmt.Sprintf("%s, generation %d", where, l.Generation)
+}
+
+// agentText says how the agent of this node fares.
+func agentText(v agentproto.AgentView) string {
+	var follows string
+	switch {
+	case v.StoodDown != "":
+		return "stood down: " + v.StoodDown
+	case !v.Remote:
+		follows = "in the controller's process"
+	case !v.Heard:
+		follows = fmt.Sprintf("has heard no controller (%s)", v.SilentFor.Round(time.Second))
+	case v.SilentFor >= time.Minute:
+		follows = fmt.Sprintf("the controller is silent for %s", v.SilentFor.Round(time.Second))
+	default:
+		follows = fmt.Sprintf("hears the controller, heartbeat %s old", v.HeartbeatAge.Round(time.Second))
+	}
+	return fmt.Sprintf("%s; snapshot %d of generation %d, %s old; %s, %s", follows, v.Seq, v.Epoch.Generation,
+		v.SeqAge.Round(time.Second), plural(v.Connectors, "connector", "connectors"), plural(v.EgressTargets, "egress target", "egress targets"))
+}
+
+// agentSection writes the controller and the agent of this node, and the
+// agent's problems.
+func agentSection(s *screen, st engine.State, agent *agentAnswer) {
+	statusLine(s, "Controller", controllerText(st, agent))
+	if agent.err != nil {
+		statusLine(s, "Agent", "did not answer: "+agent.err.Error())
+		return
+	}
+	statusLine(s, "Agent", agentText(agent.view))
+	for _, p := range agent.view.Problems {
+		s.printf("  - %s\n", p)
+	}
+}
+
+// renderStatus writes the status; agent is the agent of this node, nil
+// where the node is alone.
+func (a *app) renderStatus(w io.Writer, st engine.State, agent *agentAnswer) error {
 	s := &screen{w: w}
 	if st.Egress.State == engine.EgressOff {
 		s.printf("Warning: the egress filter is switched off since %s: the connectors are not confined. "+
@@ -161,6 +255,9 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 	}
 	if st.Identity != nil {
 		statusLine(s, "Identity", identityText(st.Identity))
+	}
+	if agent != nil {
+		agentSection(s, st, agent)
 	}
 	statusLine(s, "Inventory", present.InventoryText(st))
 	statusLine(s, "Writer", present.WriterText(st.WriterVerdict))

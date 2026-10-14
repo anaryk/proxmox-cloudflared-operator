@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -66,4 +68,52 @@ func TestAgentResetEpochAsksFirst(t *testing.T) {
 	e.clusterErr = fmt.Errorf("%w: not in this test", engine.ErrRefused)
 	res = r.run("", "agent", "reset-epoch", "--yes")
 	require.ErrorIs(t, res.err, engine.ErrRefused)
+}
+
+// pco status on a node that is not the controller says where the
+// controller is and how the agent of the node fares.
+func TestStatusOfANodeThatIsNotTheController(t *testing.T) {
+	st := healthyState()
+	st.Node = "pve2"
+	st.Lease = &engine.LeaseView{Holder: "pve1", Address: netip.MustParseAddr("10.0.0.1"), Generation: 3}
+	v := agentView()
+	v.Remote, v.Heard = true, true
+	v.Problems = []string{"snapshot 43 refused: out of range"}
+	e := &fakeEngine{state: st, agent: v}
+	r := newRunner(t, serveFake(t, e))
+
+	res := r.run("", "status")
+
+	require.NoError(t, res.err, "the problems of the agent are its own to report")
+	requireGolden(t, "status_follower.golden", res.out)
+
+	e.mu.Lock()
+	e.state.Lease = &engine.LeaseView{}
+	e.agent.Heard, e.agent.SilentFor, e.agent.Problems = false, 3*time.Minute, nil
+	e.mu.Unlock()
+	res = r.run("", "status")
+	require.Contains(t, res.out, "Controller:  none: no node holds the lease\n")
+	require.Contains(t, res.out, "Agent:       has heard no controller (3m0s); snapshot 42")
+
+	e.mu.Lock()
+	e.state.Lease.Holder = "pve1"
+	e.clusterErr = errors.New("the agent is not running")
+	e.mu.Unlock()
+	res = r.run("", "status")
+	require.Contains(t, res.out, "Agent:       did not answer: the agent is not running\n")
+}
+
+// A node alone says nothing of a controller: its status is as it was before
+// there were clusters.
+func TestStatusOfANodeAloneHasNoAgent(t *testing.T) {
+	st := healthyState()
+	st.Node = "pve1"
+	st.Lease = &engine.LeaseView{Holder: "pve1", Generation: 3}
+	e := &fakeEngine{state: st, agent: agentView()}
+	r := newRunner(t, serveFake(t, e))
+
+	res := r.run("", "status")
+
+	require.NotContains(t, res.out, "Controller:")
+	require.NotContains(t, res.out, "Agent:")
 }

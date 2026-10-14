@@ -5,6 +5,12 @@ routes by state, the tunnels with their connectors, the credentials, the issues 
 guest notes and the problems. The exit status is 1 when there are problems or the egress
 filter does not confine the connectors.
 
+On a node of a cluster it also says which node is the controller and at which address, and
+how the agent of this node fares: whether it hears the controller, the snapshot it applied
+and how old it is, its connectors and egress targets, and its problems. On a node that is
+not the controller the rest is what that node last found; pco cluster status on the
+controller shows the cluster.
+
 With `--json` the state of the daemon is printed as the daemon sent it, re-indented, with
 control and bidirectional characters escaped.
 
