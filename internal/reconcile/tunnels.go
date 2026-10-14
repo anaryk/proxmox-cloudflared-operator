@@ -435,6 +435,8 @@ func (run *tunnelRun) keepWhy(t target, remote []planner.IngressRule) string {
 		return "the configuration holds no sentinel of this install"
 	case t.planned && t.pinned() && len(remote) > 0 && !writtenByPCO(remote):
 		return "the configuration holds no sentinel, so pco did not write it"
+	case t.planned && t.pinned() && len(remote) > 0 && !writtenBy(remote, run.us.InstallID):
+		return "the configuration holds no sentinel of this install"
 	}
 	return ""
 }
@@ -633,6 +635,8 @@ func judgeUnread(us planner.Writer, remote []planner.IngressRule, hint string) (
 	for _, rule := range remote {
 		w, ok := planner.ParseSentinel(rule.Hostname)
 		switch {
+		case unreadSentinel(rule.Hostname):
+			return WriterForeign, planner.Writer{}, foreignWhy(us, planner.Writer{}, hint)
 		case !ok || JudgeWriter(us, w, true, us) == WriterProceed:
 		case JudgeWriter(us, w, true, w) == WriterForeign:
 			// Foreign even with leader.json naming that very writer.
@@ -651,6 +655,13 @@ func judgeUnread(us planner.Writer, remote []planner.IngressRule, hint string) (
 func foreignWhy(us, by planner.Writer, hint string) string {
 	if hint == "" {
 		hint = fmt.Sprintf("another installation uses install id %s, or the store was lost (pco setup --recover)", us.InstallID)
+	}
+	switch {
+	case by == planner.Writer{}:
+		return "the configuration holds a sentinel pco cannot read: " + hint
+	case by.InstallID != us.InstallID:
+		return fmt.Sprintf("the configuration was written by install %s, generation %d, not by this install: %s",
+			by.InstallID, by.Generation, hint)
 	}
 	return fmt.Sprintf("the configuration was written by generation %d nonce %s, which leader.json does not know: %s",
 		by.Generation, by.Nonce, hint)

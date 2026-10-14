@@ -281,6 +281,21 @@ func TestAPinnedPlanDoesNotWriteOverAConfigurationWithoutASentinel(t *testing.T)
 	require.True(t, res.Tunnels[2].Verified)
 }
 
+// A pinned tunnel whose configuration another install wrote is left as it
+// is: only a sentinel of this install lets a pinned plan write over rules.
+func TestAPinnedPlanDoesNotWriteOverAnotherInstallsConfiguration(t *testing.T) {
+	f := newFake("acct1")
+	seeded := []planner.IngressRule{app, {Hostname: "g9.n9.pco-xyz.invalid", Service: "http_status:404"}, catchAll}
+	taken := f.SeedTunnel("acct1", pinnedName("pve2"), seeded)
+	plans := []planner.TunnelPlan{planFor("acct1", "cred1", web), pinnedPlanFor("acct1", "pve2", web)}
+
+	res := newReconciler(Clients{"cred1": f}, &clock{t0}).Run(context.Background(), plans, knownAcct1, Enforce)
+
+	require.Contains(t, res.Problems, "pco-abc-pve2 in account acct1: the configuration holds no sentinel of this install; left as it is")
+	require.Equal(t, seeded, configOf(t, f, taken).Ingress)
+	require.False(t, res.Tunnels[1].Verified)
+}
+
 // A plan may say shared for the shared tunnel; the state says it with an
 // empty kind, as for a plan that says nothing.
 func TestAPlanMayCallTheSharedTunnelShared(t *testing.T) {

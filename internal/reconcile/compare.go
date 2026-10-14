@@ -58,6 +58,13 @@ func (run *tunnelRun) wrote(rules []planner.IngressRule) bool {
 	return false
 }
 
+// unreadSentinel says whether host lies in the domain of the sentinels, as no
+// name of a route may, and does not read as a sentinel.
+func unreadSentinel(host string) bool {
+	_, ok := planner.ParseSentinel(host)
+	return !ok && strings.HasSuffix(strings.ToLower(strings.TrimSuffix(host, ".")), ".invalid")
+}
+
 // servesHost says whether a rule is one of a hostname: not the catch-all,
 // and not a sentinel, whose names are in the .invalid domain.
 func servesHost(r planner.IngressRule) bool {
@@ -66,10 +73,15 @@ func servesHost(r planner.IngressRule) bool {
 
 // JudgeWriter applies the decision table. remote is the sentinel found in the
 // remote config (ok=false when there is none); stored is leader.json as re-read
-// just now. A sentinel of another install id counts as none.
+// just now. A sentinel of another install id is another writer: pco never
+// writes over a configuration another install wrote.
 func JudgeWriter(us planner.Writer, remote planner.Writer, remoteOK bool, stored planner.Writer) WriterVerdict {
 	switch {
-	case !remoteOK || remote.InstallID != us.InstallID || remote.Generation < us.Generation:
+	case !remoteOK:
+		return WriterProceed
+	case remote.InstallID != us.InstallID:
+		return WriterForeign
+	case remote.Generation < us.Generation:
 		return WriterProceed
 	case remote.Generation == us.Generation:
 		if remote.Nonce == us.Nonce {
@@ -94,14 +106,19 @@ func EqualIngress(a, b []planner.IngressRule) bool {
 	return slices.Equal(a, b)
 }
 
-// judgeConfig judges every sentinel of this install in rules and returns the
-// gravest verdict with the writer that caused it. pco writes one sentinel, but
-// an edited configuration may hold several.
+// judgeConfig judges every sentinel in rules and returns the gravest verdict
+// with the writer that caused it. pco writes one sentinel, but an edited
+// configuration may hold several. A name in the domain of the sentinels that
+// does not read as one is foreign, never taken for no sentinel; its writer is
+// the zero one.
 func judgeConfig(us, stored planner.Writer, rules []planner.IngressRule) (WriterVerdict, planner.Writer) {
 	verdict, by := WriterProceed, planner.Writer{}
 	for _, rule := range rules {
 		remote, ok := planner.ParseSentinel(rule.Hostname)
 		v := JudgeWriter(us, remote, ok, stored)
+		if unreadSentinel(rule.Hostname) {
+			v = WriterForeign
+		}
 		// Another installation is an alert, which outranks re-acquiring.
 		if v == WriterForeign && verdict != WriterForeign || v == WriterStale && verdict == WriterProceed {
 			verdict, by = v, remote

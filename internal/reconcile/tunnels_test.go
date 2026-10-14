@@ -256,8 +256,9 @@ func TestJudgeWriter(t *testing.T) {
 		{"remote higher, stored at its generation with another nonce", writerAt(7, "n7"), true, writerAt(7, "zz"), WriterForeign},
 		{"remote higher, stored below it", writerAt(7, "n7"), true, writerAt(6, "n6"), WriterForeign},
 		{"remote higher, stored is us", writerAt(7, "n7"), true, ours, WriterForeign},
-		{"another install, higher generation", other(9, "n9"), true, writerAt(7, "n7"), WriterProceed},
-		{"another install, equal generation and other nonce", other(5, "zz"), true, ours, WriterProceed},
+		{"another install, higher generation", other(9, "n9"), true, writerAt(7, "n7"), WriterForeign},
+		{"another install, lower generation", other(1, "n1"), true, ours, WriterForeign},
+		{"another install, equal generation and other nonce", other(5, "zz"), true, ours, WriterForeign},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -278,7 +279,9 @@ func TestJudgeConfig(t *testing.T) {
 	}{
 		{"no sentinel", []planner.IngressRule{app, catchAll}, ours, WriterProceed, planner.Writer{}},
 		{"our sentinel", rulesOf(ours, app), ours, WriterProceed, planner.Writer{}},
-		{"sentinel of another install", []planner.IngressRule{app, otherInstall, catchAll}, ours, WriterProceed, planner.Writer{}},
+		{"sentinel of another install", []planner.IngressRule{app, otherInstall, catchAll}, ours, WriterForeign, planner.Writer{InstallID: "xyz", Generation: 9, Nonce: "n9"}},
+		{"a sentinel that does not read", []planner.IngressRule{app, {Hostname: "g5.pco-abc.invalid", Service: "http_status:404"}, catchAll}, ours, WriterForeign, planner.Writer{}},
+		{"a sentinel in capitals", []planner.IngressRule{app, {Hostname: "G5.N5.PCO-ABC.INVALID", Service: "http_status:404"}, catchAll}, ours, WriterForeign, planner.Writer{}},
 		{"stale, then foreign", []planner.IngressRule{app, sentinelOf(newer), sentinelOf(twin), catchAll}, newer, WriterForeign, twin},
 		{"foreign, then stale", []planner.IngressRule{app, sentinelOf(twin), sentinelOf(newer), catchAll}, newer, WriterForeign, twin},
 		{"older, then stale", []planner.IngressRule{app, sentinelOf(writerAt(3, "n3")), sentinelOf(newer), catchAll}, newer, WriterStale, newer},
@@ -410,17 +413,29 @@ func TestTunnelExternalEditOverwritten(t *testing.T) {
 	require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
 }
 
-func TestTunnelOtherInstallSentinelIgnored(t *testing.T) {
-	f := newFake("acct1")
-	otherInstall := planner.IngressRule{Hostname: "g9.n9.pco-xyz.invalid", Service: "http_status:404"}
-	f.SeedTunnel("acct1", testTunnel, []planner.IngressRule{app, otherInstall, catchAll})
+// A configuration another install wrote is never written over: its
+// sentinel makes the writer foreign, and a sentinel that does not read as
+// one is foreign as well, never taken for none.
+func TestTunnelOtherInstallOrUnreadSentinelStops(t *testing.T) {
+	for name, sentinel := range map[string]string{
+		"another install":        "g9.n9.pco-xyz.invalid",
+		"a sentinel in capitals": "G5.N5.PCO-ABC.INVALID",
+		"a broken sentinel":      "g5.pco-abc.invalid",
+		"a name of the domain":   "anything.invalid",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake("acct1")
+			seeded := []planner.IngressRule{app, {Hostname: sentinel, Service: "http_status:404"}, catchAll}
+			f.SeedTunnel("acct1", testTunnel, seeded)
 
-	res := newReconciler(Clients{"cred1": f}, &clock{t0}).
-		Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+			res := newReconciler(Clients{"cred1": f}, &clock{t0}).
+				Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", web)}, nil, Enforce)
 
-	require.Empty(t, res.Problems)
-	require.Equal(t, WriterProceed, res.Verdict)
-	require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
+			require.Equal(t, WriterForeign, res.Verdict)
+			require.Empty(t, callsTo(f, "PutTunnelConfig"))
+			require.Equal(t, seeded, configIn(t, f, "acct1").Ingress)
+		})
+	}
 }
 
 func TestTunnelStaleWriterStops(t *testing.T) {
