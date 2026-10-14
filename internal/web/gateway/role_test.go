@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,7 +170,7 @@ func TestOnlyTheRegisteredAddressOfTheHolderIsRedirectedTo(t *testing.T) {
 		st := leaseState("d1", "pve2")
 		st.Nodes = nil
 		s.daemon.serveState(st)
-		settled(t, s, false, "10.9.0.2", true)
+		settled(t, s, false, "", false)
 	})
 	t.Run("the holder's registered address is not one to send a browser to", func(t *testing.T) {
 		for _, addr := range []string{"127.0.0.1", "0.0.0.0", "224.0.0.1", "::1", "fe80::1%eth0"} {
@@ -205,4 +208,75 @@ func TestWithoutTheDaemonTheRoleIsNotKnownAtOnce(t *testing.T) {
 	require.False(t, controller)
 	require.Empty(t, addr)
 	require.False(t, ok)
+}
+
+// Pages that come while the state is read wait for that one read, each
+// within its own bound, rather than one read after another.
+func TestPagesThatComeTogetherShareOneRead(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.serveState(leaseState("d1", "pve2"))
+	s.run()
+	conn := s.daemon.stream.next(t)
+	require.Eventually(t, func() bool { return s.gw.hub.digest() == "d1" }, 5*time.Second, 10*time.Millisecond, "the gateway took the hello")
+
+	// The stream names a state the daemon does not answer with: no read
+	// makes the held state the one the stream names.
+	var reads atomic.Int32
+	body, err := json.Marshal(leaseState("d2", "pve2"))
+	require.NoError(t, err)
+	s.daemon.on("GET /v1/state", func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		select {
+		case <-time.After(150 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("ETag", `"d2"`)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write(body)
+	})
+	conn.send <- sse("", "state", engine.StateNotice{At: t0, Digest: "d3"})
+	require.Eventually(t, func() bool { return s.gw.hub.digest() == "d3" }, 5*time.Second, 10*time.Millisecond, "the gateway took the notice")
+
+	var wg sync.WaitGroup
+	results := make(chan string, 8)
+	start := time.Now()
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, addr, _ := s.gw.Role()
+			results <- addr
+		}()
+	}
+	wg.Wait()
+	close(results)
+	require.Less(t, time.Since(start), roleReadTimeout, "the pages waited for one read, not one each")
+	require.Equal(t, int32(1), reads.Load())
+	for addr := range results {
+		require.Equal(t, "10.9.0.2", addr)
+	}
+}
+
+// With the stream up, a state read for the role is kept while the stream
+// announces nothing else, even when the daemon's digest is not the one the
+// stream named last.
+func TestAReadForTheRoleIsKeptWhileTheStreamSaysNothingNew(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.serveState(leaseState("d1", "pve2"))
+	s.run()
+	conn := s.daemon.stream.next(t)
+	require.Eventually(t, func() bool { return s.gw.hub.digest() == "d1" }, 5*time.Second, 10*time.Millisecond, "the gateway took the hello")
+
+	s.daemon.serveState(leaseState("d2", "pve2"))
+	conn.send <- sse("", "state", engine.StateNotice{At: t0, Digest: "d3"})
+	require.Eventually(t, func() bool { return s.gw.hub.digest() == "d3" }, 5*time.Second, 10*time.Millisecond, "the gateway took the notice")
+	_, _, _ = s.gw.Role()
+	reads := s.daemon.count("GET /v1/state")
+	for range 5 {
+		_, addr, ok := s.gw.Role()
+		require.True(t, ok)
+		require.Equal(t, "10.9.0.2", addr)
+	}
+	require.Equal(t, reads, s.daemon.count("GET /v1/state"))
 }

@@ -84,10 +84,13 @@ type Gateway struct {
 	judged func()
 
 	// The reads of the state for the role of the node, one at a time: the
-	// last one that answered and when, and when the last one failed.
+	// one that runs, the state the last one that answered gave, when, and
+	// under which digest of the stream, and when the last one failed.
 	roleMu       sync.Mutex
-	roleRead     *snapshot
-	roleReadAt   time.Time
+	roleReading  *roleRead
+	roleLast     *snapshot
+	roleLastAt   time.Time
+	roleLastFor  string
 	roleFailedAt time.Time
 }
 
