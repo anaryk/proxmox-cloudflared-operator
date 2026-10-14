@@ -37,6 +37,7 @@ func newClusterPart(cfg Config, deps Deps, st *store.Store, hl *hostLease, log z
 		events: agent.NewEventLog(now),
 		port:   cmp.Or(deps.Cluster.Port, uint16(clusterapi.Port)),
 		every:  cmp.Or(deps.Cluster.Every, clusterEvery),
+		tables: deps.ObserveForwarding,
 		now:    now, log: log,
 	}
 	c.remote = newRemoteFleet(now, func() agentproto.Epoch {

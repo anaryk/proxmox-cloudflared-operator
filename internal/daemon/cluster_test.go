@@ -179,6 +179,41 @@ func TestTheControllerServesTheAgentOfTheOtherNode(t *testing.T) {
 	require.NoError(t, r1.stop())
 }
 
+// Every host node observes the forwarding tables of its bridges for as long
+// as its agent runs, and says so in its status: the controller sees both
+// nodes watching and the cluster covered, which attested proofs and shared
+// placement need.
+func TestEveryNodeOfTheClusterWatchesItsForwardingTables(t *testing.T) {
+	first, second := twoNodes(t)
+	r1 := first.start()
+	r1.await(func(st engine.State) bool { return st.Lease != nil && st.Lease.Valid })
+	r2 := second.start()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log("the controller's log:\n" + first.logs.String())
+			t.Log("the other node's log:\n" + second.logs.String())
+		}
+	})
+
+	st := r1.await(func(st engine.State) bool {
+		if len(st.Nodes) != 2 || st.Cluster == nil || !st.Cluster.Coverage.Covered {
+			return false
+		}
+		for _, n := range st.Nodes {
+			if n.State != store.NodeActive || !n.WatchRunning || !n.Covered {
+				return false
+			}
+		}
+		return true
+	})
+	require.Empty(t, st.Cluster.Coverage.Uncovered)
+	require.EqualValues(t, 1, first.tables.runs.Load(), "one observer, started with the agent")
+	require.EqualValues(t, 1, second.tables.runs.Load())
+
+	require.NoError(t, r2.stop())
+	require.NoError(t, r1.stop())
+}
+
 // A node that stands alone opens no agent endpoint and runs no client: it
 // runs as before.
 func TestASingleNodeOpensNoAgentEndpoint(t *testing.T) {
@@ -195,6 +230,7 @@ func TestASingleNodeOpensNoAgentEndpoint(t *testing.T) {
 	}
 	require.Error(t, err, "nothing listens")
 	require.NoDirExists(t, filepath.Join(w.paths.Local, "agent", "tls"), "no certificate is issued")
+	require.Zero(t, w.tables.runs.Load(), "the forwarding tables vouch for nobody")
 	require.NoError(t, r.stop())
 }
 

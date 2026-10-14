@@ -13,6 +13,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/clusterapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -41,7 +42,9 @@ type leaseView interface {
 
 // clusterPart runs what a node of a cluster runs besides the engine: on
 // every node the agent's client, which follows the controller where the
-// lease is and serves this node's agent its desired state; on the node that
+// lease is and serves this node's agent its desired state, and the observer
+// of the forwarding tables of the node's bridges, whose attestations prove
+// the guests of this node to the other nodes; on the node that
 // holds the lease the agent endpoint, which serves the others. Neither runs
 // while the registry names this node alone: a single node runs as before.
 // It also runs the first start of this release once this node may write.
@@ -58,6 +61,7 @@ type clusterPart struct {
 	events *agent.EventLog
 	port   uint16
 	every  time.Duration
+	tables agent.ObserveFunc
 	now    func() time.Time
 	log    zerolog.Logger
 
@@ -217,11 +221,29 @@ func (c *clusterPart) startClient(ctx context.Context) {
 		c.log.Warn().Err(err).Msg("the agent of this node cannot follow the controller")
 		return
 	}
-	r := start(ctx, func(ctx context.Context) { _ = cl.Run(ctx) })
+	r := start(ctx, func(ctx context.Context) {
+		var observing sync.WaitGroup
+		defer observing.Wait()
+		observing.Go(func() { c.observeTables(ctx, a) })
+		_ = cl.Run(ctx)
+	})
 	c.mu.Lock()
 	c.following, c.client = r, cl
 	c.mu.Unlock()
 	c.log.Info().Msg("the agent of this node follows the controller of the cluster")
+}
+
+// observeTables runs the observer of the forwarding tables of this node's
+// bridges for a until ctx ends; the agent starts it again after it fails,
+// and says in its status whether it runs. An agent of the appliance reads
+// no bridge.
+func (c *clusterPart) observeTables(ctx context.Context, a *agent.Agent) {
+	if c.tables == nil || a.View().Kind != pki.KindHost {
+		return
+	}
+	if err := a.Observe(ctx, c.tables); err != nil {
+		c.log.Warn().Err(err).Msg("the forwarding tables of this node are not watched")
+	}
 }
 
 // startListener opens the agent endpoint on this node's agent address.

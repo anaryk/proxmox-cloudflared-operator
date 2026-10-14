@@ -325,6 +325,18 @@ func (f *fakeWatch) running(t *testing.T) (func() map[netip.Addr]egress.Pin, fun
 	return f.bound, f.onMove
 }
 
+// fakeObserver is the observer of the forwarding tables: it counts its runs
+// and runs until its context ends.
+type fakeObserver struct {
+	runs atomic.Int64
+}
+
+func (f *fakeObserver) observe(ctx context.Context, _ func() map[string]egress.Expected, _ func(egress.Observation)) error {
+	f.runs.Add(1)
+	<-ctx.Done()
+	return nil
+}
+
 // fakeRuleset is the watch of the nftables ruleset: a test calls what the
 // daemon gave it to say that the ruleset changed.
 type fakeRuleset struct {
@@ -454,6 +466,7 @@ type world struct {
 	sysd   *fakeSystemd
 	nft    *fakeNft
 	watch  *fakeWatch
+	tables *fakeObserver
 	rules  *fakeRuleset
 	notify *fakeNotifier
 	logs   *testutil.SyncBuffer
@@ -480,6 +493,7 @@ func newWorld(t *testing.T) *world {
 		sysd:   &fakeSystemd{enabled: map[string]bool{}},
 		nft:    newFakeNft(),
 		watch:  &fakeWatch{},
+		tables: &fakeObserver{},
 		rules:  &fakeRuleset{},
 		notify: newFakeNotifier(),
 		logs:   &testutil.SyncBuffer{},
@@ -527,14 +541,15 @@ func newWorld(t *testing.T) *world {
 			return nil, errors.New("no network in this test")
 		},
 
-		Nft:          w.nft,
-		ConnectorUID: func() (uint32, error) { return testConnectorUID, nil },
-		Resolvers:    func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.20.0.1")}, nil },
-		WatchNetwork: w.watch.watch,
-		WatchRuleset: w.rules.watch,
-		UnitEnabled:  func(context.Context, string) (bool, error) { return false, nil },
-		Gateway:      w.gw,
-		WatchGateway: func(ctx context.Context, _ func(), _ func(error)) error { <-ctx.Done(); return ctx.Err() },
+		Nft:               w.nft,
+		ConnectorUID:      func() (uint32, error) { return testConnectorUID, nil },
+		Resolvers:         func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.20.0.1")}, nil },
+		WatchNetwork:      w.watch.watch,
+		ObserveForwarding: w.tables.observe,
+		WatchRuleset:      w.rules.watch,
+		UnitEnabled:       func(context.Context, string) (bool, error) { return false, nil },
+		Gateway:           w.gw,
+		WatchGateway:      func(ctx context.Context, _ func(), _ func(error)) error { <-ctx.Done(); return ctx.Err() },
 		WatchPorts: func(ctx context.Context, _ netns.NsHandle, _ string, _ func(string), _ func(error)) error {
 			<-ctx.Done()
 			return ctx.Err()

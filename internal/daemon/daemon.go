@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/vishvananda/netns"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -109,10 +110,12 @@ type Deps struct {
 	// until ctx ends; default: egress.Watch. WatchRuleset calls changed
 	// whenever the nftables ruleset changes; default: egress.WatchRuleset.
 	// EgressEvery is how often the egress table is checked besides; default
-	// 30 s.
-	WatchNetwork func(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error
-	WatchRuleset func(ctx context.Context, changed func()) error
-	EgressEvery  time.Duration
+	// 30 s. ObserveForwarding reads the forwarding tables of the bridges
+	// for the agent of a node of a cluster; default: egress.ObserveForwarding.
+	WatchNetwork      func(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error
+	ObserveForwarding agent.ObserveFunc
+	WatchRuleset      func(ctx context.Context, changed func()) error
+	EgressEvery       time.Duration
 	// Gateway is the backend of the networks reached through a leg; default:
 	// on the host the namespace pco, in the appliance the container's own
 	// network cards, which it adds through the Proxmox API. WatchGateway
@@ -193,6 +196,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.WatchNetwork == nil {
 		d.WatchNetwork = egress.Watch
+	}
+	if d.ObserveForwarding == nil {
+		d.ObserveForwarding = egress.ObserveForwarding
 	}
 	if d.WatchRuleset == nil {
 		d.WatchRuleset = egress.WatchRuleset
