@@ -211,3 +211,58 @@ func TestAMoveGivenUpAfterItsRolloutKeepsBothRulesUntilTheRecordsAreBack(t *test
 	require.False(t, ok, "the move is done")
 	require.True(t, slices.ContainsFunc(w.placementEvents(), func(ev string) bool { return strings.Contains(ev, "given up") }), w.placementEvents())
 }
+
+// A move whose owner is wanted at a third tunnel once its rules are rolled
+// out goes on to its end: its records may point at the tunnel it goes to
+// already, and a move turned around toward a tunnel it never had the rules
+// in would be turned around again in the next cycle, and the next. The move
+// to where it is wanted starts once it is done.
+func TestAMoveWantedAtAThirdTunnelGoesOnToItsEnd(t *testing.T) {
+	pinned2, _ := planner.PinnedTunnelName(testInstall, "pve2")
+	pinned3, _ := planner.PinnedTunnelName(testInstall, "pve3")
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].fail = map[string]string{"db.example.com": "not reached"}
+	w.untilMove(t, "qemu/102", store.MoveRolledOut, 40, hosts3...)
+	require.Equal(t, tunnelName, w.recordTunnel(t, "db.example.com"))
+
+	// The records cannot be written for a while; the placement is stored at
+	// the tunnel moved to meanwhile. Then db migrates to pve3, which reaches
+	// it now: it is wanted in the tunnel pinned there.
+	w.cf.Deny("dns.write")
+	w.tick(5 * time.Second)
+	before, ok := w.moveOf(t, "qemu/102")
+	require.True(t, ok)
+	require.Equal(t, store.MoveRolledOut, before.Step)
+	snap := w.inv.snapshot()
+	snap.Guests[1] = carded(guest(102, "db", "db.example.com -> :8080"), "pve3", dbCard)
+	w.inv.set(snap)
+	w.acts["pve3"].fail = nil
+	for range 2 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+		m, ok := w.moveOf(t, "qemu/102")
+		require.True(t, ok)
+		require.Equal(t, before, m, "the move is neither turned around nor written again")
+	}
+	w.cf.Allow("dns.write")
+
+	w.untilMove(t, "qemu/102", store.MoveCNAMEsSwitched, 10, hosts3...)
+	require.Equal(t, pinned2, w.recordTunnel(t, "db.example.com"))
+	for range 80 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+		if m, ok := w.moveOf(t, "qemu/102"); ok && m.From == pinned2 {
+			break
+		}
+	}
+	m, ok := w.moveOf(t, "qemu/102")
+	require.True(t, ok, "the move to where it is wanted follows")
+	require.Equal(t, pinned2, m.From)
+	require.Equal(t, pinned3, m.To)
+	w.untilMove(t, "qemu/102", store.MoveCNAMEsSwitched, 40, hosts3...)
+	require.Equal(t, pinned3, w.recordTunnel(t, "db.example.com"))
+	for _, ev := range w.placementEvents() {
+		require.NotContains(t, ev, "given up", ev)
+	}
+}

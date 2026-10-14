@@ -60,22 +60,30 @@ func (c *cycleRun) startMoves() {
 	}
 }
 
-// giveUp ends a move whose owner is placed in the tunnel it came from
-// again. One that had only added the rules is dropped: its records never
-// left. One whose rules were rolled out is turned around instead, as a move
-// back at the same step: its records may point at the tunnel it went to
-// already, so both tunnels keep the rules until a DNS run put every record
-// back, and the rules of the tunnel left go as the old ones of any move
-// do. It returns the move as it stands, and whether it is still under way.
-func (c *cycleRun) giveUp(owner string, m store.Move) (store.Move, bool) {
+// giveUp ends a move whose owner is wanted elsewhere than the tunnel it goes
+// to, for why. One that had only added the rules is dropped: its records
+// never left. One whose rules were rolled out, and whose owner is wanted in
+// the tunnel it came from, is turned around instead, as a move back at the
+// same step: its records may point at the tunnel it went to already, so
+// both tunnels keep the rules until a DNS run put every record back, and
+// the rules of the tunnel left go as the old ones of any move do. One whose
+// rules were rolled out and whose owner is wanted in a third tunnel goes on
+// to its end: a move back toward a tunnel it never had the rules in would
+// be turned around again in the next cycle, and the next; the move to where
+// it is wanted starts once it is done. It returns the move as it stands,
+// and whether it is still under way.
+func (c *cycleRun) giveUp(owner string, m store.Move, want placed, why string) (store.Move, bool) {
 	if m.Step == store.MoveRulesAdded {
 		if err := c.e.d.Store.DeleteMove(owner); err != nil {
 			return m, true
 		}
 		delete(c.moves, owner)
 		c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
-			Message: fmt.Sprintf("the move of %s from %s to %s is given up: it is placed in %s again", owner, m.From, m.To, m.From)})
+			Message: fmt.Sprintf("the move of %s from %s to %s is given up: %s", owner, m.From, m.To, why)})
 		return m, false
+	}
+	if !want.same(c.placedOf(m.From, "")) {
+		return m, true
 	}
 	back := store.Move{Owner: owner, From: m.To, To: m.From, Step: store.MoveRolledOut, At: c.now}
 	if err := c.e.d.Store.SaveMove(back); err != nil {
@@ -84,7 +92,7 @@ func (c *cycleRun) giveUp(owner string, m store.Move) (store.Move, bool) {
 	}
 	c.moves[owner] = back
 	c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindPlacement, Subject: owner,
-		Message: fmt.Sprintf("the move of %s from %s to %s is given up: it is placed in %s again, and its records go back there", owner, m.From, m.To, m.From)})
+		Message: fmt.Sprintf("the move of %s from %s to %s is given up: %s, and its records go back there", owner, m.From, m.To, why)})
 	return back, true
 }
 
@@ -118,9 +126,14 @@ func (c *cycleRun) moving(owner string, cur placed, stored bool, want placed) (p
 	from, to := c.placedOf(m.From, cur.why), c.placedOf(m.To, want.why)
 	if !want.same(to) && m.Step != store.MoveCNAMEsSwitched {
 		// Wanted back where it came from, or elsewhere: the move is given
-		// up, and one to where it is wanted now starts once it is.
+		// up where it can be, and one to where it is wanted now starts
+		// once it is over.
+		why := fmt.Sprintf("it is placed in %s again", m.From)
+		if !want.same(from) {
+			why = fmt.Sprintf("it is wanted in %s now", c.tunnelOf(want))
+		}
 		var on bool
-		if m, on = c.giveUp(owner, m); !on {
+		if m, on = c.giveUp(owner, m, want, why); !on {
 			return from, nil
 		}
 		from, to = c.placedOf(m.From, cur.why), c.placedOf(m.To, want.why)
