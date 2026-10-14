@@ -18,7 +18,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/vishvananda/netns"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -490,12 +489,13 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	// whose tokens are not delegates, is the user of the token. The host has
 	// no gateway or resolver of its own to soft-deny beyond the node's.
 	ownUser, _, _ := strings.Cut(token.TokenID, "!")
+	host := managednet.NewHostConfigurer(setup.NewHostRunner(), cfg.Node)
 	ed := engine.Deps{
 		Store:     st,
 		Inventory: inv,
 		StartOnly: func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Restart:   restart,
-		Fleet:     engine.NewLocalFleet(agent.Deps{Resolver: res, Connectors: conns, Egress: filter}),
+		Fleet:     engine.NewLocalFleet(agentDeps(res, conns, filter, gw)),
 		NewClient: holdingClients(deps.clients(settings.CloudflareBudget, regate(hl)), hl.keeper),
 		Node:      cfg.Node,
 		Now:       deps.Now,
@@ -507,8 +507,9 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Gateway:   gw,
 		Networks:  nodeNetworks{proxmox: client, prober: deps.Prober, unit: deps.Namespace},
 		// The host's daemon runs as root: the cards of the guests of this
-		// node are changed with qm and pct.
-		Guests: managednet.NewHostConfigurer(setup.NewHostRunner(), cfg.Node),
+		// node are changed with qm and pct, those of the other nodes by
+		// their agents.
+		Guests: host,
 
 		StartOnlyFields: wiredFields(),
 
@@ -523,6 +524,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the engine: %w", err)
 	}
+	host.SetRemote(eng.PVEWriter())
 	return eng, client, filter, conns, nil
 }
 
