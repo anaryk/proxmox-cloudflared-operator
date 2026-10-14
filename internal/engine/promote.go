@@ -28,11 +28,14 @@ const (
 // PromoteRequest is what pco promote asks: without Confirm only the
 // differences; with it a new epoch, which Force draws also when nothing
 // differs, and Cluster names the cluster a store of another cluster was made
-// in, as the differences show it: its name, or its fingerprint.
+// in, as the differences show it: its name, or its fingerprint. Shown are
+// the differences the admin was shown: a confirmed promotion reads them
+// again and refuses when they changed since.
 type PromoteRequest struct {
-	Confirm bool   `json:"confirm,omitempty"`
-	Force   bool   `json:"force,omitempty"`
-	Cluster string `json:"cluster,omitempty"`
+	Confirm bool             `json:"confirm,omitempty"`
+	Force   bool             `json:"force,omitempty"`
+	Cluster string           `json:"cluster,omitempty"`
+	Shown   []DifferenceView `json:"shown,omitempty"`
 }
 
 // Promote makes this node the writer of a store the controller only
@@ -60,28 +63,40 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	}
 	if !req.Confirm {
 		// Nothing is changed: the reads at Cloudflare need no cycle lock.
-		return PromoteResult{Differences: e.differences(ctx, inst, true)}, nil
+		return PromoteResult{Differences: e.differences(ctx, inst, e.readSentinels(ctx, inst.ID))}, nil
 	}
 	if err := e.acquireAdmin(ctx); err != nil {
 		return PromoteResult{}, err
 	}
 	defer e.release()
 
-	res := PromoteResult{Differences: e.differences(ctx, inst, false)}
+	res := PromoteResult{Differences: req.Shown}
 	other, err := e.otherCluster(inst)
 	if err != nil {
 		return res, err
 	}
-	if err := e.promotable(res.Differences, other, req); err != nil {
+	if err := e.nameOfOther(other, req); err != nil {
 		return res, err
 	}
 	if err := e.awaitHolder(ctx); err != nil {
 		return res, err
 	}
-	seed, err := e.promotionSeed(ctx, inst.ID)
-	if err != nil {
+	// Everything is read again now that the admin confirmed: leader.json,
+	// the registry, the agents, the sentinels. A promotion goes on only on
+	// what was shown, and Force only lets one through that has nothing to do.
+	sent := e.readSentinels(ctx, inst.ID)
+	if sent.err != nil {
+		return res, fmt.Errorf("%w: the generation at Cloudflare cannot be read: %w", ErrRefused, sent.err)
+	}
+	res.Differences = e.differences(ctx, inst, sent)
+	if !sameDifferences(req.Shown, res.Differences) {
+		return res, fmt.Errorf("%w: what differs between the store, the agents and Cloudflare changed since it was shown; "+
+			"run pco promote again to see it", ErrRefused)
+	}
+	if err := e.somethingToDo(res.Differences, other, req); err != nil {
 		return res, err
 	}
+	seed := e.promotionSeed(ctx, inst.ID, sent.highest)
 	// A store that went back takes no write until a tenure begins anew: the
 	// admin adopts it as it is. The engine holds on its own until the new
 	// epoch is drawn.
@@ -109,21 +124,29 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	return res, nil
 }
 
-// promotable refuses a promotion that has nothing to do, unless forced: the
-// store and the agents agree, the controller is not behind and the store did
-// not go back. A store of another cluster is promoted only with the name, or
-// the fingerprint, of the cluster it was made in typed by the admin.
-func (e *Engine) promotable(diffs []DifferenceView, other *store.ClusterIdentity, req PromoteRequest) error {
+// nameOfOther refuses a promotion of a store of another cluster unless the
+// admin typed the name, or the fingerprint, of the cluster it was made in.
+func (e *Engine) nameOfOther(other *store.ClusterIdentity, req PromoteRequest) error {
+	if other == nil {
+		return nil
+	}
+	inst, _, err := e.d.Store.Install()
+	if err != nil {
+		return fmt.Errorf("reading the install identity: %w", err)
+	}
+	rec := inst.Cluster
+	if req.Cluster == "" || (req.Cluster != rec.Name && req.Cluster != rec.CASHA256) {
+		return fmt.Errorf("%w: the store was made in cluster %s (%s); type its name, or its fingerprint when it has none, "+
+			"to make this cluster its writer", ErrRefused, clusterName(*rec), rec.CASHA256)
+	}
+	return nil
+}
+
+// somethingToDo refuses a promotion that has nothing to do, unless forced:
+// the store and the agents agree, the controller is not behind, the store did
+// not go back and was made here.
+func (e *Engine) somethingToDo(diffs []DifferenceView, other *store.ClusterIdentity, req PromoteRequest) error {
 	if other != nil {
-		inst, _, err := e.d.Store.Install()
-		if err != nil {
-			return fmt.Errorf("reading the install identity: %w", err)
-		}
-		rec := inst.Cluster
-		if req.Cluster == "" || (req.Cluster != rec.Name && req.Cluster != rec.CASHA256) {
-			return fmt.Errorf("%w: the store was made in cluster %s (%s); type its name, or its fingerprint when it has none, "+
-				"to make this cluster its writer", ErrRefused, clusterName(*rec), rec.CASHA256)
-		}
 		return nil
 	}
 	st := e.d.Lease.State()
@@ -151,10 +174,56 @@ func (e *Engine) otherCluster(inst store.Install) (*store.ClusterIdentity, error
 	return &here, nil
 }
 
-// differences says what the store and the agents' reports, and Cloudflare
-// when sentinels, say differently: the epoch of each agent, the nodes, the
-// revisions the tenure wrote, the cluster, the generation of the sentinels.
-func (e *Engine) differences(ctx context.Context, inst store.Install, sentinels bool) []DifferenceView {
+// sentinelRead is what a read of the sentinels at Cloudflare found: the
+// highest generation, or why it could not be read; skipped when this node
+// does not hold the lease, as only the controller reads Cloudflare.
+type sentinelRead struct {
+	highest int
+	err     error
+	skipped bool
+}
+
+// readSentinels reads the sentinels of the install at Cloudflare, when this
+// node holds the lease.
+func (e *Engine) readSentinels(ctx context.Context, installID string) sentinelRead {
+	if !e.d.Lease.State().Holder {
+		return sentinelRead{skipped: true}
+	}
+	highest, err := e.highestSentinel(ctx, installID)
+	return sentinelRead{highest: highest, err: err}
+}
+
+// sameDifferences says whether what was shown is what differs now. A line
+// of the sentinels that was to be read once confirmed says nothing yet.
+func sameDifferences(shown, now []DifferenceView) bool {
+	if slices.Contains(shown, DifferenceView{Subject: subjectSentinels, Store: storeOf(shown), Reported: sentinelsLater}) {
+		drop := func(d DifferenceView) bool { return d.Subject == subjectSentinels }
+		shown = slices.DeleteFunc(slices.Clone(shown), drop)
+		now = slices.DeleteFunc(slices.Clone(now), drop)
+	}
+	return slices.Equal(shown, now)
+}
+
+// storeOf is the Store of the line of the sentinels among diffs.
+func storeOf(diffs []DifferenceView) string {
+	for _, d := range diffs {
+		if d.Subject == subjectSentinels {
+			return d.Store
+		}
+	}
+	return ""
+}
+
+const (
+	subjectSentinels = "sentinels at Cloudflare"
+	sentinelsLater   = "read once confirmed: this node does not hold the lease yet"
+)
+
+// differences says what the store and the agents' reports, and the
+// sentinels as read, say differently: the epoch of each agent, the nodes,
+// the revisions the tenure wrote, the cluster, the generation of the
+// sentinels.
+func (e *Engine) differences(ctx context.Context, inst store.Install, sent sentinelRead) []DifferenceView {
 	out := []DifferenceView{}
 	rec, _, found, err := e.d.Store.Leader()
 	stored := "none"
@@ -197,20 +266,15 @@ func (e *Engine) differences(ctx context.Context, inst store.Install, sentinels 
 				Store: clusterName(*inst.Cluster) + " (" + inst.Cluster.CASHA256 + ")", Reported: clusterName(here) + " (" + here.CASHA256 + ")"})
 		}
 	}
-	if !sentinels {
-		return out
-	}
-	if !e.d.Lease.State().Holder {
+	switch {
+	case sent.skipped:
 		// Only the controller reads Cloudflare; the confirmed promotion
 		// reads the sentinels once this node holds the lease.
-		return append(out, DifferenceView{Subject: "sentinels at Cloudflare", Store: stored,
-			Reported: "read once confirmed: this node does not hold the lease yet"})
-	}
-	switch highest, err := e.highestSentinel(ctx, inst.ID); {
-	case err != nil:
-		out = append(out, DifferenceView{Subject: "sentinels at Cloudflare", Store: stored, Reported: "not read: " + err.Error()})
-	case !found || highest > rec.Generation:
-		out = append(out, DifferenceView{Subject: "sentinels at Cloudflare", Store: stored, Reported: fmt.Sprintf("generation %d", highest)})
+		out = append(out, DifferenceView{Subject: subjectSentinels, Store: stored, Reported: sentinelsLater})
+	case sent.err != nil:
+		out = append(out, DifferenceView{Subject: subjectSentinels, Store: stored, Reported: "not read: " + sent.err.Error()})
+	case !found || sent.highest > rec.Generation:
+		out = append(out, DifferenceView{Subject: subjectSentinels, Store: stored, Reported: fmt.Sprintf("generation %d", sent.highest)})
 	}
 	return out
 }
@@ -253,14 +317,11 @@ func (e *Engine) awaitHolder(ctx context.Context) error {
 }
 
 // promotionSeed is the generation a promotion draws above: the highest of
-// the sentinels of the install at Cloudflare and of the epochs the agents
-// reported. A sentinel that cannot be read could hold a higher one, so it
-// refuses the promotion rather than leave a guess.
-func (e *Engine) promotionSeed(ctx context.Context, installID string) (int, error) {
-	seed, err := e.highestSentinel(ctx, installID)
-	if err != nil {
-		return 0, fmt.Errorf("%w: the generation at Cloudflare cannot be read: %w", ErrRefused, err)
-	}
+// the sentinels of the install at Cloudflare, as read, and of the epochs the
+// agents reported. A sentinel that cannot be read could hold a higher one:
+// the promotion is refused before it gets here.
+func (e *Engine) promotionSeed(ctx context.Context, installID string, sentinel int) int {
+	seed := sentinel
 	if ep, found, err := e.d.Store.AgentEpoch(); err == nil && found && ep.InstallID == installID {
 		seed = max(seed, ep.Generation)
 	}
@@ -269,7 +330,7 @@ func (e *Engine) promotionSeed(ctx context.Context, installID string) (int, erro
 			seed = max(seed, ep.Generation)
 		}
 	}
-	return seed, nil
+	return seed
 }
 
 // highestSentinel is the highest generation of a writer of the install in

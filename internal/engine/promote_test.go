@@ -58,7 +58,7 @@ func TestPromoteDrawsAboveTheSentinelsAndTheAgents(t *testing.T) {
 				putSentinel(t, e, planner.Writer{InstallID: testInstall, Generation: tc.sentinel, Nonce: "else"})
 			}
 
-			res, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
+			res, err := confirmed(t, e, PromoteRequest{Confirm: true})
 
 			require.NoError(t, err)
 			require.Equal(t, []int{tc.want}, l.promoted)
@@ -75,7 +75,7 @@ func TestPromoteRefusesWhatItCannotSee(t *testing.T) {
 	e, l := behindHost(t)
 	e.cf.FailNext("tunnel.read", 100, errors.New("timeout"))
 
-	_, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
+	_, err := confirmed(t, e, PromoteRequest{Confirm: true})
 
 	require.ErrorIs(t, err, ErrRefused)
 	require.ErrorContains(t, err, "the generation at Cloudflare cannot be read")
@@ -105,7 +105,7 @@ func TestPromoteMakesThisClusterTheStoresWithItsName(t *testing.T) {
 	l.saved = e.store.SaveWriter
 
 	for _, typed := range []string{"", "lab", "old"} {
-		_, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: typed})
+		_, err := confirmed(t, e, PromoteRequest{Confirm: true, Cluster: typed})
 		require.ErrorIs(t, err, ErrRefused, typed)
 		require.ErrorContains(t, err, "old-lab", typed)
 	}
@@ -114,7 +114,7 @@ func TestPromoteMakesThisClusterTheStoresWithItsName(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, caOld, stored.Cluster.CASHA256, "nothing saved")
 
-	res, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: "old-lab"})
+	res, err := confirmed(t, e, PromoteRequest{Confirm: true, Cluster: "old-lab"})
 
 	require.NoError(t, err)
 	require.Contains(t, res.Differences, DifferenceView{
@@ -149,7 +149,7 @@ func TestPromoteOfAnUnnamedClustersStore(t *testing.T) {
 	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
 	l.saved = e.store.SaveWriter
 	l.set(func(st *lease.State) { *st = held })
-	res, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: caOld})
+	res, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: caOld, Shown: res.Differences})
 	require.NoError(t, err)
 	require.True(t, res.Drawn)
 }
@@ -178,12 +178,12 @@ func TestPromoteRefusesWhenNothingApplies(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, res.Differences)
 
-	_, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
+	_, err = confirmed(t, e, PromoteRequest{Confirm: true})
 	require.ErrorIs(t, err, ErrRefused)
 	require.ErrorContains(t, err, "nothing differs")
 	require.Empty(t, l.promoted)
 
-	res, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Force: true})
+	res, err = confirmed(t, e, PromoteRequest{Confirm: true, Force: true})
 	require.NoError(t, err)
 	require.True(t, res.Drawn)
 }
@@ -240,4 +240,45 @@ func putSentinel(t *testing.T, e *env, w planner.Writer) {
 	}
 	_, err = e.cf.PutTunnelConfig(t.Context(), testAccount, ts[0].ID, ingress)
 	require.NoError(t, err)
+}
+
+// confirmed is a promotion confirmed after the differences were shown, as
+// pco promote asks.
+func confirmed(t *testing.T, e *env, req PromoteRequest) (PromoteResult, error) {
+	t.Helper()
+	shown, err := e.eng.Promote(t.Context(), PromoteRequest{})
+	require.NoError(t, err)
+	req.Shown = shown.Differences
+	return e.eng.Promote(t.Context(), req)
+}
+
+// What differs is read again once confirmed: when it is not what the admin
+// was shown, nothing is drawn, also with --force, which only lets a
+// promotion through when nothing differs.
+func TestPromoteRefusesWhenWhatDiffersChangedSinceItWasShown(t *testing.T) {
+	e, l := behindHost(t)
+	shown, err := e.eng.Promote(t.Context(), PromoteRequest{})
+	require.NoError(t, err)
+	require.NoError(t, e.store.SaveAgentEpoch(store.Epoch{InstallID: testInstall, Generation: 6, Nonce: "newer"}))
+
+	for _, force := range []bool{false, true} {
+		_, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Force: force, Shown: shown.Differences})
+		require.ErrorIs(t, err, ErrRefused)
+		require.ErrorContains(t, err, "changed since it was shown")
+	}
+	putSentinel(t, e, planner.Writer{InstallID: testInstall, Generation: 9, Nonce: "else"})
+	_, err = confirmed(t, e, PromoteRequest{Confirm: true})
+	require.NoError(t, err)
+	require.Equal(t, []int{9}, l.promoted, "a sentinel above the agents, read after the confirmation")
+
+	t.Run("a sentinel that moved", func(t *testing.T) {
+		e, l := behindHost(t)
+		shown, err := e.eng.Promote(t.Context(), PromoteRequest{})
+		require.NoError(t, err)
+		putSentinel(t, e, planner.Writer{InstallID: testInstall, Generation: 9, Nonce: "else"})
+
+		_, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Shown: shown.Differences})
+		require.ErrorContains(t, err, "changed since it was shown")
+		require.Empty(t, l.promoted)
+	})
 }

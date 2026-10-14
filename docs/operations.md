@@ -693,7 +693,8 @@ differs and, confirmed, draws a new epoch above every sentinel of the install at
 and every epoch an agent reported, and sets observe-only mode until `pco apply`. It refuses when
 nothing differs and nothing holds the daemon, as a new epoch rewrites the sentinel of every
 tunnel (`--force` does it all the same), and for a store of another cluster it wants the name
-of that cluster, or its fingerprint, typed or given with `--cluster`. Nothing pco does makes a
+of that cluster, or its fingerprint, typed or given with `--cluster`. Once confirmed it reads everything
+again, and draws nothing when what differs is not what it showed. Nothing pco does makes a
 store go back: `pco setup` run again only adds and updates objects, and `pco uninstall` stops
 the daemon before it removes any.
 

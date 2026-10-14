@@ -52,7 +52,7 @@ func (a *app) promoteCmd() *cobra.Command {
 			if err := s.done(); err != nil {
 				return err
 			}
-			req := engine.PromoteRequest{Confirm: true, Force: force, Cluster: cluster}
+			req := engine.PromoteRequest{Confirm: true, Force: force, Cluster: cluster, Shown: res.Differences}
 			if err := a.confirmPromotion(cmd, yes, res.Differences, &req); err != nil {
 				return err
 			}

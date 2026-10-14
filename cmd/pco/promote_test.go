@@ -88,7 +88,7 @@ func TestPromotePrintsTheDifferencesAndAsks(t *testing.T) {
 				return
 			}
 			require.NoError(t, res.err)
-			require.Equal(t, []string{`{}`, `{"confirm":true}`}, d.bodies())
+			require.Equal(t, []string{`{}`, `{"confirm":true,"shown":[{"subject":"epoch the agent of pve1 remembers","store":"3.abc","reported":"4.def"}]}`}, d.bodies(), "with what it was shown")
 			require.Contains(t, res.out, "This node is the writer at generation 5. pco is in observe-only mode:\n"+
 				"pco plan shows what it would change, and pco apply lets it.\n")
 			if len(tt.args) == 0 {
@@ -156,7 +156,7 @@ func TestPromoteOfAnotherClustersStoreAsksForItsName(t *testing.T) {
 		require.NoError(t, res.err)
 		require.Contains(t, res.errOut, "The store was made in another cluster. Type the name of that cluster, or its fingerprint "+
 			"when it has none, as shown above, to make this cluster its writer: ")
-		require.Equal(t, []string{`{}`, `{"confirm":true,"cluster":"old-lab"}`}, d.bodies())
+		require.Equal(t, []string{`{}`, `{"confirm":true,"cluster":"old-lab","shown":[{"subject":"cluster","store":"old-lab (aaaa)","reported":"lab (bbbb)"}]}`}, d.bodies())
 	})
 	t.Run("nothing typed", func(t *testing.T) {
 		d := &promoteDaemon{diffs: other}
@@ -176,6 +176,6 @@ func TestPromoteOfAnotherClustersStoreAsksForItsName(t *testing.T) {
 
 		res = r.run("", "promote", "--yes", "--cluster", "old-lab")
 		require.NoError(t, res.err)
-		require.Equal(t, []string{`{}`, `{}`, `{"confirm":true,"cluster":"old-lab"}`}, d.bodies())
+		require.Equal(t, []string{`{}`, `{}`, `{"confirm":true,"cluster":"old-lab","shown":[{"subject":"cluster","store":"old-lab (aaaa)","reported":"lab (bbbb)"}]}`}, d.bodies())
 	})
 }

@@ -397,14 +397,14 @@ func TestTheStoreGoingBackHoldsUntilPromote(t *testing.T) {
 	// A promotion that fails once it began a new store tenure leaves the
 	// controller holding.
 	l.promoteErr = errors.New("the cluster filesystem did not answer")
-	_, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
+	_, err := confirmed(t, e, PromoteRequest{Confirm: true})
 	require.Error(t, err)
 	st = e.cycle()
 	require.Equal(t, problemStoreWentBack, st.Hold, "still")
 	require.Len(t, e.writes(), writes)
 
 	l.promoteErr = nil
-	res, err := e.eng.Promote(t.Context(), PromoteRequest{Confirm: true})
+	res, err := confirmed(t, e, PromoteRequest{Confirm: true})
 	require.NoError(t, err)
 	require.True(t, res.Drawn)
 	require.NoError(t, e.store.WentBack(), "a new tenure")
