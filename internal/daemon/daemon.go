@@ -343,6 +343,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		FileState:  deps.UnitFileState,
 		Pool:       servicePool(st),
 		PinsOf:     st.Pins,
+		Cluster:    doctorCluster{cp: cp, eng: eng},
 	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{

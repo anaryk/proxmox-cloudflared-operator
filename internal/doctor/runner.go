@@ -39,6 +39,8 @@ type Runner struct {
 	mu        sync.Mutex
 	diagnoses map[string]*flight[[]Step] // by hostname
 	doctor    *flight[[]Finding]
+	cluster   *flight[[]Finding] // a run that asks the other nodes too
+	agent     *flight[[]Finding] // the checks the controller asked this node's agent for
 }
 
 // NewRunner returns a runner. httpc lends the diagnosis the certificate
@@ -136,18 +138,38 @@ func (r *Runner) Diagnose(ctx context.Context, name string) ([]Step, error) {
 }
 
 // Doctor checks the installation.
-func (r *Runner) Doctor(ctx context.Context) []Finding {
+func (r *Runner) Doctor(ctx context.Context) []Finding { return r.DoctorWith(ctx, Options{}) }
+
+// DoctorWith checks the installation with options. A run that asks the
+// agents of the other nodes is one of its own: it waits for them.
+func (r *Runner) DoctorWith(ctx context.Context, opts Options) []Finding {
+	slot := &r.doctor
+	if opts.Cluster {
+		slot = &r.cluster
+	}
+	return r.run(ctx, slot, "the doctor run", func(ctx context.Context) []Finding { return RunWith(ctx, r.state(), r.env, opts) })
+}
+
+// AgentChecks makes the checks of this node and its agent, which the
+// controller asks every agent for.
+func (r *Runner) AgentChecks(ctx context.Context) []Finding {
+	return r.run(ctx, &r.agent, "the checks of the agent", func(ctx context.Context) []Finding { return AgentChecks(ctx, r.state(), r.env) })
+}
+
+// run runs check in the flight of slot, or waits for the one that runs or
+// answers still.
+func (r *Runner) run(ctx context.Context, slot **flight[[]Finding], what string, check func(context.Context) []Finding) []Finding {
 	r.mu.Lock()
-	f := r.doctor
+	f := *slot
 	lead := !f.fresh(r.now())
 	if lead {
 		f = &flight[[]Finding]{done: make(chan struct{})}
-		r.doctor = f
+		*slot = f
 	}
 	r.mu.Unlock()
 	if lead {
-		fly(r, f, "the doctor run", func() ([]Finding, error) {
-			return Run(context.WithoutCancel(ctx), r.state(), r.env), nil
+		fly(r, f, what, func() ([]Finding, error) {
+			return check(context.WithoutCancel(ctx)), nil
 		})
 	}
 	findings, err := await(ctx, f)

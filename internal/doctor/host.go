@@ -58,6 +58,9 @@ type HostEnv struct {
 	Web func(ctx context.Context) (WebCert, bool)
 	// App is the part of an appliance; nil on a host.
 	App ApplianceEnv
+	// Cluster is what the checks of a cluster read; nil where the daemon
+	// has no agent channel.
+	Cluster ClusterSource
 
 	// Pool reads the pool of service addresses, PinsOf the pins of the
 	// gateway; nil where the store is not at hand, which makes either an
@@ -87,6 +90,9 @@ var _ Env = (*HostEnv)(nil)
 
 // Appliance is the part of the appliance, nil on a host.
 func (h *HostEnv) Appliance() ApplianceEnv { return h.App }
+
+// ClusterSource is what the checks of a cluster read, nil without one.
+func (h *HostEnv) ClusterSource() ClusterSource { return h.Cluster }
 
 // CloudflaredVersion runs cloudflared --version, without a shell, and returns
 // the first line it prints. A cloudflared that does not answer within the

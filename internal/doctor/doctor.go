@@ -98,6 +98,12 @@ var stateChecks = []string{
 // Run checks the installation: the state the engine published and what env
 // tells of the host. Every check has a finding, sorted by check.
 func Run(ctx context.Context, st engine.State, env Env) []Finding {
+	return RunWith(ctx, st, env, Options{})
+}
+
+// runNode makes the checks of the node the daemon runs on, of the state of
+// its engine.
+func runNode(ctx context.Context, st engine.State, env Env) []Finding {
 	app := applianceOf(st, env)
 	repair := ""
 	if app != nil {
@@ -128,9 +134,7 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 	if app != nil {
 		out = append(out, newApplianceRun(ctx, st, env, app).findings()...)
 	}
-	out = append(out, checkNetworks(ctx, st, env, app)...)
-	slices.SortStableFunc(out, compareChecks)
-	return out
+	return append(out, checkNetworks(ctx, st, env, app)...)
 }
 
 // compareChecks orders findings by check, and the checks of one kind, as

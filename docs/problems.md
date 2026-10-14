@@ -451,6 +451,41 @@ in the appliance, and the rows for `store`, `writer` and `nftables` say how they
 | `unit <unit>`, `daemon` | Only while the daemon does not answer, as root: the unit `pco.service` or `pco-egress.service` does not run (fails) or does not start at boot (warns); `daemon` warns that the checks that need the daemon were not made. | `systemctl enable --now <unit>`, and `journalctl -u <unit>`. |
 | `doctor` | The run of the checks stopped on a defect (fails). | `journalctl -u pco` shows where it stopped. |
 
+### Checks of a cluster
+
+These run where the install has more than one node. A node that is not the controller makes
+the checks of itself that need no state of the controller (`cloudflared`, `outbound`,
+`proxmox`, `store`, `node lock`, `egress`, `nftables`, and in an appliance agent the checks of
+the appliance) and those of its agent, and says in `cluster` where the checks of the cluster
+run. The controller adds the checks of the cluster to its own. `pco doctor --cluster` on the
+controller also asks the agent of every other `active` node for its checks, through a `doctor`
+action in its snapshot, and waits 30 seconds for them; their findings are named with the node,
+as `cloudflared on pve2`, beside the controller's own.
+
+| Check | Fails or warns when | Fix |
+|---|---|---|
+| `cluster` | On a node that is not the controller: no controller answered its agent, so the checks of the cluster were not made (warns); `--cluster` was asked of it (warns). Fine when it names the controller where they run. | `pco doctor --cluster` on the controller. |
+| `agent` | The agent of this node stood down (fails); it reports problems, or follows no controller yet (warns). | `pco agent status`; `journalctl -u pco`. |
+| `agent certificate` | The client certificate of the agent ended (fails) or ends within 30 days (warns): it is renewed after 60 days, so its renewal failed. Fine for the agent of the controller, which runs in its process. | Host: `systemctl restart pco` on the node, which issues its own at the start of the daemon. Appliance agent: `pco node admit <node> --renew` on the controller. |
+| `controller` | On a node that is not the controller: the agent heard no controller for 60 seconds (warns), or for three minutes, or heard none while no node holds the lease (fails). | `pvecm status`; a node takes the lease within 150 seconds of losing the controller; `pco events --kind security` says what happened to the lease. |
+| `agent dial` | On a node that is not the controller: TCP to the controller's agent endpoint, its agent address and port 8644, cannot be made from this node (fails); the address of the controller is not known (warns). | Host: add the node's agent address to the ipset `pco-nodes` of the datacenter firewall and keep the rule `IN ACCEPT -p tcp -dport 8644 -source +pco-nodes`; `pco setup` on the node adds both. Appliance: add the container's address to the ipset `pco-agents` and accept TCP 8644 from it in the firewall of the controller's container. |
+| `lease` | Host, on the controller: the controller is behind the agents or fenced (fails); the last refresh of the lease is more than 15 seconds old (warns). | `pco promote` shows the differences of a controller behind; for a slow refresh, `pvecm status` and `journalctl -u pve-cluster`. |
+| `quorum device` | Two nodes without a quorum device (warns): when one is lost, the other has no quorum and writes nothing. | `pvecm qdevice setup <address>`. |
+| `quorum override` | `corosync.conf` overrides the quorum: `two_node` without a quorum device, `expected_votes` or `wait_for_all: 0` (fails): two parts of the cluster may then both have quorum. | Remove the override from the quorum section of `/etc/pve/corosync.conf`. |
+| `cluster members` | A node of the install that is not `removed` is not a member of the cluster any more (fails). | `pco node forget <node>`. |
+| `agent channel` | `.members` lists nodes online whose agents sent this controller no status in the last 30 seconds (fails); the members file could not be read (warns). | Check `cluster.agentNetwork` and that the datacenter firewall admits TCP 8644 from the ipset `pco-nodes`; `pco doctor` on each such node says whether its agent reaches the controller (`agent dial`). |
+| `agent address` | The agent address of a node is an address of a link of corosync (warns): the agent channel then competes with corosync. | Set `cluster.agentNetwork` to another network, then restart pco on every node. |
+| `clock skew` | The clock of a node is more than 2 seconds off the controller's (warns), more than 10 seconds (fails), as its last status said. | `timedatectl`, `chronyc tracking` on that node. |
+| `node versions` | The nodes run different builds or protocols (warns), as during an upgrade. | Upgrade the nodes that run an older build. |
+| `certificates` | The certificate of a node ends within 30 days, or the install's CA within a year (warns); the CA could not be read (warns). | A node renews its own after 60 days: `journalctl -u pco` on it says why it did not; an appliance agent: `pco node admit <node> --renew`. A new CA comes only with the rotation of `pco node forget --compromised` ([between the nodes of a cluster](security.md#between-the-nodes-of-a-cluster)). |
+| `ca rotation` | A rotation of the CA and the secrets of a node forgotten as compromised is under way (warns, with the step it waits on); after one, the controller refuses the certificates of nodes (fails). | `pco cluster status` shows the steps; `systemctl restart pco` on a refused node, which issues its certificate under the new CA when it starts. |
+| `upgrade` | An upgrade from an earlier release is not finished (warns, with its date and the nodes that still run an earlier build). | Upgrade those nodes, then `pco cluster finish-upgrade`. |
+| `coverage` | The forwarding-table watch of a node was lost twice within ten minutes, or a node has no agent whose watch runs (warns, with the routes that stay pinned to it meanwhile). | `pco node list`; `journalctl -u pco` on the node says why the watch stops. |
+| `replicas <tunnel> in account <id>` | Of a shared tunnel, one node reports a ready connector (warns: the loss of that node takes the tunnel down), or none does (warns). | `pco node list`; `cluster.replicas` in the settings. |
+| `pinned tunnels` | A tunnel pinned to a node has served no route for more than 10 minutes and is not deleted (warns). | `pco status` lists the problems that say why the delete does not happen. |
+| `cloudflare reach` | The controller's cycles have not got through to Cloudflare for 10 minutes (warns). | `pco status` says why; if another node reaches Cloudflare, `pco cluster handoff` moves the controller. |
+| `answer` | With `--cluster`, named `answer on <node>`: the agent of the node did not answer within 30 seconds (warns) or could not make its checks (fails). | `pco doctor` on that node. |
+
 ### Checks of the appliance
 
 These run only in an appliance, where the daemon knows its container, its volume, its network

@@ -402,6 +402,8 @@ type Engine struct {
 	ruleLimit int
 	// audit writes the audit trail of this node to the cluster root.
 	audit *auditTrail
+	// facts are what the last cycle knew of the cluster beyond the state.
+	facts clusterFacts
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.
@@ -533,6 +535,7 @@ func (e *Engine) cycle(ctx context.Context, deadline time.Duration) State {
 
 	c := e.newCycle(ctx)
 	st := c.run()
+	e.noteFacts(c)
 	e.storeHeld.Store(c.storeHold)
 	e.offered = offer{what: c.offer, waiting: st.clone().Waiting, token: st.Offer}
 	e.publish(st.clone(), c.events, c.listing, c.served())

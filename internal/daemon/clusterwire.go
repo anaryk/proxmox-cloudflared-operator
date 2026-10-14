@@ -59,12 +59,15 @@ func (c *clusterPart) wire(ed *engine.Deps, client *pve.Client, multi *pve.Multi
 		return st.Maintenance, err
 	}
 	ed.Close = c.closeNode
-	ed.Corosync = func() (members.Corosync, error) {
-		return members.ReadCorosync(filepath.Join(c.pveDir, filepath.Base(members.CorosyncFile)))
-	}
+	ed.Corosync = c.readCorosync
 	ed.Endpoints = c.endpoints
 	ed.Reissue = c.reissue
 	ed.Fleet.Also(c.events.Add, c.trigger)
+}
+
+// readCorosync reads corosync.conf from the cluster filesystem.
+func (c *clusterPart) readCorosync() (members.Corosync, error) {
+	return members.ReadCorosync(filepath.Join(c.pveDir, filepath.Base(members.CorosyncFile)))
 }
 
 // closeNode ends the connections of a node's agent to the endpoint, when
