@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
@@ -158,6 +159,22 @@ func TestTheControllerServesTheAgentOfTheOtherNode(t *testing.T) {
 	require.NoError(t, os.Remove(damaged))
 	require.Eventually(t, func() bool { return listens(endpoint) }, 10*time.Second, 20*time.Millisecond)
 
+	// The observe-only window began with this tenure's first look, and is
+	// kept in the store for the next controller.
+	rec, found, err := first.store.ObserveSince()
+	require.NoError(t, err)
+	require.True(t, found, "a new install observes only")
+	require.False(t, rec.Since.IsZero())
+
+	// A holder that loses the lease closes the endpoint: the lock is gone,
+	// and the node may not take it again.
+	self = entryIn(t, first.store, testNode)
+	no := false
+	self.ControllerEligible = &no
+	require.NoError(t, first.store.SaveNode(self))
+	require.NoError(t, os.Remove(first.lockDir))
+	require.Eventually(t, func() bool { return !listens(endpoint) }, 20*time.Second, 50*time.Millisecond)
+
 	require.NoError(t, r2.stop())
 	require.NoError(t, r1.stop())
 }
@@ -207,6 +224,39 @@ func TestTheProxmoxFallbacksFollowTheMembersFile(t *testing.T) {
 
 	followMembers(m, testNode, members.Members{Nodes: []members.Member{member(testNode, "10.0.0.1")}}, nil)
 	require.Empty(t, m.Endpoints())
+}
+
+// The start of the observe-only window is kept in the store: a later
+// process, or another controller, goes by the same day; it ends with
+// observe-only mode; and a start that cannot be read closes the window.
+func TestTheObserveOnlyWindowOutlivesTheProcess(t *testing.T) {
+	w := newWorld(t)
+	log := zerolog.Nop()
+	began := t0.Add(time.Hour)
+
+	var first observeWindow
+	first.note(w.store, true, true, began, log)
+	since, on := first.window()
+	require.True(t, on)
+	require.Equal(t, began, since)
+
+	var later observeWindow
+	later.note(w.store, true, false, began.Add(5*time.Hour), log)
+	since, on = later.window()
+	require.True(t, on)
+	require.Equal(t, began, since, "the day began with the first process")
+
+	later.note(w.store, false, true, began.Add(6*time.Hour), log)
+	_, on = later.window()
+	require.False(t, on)
+	_, found, err := w.store.ObserveSince()
+	require.NoError(t, err)
+	require.False(t, found)
+
+	require.NoError(t, os.WriteFile(filepath.Join(w.paths.Cluster, "meta", "observe.json"), []byte("{not json"), 0o600))
+	later.note(w.store, true, true, began.Add(7*time.Hour), log)
+	_, on = later.window()
+	require.False(t, on, "a start that cannot be read takes no certificate")
 }
 
 // listens says whether something takes a connection at addr.

@@ -139,7 +139,9 @@ func (c *clusterPart) tick(ctx context.Context) {
 	}
 	st := c.keeper.State()
 	holder := st.Holder && st.Valid && err == nil
-	c.observe.note(c.eng.State().Mode == engine.ModeObserve, c.now())
+	if multi {
+		c.observe.note(c.st, c.eng.State().Mode == engine.ModeObserve, holder, c.now(), c.log)
+	}
 
 	c.mu.Lock()
 	following, listening := c.following, c.listening
@@ -169,6 +171,9 @@ func (c *clusterPart) stopPart(r **clusterRun) {
 	*r = nil
 	if r == &c.listening {
 		c.server, c.allow = nil, nil
+		// What a closed endpoint served is not served again by a later one
+		// until the engine renders it anew.
+		c.remote.Serve(nil)
 	} else {
 		c.client = nil
 	}
@@ -322,23 +327,43 @@ func (c *clusterPart) sources(context.Context) (clusterapi.Sources, error) {
 	return src, nil
 }
 
-// observeWindow remembers since when the controller is in observe-only
-// mode, which the settings keep as a flag alone: the endpoint takes the
-// certificate of a node the store holds none for within a day of it.
+// observeWindow is since when the controller is in observe-only mode, which
+// the settings keep as a flag alone: the endpoint takes the certificate of
+// a node the store holds none for within a day of it. The start is kept in
+// the store, so that a restart of the daemon, or a takeover, does not begin
+// the day again.
 type observeWindow struct {
 	mu    sync.Mutex
 	since time.Time
 }
 
-func (w *observeWindow) note(on bool, now time.Time) {
+// note reads the start of the window, records it as observe-only mode
+// begins and removes it as it ends; only the holder of the lease writes. A
+// start that cannot be read closes the window.
+func (w *observeWindow) note(st *store.Store, on, holder bool, now time.Time, log zerolog.Logger) {
+	rec, found, err := st.ObserveSince()
+	since := time.Time{}
+	switch {
+	case err != nil:
+		log.Warn().Err(err).Msg("since when observe-only mode runs cannot be read; no unknown certificate is taken")
+	case !on:
+		if found && holder {
+			if err := st.DeleteObserveSince(); err != nil {
+				log.Warn().Err(err).Msg("removing the start of observe-only mode failed")
+			}
+		}
+	case found:
+		since = rec.Since
+	case holder:
+		if err := st.SaveObserveSince(store.ObserveSince{Since: now}); err != nil {
+			log.Warn().Err(err).Msg("recording the start of observe-only mode failed; no unknown certificate is taken")
+			break
+		}
+		since = now
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	switch {
-	case !on:
-		w.since = time.Time{}
-	case w.since.IsZero():
-		w.since = now
-	}
+	w.since = since
 }
 
 func (w *observeWindow) window() (time.Time, bool) {
