@@ -115,6 +115,7 @@ func (c *cycleRun) targetsFor(node string) []agentproto.Target {
 	if c.fleet == nil {
 		return out
 	}
+	out = slices.DeleteFunc(out, func(t agentproto.Target) bool { return !c.listsFor(node, t.Route) })
 	for i := range out {
 		t := &out[i]
 		rt := t.Route

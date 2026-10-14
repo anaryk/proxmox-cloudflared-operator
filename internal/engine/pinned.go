@@ -29,7 +29,7 @@ func (c *cycleRun) remoteTunnels(node string) []agentproto.Tunnel {
 	if !ok || !servedState(n.Node.State) || !c.connected || c.cfHold || c.mode() != reconcile.Enforce {
 		return nil
 	}
-	replica := slices.Contains(c.replicaSet(), node)
+	replica := slices.Contains(c.replicas(), node)
 	own, err := planner.PinnedTunnelName(c.install.ID, node)
 	host := entryKind(n.Node) == string(pki.KindHost)
 	var out []agentproto.Tunnel

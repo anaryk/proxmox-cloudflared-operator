@@ -82,7 +82,61 @@ type placement struct {
 	targets  map[string]planner.ResolvedTarget
 	views    map[string]*PlacementView
 	replicas map[string][]ReplicaView
-	decided  map[string]placed // by owner
+	decided  map[string]decidedPlace // by owner
+}
+
+// decidedPlace is where an owner's routes went: the tunnel their records
+// point at and the second one a move keeps their rules in.
+type decidedPlace struct {
+	record placed
+	also   *placed
+}
+
+// listsFor says whether the snapshot of node lists the target of a route:
+// a node of its placement runs it; a replica of the shared tunnel, and a
+// node joining to become one, verifies a shared route, one not placed yet,
+// and a pinned one that may be shared again, which takes every replica to
+// have it in its set first. Any other node does not have it: a node that
+// left a route's placement, by a drain, a demotion or as long as coverage
+// is lost, has it leave its egress set in the same cycle.
+func (c *cycleRun) listsFor(node string, rt model.Route) bool {
+	decided := c.e.place.decided
+	if c.placing != nil {
+		decided = c.placing.decided
+	}
+	replica := slices.Contains(c.replicas(), node) || c.nodes[node].Node.State == store.NodeJoining
+	on := func(p placed) bool {
+		if p.kind == store.PlacementPinned {
+			return p.node == node
+		}
+		return replica
+	}
+	d, ok := decided[rt.Owner()]
+	if c.cover.lost() && rt.Guest != nil && c.hostingNode([]model.Route{rt}) != node {
+		// Without coverage no node proves another node's guest: the route
+		// leaves every replica but its node's at once, while it moves.
+		pinnedHere := func(p *placed) bool { return p != nil && p.kind == store.PlacementPinned && p.node == node }
+		return ok && (pinnedHere(&d.record) || pinnedHere(d.also))
+	}
+	switch {
+	case !ok:
+		return replica
+	case on(d.record), d.also != nil && on(*d.also):
+		return true
+	}
+	fixed, _ := c.fixedNode([]model.Route{rt})
+	return replica && fixed == "" && !c.cover.lost()
+}
+
+// replicas is the replica set, worked out once per cycle.
+func (c *cycleRun) replicas() []string {
+	if c.replicaCache == nil {
+		c.replicaCache = c.replicaSet()
+		if c.replicaCache == nil {
+			c.replicaCache = []string{}
+		}
+	}
+	return c.replicaCache
 }
 
 // replicaSet is the shared tunnel's replicas: the active nodes, those
@@ -147,7 +201,7 @@ func (c *cycleRun) place() {
 	p := &placement{
 		inputs: map[string]planner.PlacementInput{}, also: map[string]planner.PlacementInput{},
 		targets: map[string]planner.ResolvedTarget{}, views: map[string]*PlacementView{},
-		replicas: map[string][]ReplicaView{}, decided: map[string]placed{},
+		replicas: map[string][]ReplicaView{}, decided: map[string]decidedPlace{},
 	}
 	c.placing = p
 	mem := &c.e.place
@@ -156,7 +210,7 @@ func (c *cycleRun) place() {
 			*m = map[string]time.Time{}
 		}
 	}
-	replicas := c.replicaSet()
+	replicas := c.replicas()
 	owners := map[string][]model.Route{}
 	for _, rt := range c.claims.Winners {
 		owners[rt.Owner()] = append(owners[rt.Owner()], rt)
@@ -174,7 +228,7 @@ func (c *cycleRun) place() {
 			continue
 		}
 		record, also := c.moving(owner, cur, stored, want)
-		p.decided[owner] = record
+		p.decided[owner] = decidedPlace{record: record, also: also}
 		for _, rt := range routes {
 			p.inputs[rt.Hostname] = record.input()
 			if also != nil {
@@ -185,6 +239,7 @@ func (c *cycleRun) place() {
 			p.replicas[rt.Hostname] = c.replicaViews(rt, record, replicas)
 		}
 	}
+	mem.decided = p.decided
 }
 
 // storedOf is the placement stored for an owner's routes: of its first
@@ -420,9 +475,17 @@ func (c *cycleRun) servedTarget(rt model.Route, record placed, replicas []string
 	dialed, ok := t.Dialed()
 	published := ok && c.sendsTo(rt, record, egress.Target{Addr: dialed, Port: rt.Target.Port})
 	switch {
-	case !t.Addr.IsValid() && len(unknown) > 0:
-		if s, ok := c.placements[rt.Hostname]; ok && s.Addr.IsValid() {
-			return planner.ResolvedTarget{Addr: s.Addr, Owner: rt.Owner(), Reason: fmt.Sprintf(reasonHeld, unknown[0])}
+	case !t.Addr.IsValid() && !t.Withdrawn && !t.Rejected:
+		// No node resolves it now, which withdraws nothing: only an
+		// identity that failed, a rejection or a block does. A route
+		// published before keeps its rule, unreachable, and no egress set
+		// holds its target meanwhile.
+		if s, ok := c.placements[rt.Hostname]; ok && s.Addr.IsValid() && c.e.place.blocks[s.Addr] == nil {
+			why := "no node resolves it now; the route is held as it was"
+			if len(unknown) > 0 {
+				why = fmt.Sprintf(reasonHeld, unknown[0])
+			}
+			return planner.ResolvedTarget{Addr: s.Addr, Owner: rt.Owner(), Reason: why}
 		}
 	case !t.Addr.IsValid() || t.Withdrawn || t.Rejected:
 	case c.e.place.blocks[t.Addr] != nil:

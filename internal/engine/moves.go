@@ -173,7 +173,7 @@ func (c *cycleRun) rolledOutTo(m store.Move) bool {
 	if c.now.Sub(m.At) < rolloutWait {
 		return false
 	}
-	nodes := c.replicaSet()
+	nodes := c.replicas()
 	if node, pinned := planner.PinnedTunnelNode(c.install.ID, m.To); pinned {
 		nodes = []string{node}
 	}

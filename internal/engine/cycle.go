@@ -190,6 +190,8 @@ type cycleRun struct {
 	// shared route: the route moves to its guest.s node before the node
 	// is admitted.
 	joining map[string]string
+	// replicaCache is the replica set of the cycle.
+	replicaCache []string
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {

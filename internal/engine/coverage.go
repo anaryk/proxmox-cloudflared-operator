@@ -56,6 +56,8 @@ type placementMemory struct {
 	emptySince map[tunnelRef]time.Time
 	// ids are the connector ids the agents of other nodes reported.
 	ids agentIDs
+	// decided is where the last placement put each owner's routes.
+	decided map[string]decidedPlace
 }
 
 // coverageView is coverage as one cycle judges it.

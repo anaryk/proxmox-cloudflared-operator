@@ -103,7 +103,7 @@ func TestAnAttestationStandsOnlyAsTheControllerChecksIt(t *testing.T) {
 			before := len(w.res.verifications())
 			w.tick(time.Second)
 
-			require.Nil(t, w.targetOf(t, "pve3", "db.example.com").Attestation)
+			require.Nil(t, w.attestationOn(t, "pve3", "db.example.com"))
 			for _, req := range w.res.verifications()[before:] {
 				if req.Route.Hostname == "db.example.com" {
 					require.Nil(t, req.Attestation)
@@ -134,7 +134,13 @@ func TestAnAppliancesAttestationsAreDroppedAndSaid(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, said)
-	require.Nil(t, w.targetOf(t, "pve3", "db.example.com").Attestation)
+	if s, ok := w.r.lastOf("pve3"); ok {
+		for _, tg := range s.Targets {
+			if tg.Key == "db.example.com" {
+				require.Nil(t, tg.Attestation)
+			}
+		}
+	}
 }
 
 // One node's word about a target changes nothing of another node's
@@ -180,6 +186,21 @@ func TestAFloodFromOneNodeIsBounded(t *testing.T) {
 		}
 	}
 	require.Len(t, said, 2)
+}
+
+// attestationOn is the attestation the target of host carries in the
+// snapshot last served to node; nil when it has none, or the snapshot does
+// not list the target.
+func (w *world) attestationOn(t *testing.T, node, host string) *agentproto.Attestation {
+	t.Helper()
+	s, ok := w.r.lastOf(node)
+	require.True(t, ok, node)
+	for _, tg := range s.Targets {
+		if tg.Key == host {
+			return tg.Attestation
+		}
+	}
+	return nil
 }
 
 // dbAttested is node's attestation of db's card.
@@ -295,7 +316,7 @@ func TestARemovedOrContestedNodeHasNoWord(t *testing.T) {
 			require.NoError(t, w.store.SaveNode(n))
 			w.tick(time.Second)
 			w.tick(time.Second)
-			require.Nil(t, w.targetOf(t, "pve3", "db.example.com").Attestation)
+			require.Nil(t, w.attestationOn(t, "pve3", "db.example.com"))
 		})
 	}
 }
