@@ -285,3 +285,44 @@ func TestTheVolumeMarkerIsTheMountCheckOfTheAppliance(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 }
+
+func TestTheApplianceBlockKeepsItsKind(t *testing.T) {
+	s, p := openStore(t)
+	i := applianceInstall()
+	i.Appliance.Kind = ApplianceAgent
+	require.NoError(t, s.SaveInstall(i))
+	got, _, err := s.Install()
+	require.NoError(t, err)
+	require.Equal(t, ApplianceAgent, got.Appliance.KindName())
+
+	i.Appliance.Kind = ""
+	require.NoError(t, s.SaveInstall(i))
+	raw, err := os.ReadFile(installFile(p))
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "kind", "a combined appliance, as every one made before kinds, writes none")
+	got, _, err = s.Install()
+	require.NoError(t, err)
+	require.Equal(t, ApplianceCombined, got.Appliance.KindName())
+
+	i.Appliance.Kind = "worker"
+	require.ErrorContains(t, s.SaveInstall(i), `kind "worker"`)
+	i.Appliance.Kind = ApplianceCombined
+	require.ErrorContains(t, s.SaveInstall(i), "a combined appliance writes no kind")
+}
+
+func TestTheControllerRecordsItsStorage(t *testing.T) {
+	s, _ := openStore(t)
+	i := applianceInstall()
+	i.Appliance.Kind = ApplianceController
+	i.Appliance.Storage = &ApplianceStorage{ID: "ceph-ct", Shared: true, Replication: []string{"9200-0"}, HA: true}
+	require.NoError(t, s.SaveInstall(i))
+	got, _, err := s.Install()
+	require.NoError(t, err)
+	require.Equal(t, i.Appliance.Storage, got.Appliance.Storage)
+
+	i.Appliance.Storage = &ApplianceStorage{}
+	require.ErrorContains(t, s.SaveInstall(i), "names no storage")
+	i.Appliance.Kind = ApplianceAgent
+	i.Appliance.Storage = &ApplianceStorage{ID: "local-zfs", HA: true}
+	require.ErrorContains(t, s.SaveInstall(i), "an agent is never a Proxmox HA resource")
+}

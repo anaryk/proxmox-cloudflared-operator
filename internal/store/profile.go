@@ -95,6 +95,45 @@ type ApplianceInstall struct {
 	MACs      []string   `json:"macs"`      // of its NICs at init, normalised, sorted
 	Endpoints []Endpoint `json:"endpoints"` // the first is used
 	CAFile    string     `json:"caFile"`    // /var/lib/pco/pve-ca.pem
+	// Kind is what the container runs in a cluster: ApplianceController or
+	// ApplianceAgent; none is ApplianceCombined, as every appliance made
+	// before kinds is.
+	Kind string `json:"kind,omitempty"`
+	// Storage is where the state volume of a controller is, as the
+	// installer found it; none on an appliance installed before it was
+	// recorded.
+	Storage *ApplianceStorage `json:"storage,omitempty"`
+}
+
+// The kinds of an appliance.
+const (
+	// ApplianceCombined runs the controller and the agent of its node, on a
+	// single node.
+	ApplianceCombined = "combined"
+	// ApplianceController runs the controller, the agent of the node it was
+	// installed on, and the endpoint the agents of the other nodes join.
+	ApplianceController = "controller"
+	// ApplianceAgent runs the agent of its node and follows a controller.
+	ApplianceAgent = "agent"
+)
+
+// KindName is the kind of the appliance, never an empty one.
+func (a ApplianceInstall) KindName() string {
+	if a.Kind == "" {
+		return ApplianceCombined
+	}
+	return a.Kind
+}
+
+// ApplianceStorage is the storage of a controller's state volume: whether
+// it is shared, which replication jobs copy it, and whether the container is
+// a Proxmox HA resource. A relocation on replicated storage may bring back a
+// volume one interval old, which the agents' epochs catch.
+type ApplianceStorage struct {
+	ID          string   `json:"id"`
+	Shared      bool     `json:"shared,omitempty"`
+	Replication []string `json:"replication,omitempty"`
+	HA          bool     `json:"ha,omitempty"`
 }
 
 // checkAppliance checks the appliance block of an install against its profile,
@@ -118,6 +157,14 @@ func checkAppliance(i Install) (*ApplianceInstall, error) {
 		return nil, errors.New("the appliance has no MAC")
 	case len(a.Endpoints) == 0:
 		return nil, errors.New("the appliance has no endpoint of the Proxmox API")
+	case a.Kind == ApplianceCombined:
+		return nil, errors.New("a combined appliance writes no kind: it is the one without")
+	case a.Kind != "" && a.Kind != ApplianceController && a.Kind != ApplianceAgent:
+		return nil, fmt.Errorf("appliance kind %q: want %q or %q", a.Kind, ApplianceController, ApplianceAgent)
+	case a.Storage != nil && a.Storage.ID == "":
+		return nil, errors.New("the storage of the appliance names no storage")
+	case a.Storage != nil && a.Storage.HA && a.Kind == ApplianceAgent:
+		return nil, errors.New("an agent is never a Proxmox HA resource: it serves the node it was installed on")
 	}
 	macs, err := sortedMACs(a.MACs)
 	if err != nil {
