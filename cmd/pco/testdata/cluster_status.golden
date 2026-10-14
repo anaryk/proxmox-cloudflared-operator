@@ -1,0 +1,15 @@
+Controller:  pve1
+Generation:  3
+Lease:       held by pve1, valid, refreshed 4s ago
+Quorum:      quorate, 3 members, with a quorum device, overrides two_node
+Coverage:    lost: no running watch on pve3; routes of other nodes' guests are pinned
+Upgrade:     not finished since 2026-09-30T14:00:00+02:00, from 0.9.0 (pco cluster finish-upgrade); still on an older build: pve3
+Rotation:    running for node pve4: 1 of 6 steps done, waiting on proxmox
+Blocks:      1 addresses blocked on every node (pco cluster unblock)
+
+Nodes:
+  NAME  STATE             ROLE        KIND       AGENT                   REPLICA  TARGETS                   PINNED  CERT ENDS
+  pve1  active            controller  host       heard 1s ago, watching  ready    3 ok, 0 failing, 0 below  0       2026-11-30T14:00:00+02:00
+  pve2  draining (admin)  agent       host       heard 3s ago, watching  -        2 ok, 1 failing, 0 below  1       2026-11-30T14:00:00+02:00
+  pve3  down              agent       host       heard 5m0s ago          -        0 ok, 0 failing, 0 below  0       -
+  app4  contested         agent       appliance  no status yet           -        0 ok, 0 failing, 0 below  0       -

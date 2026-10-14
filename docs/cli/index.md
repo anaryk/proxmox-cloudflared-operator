@@ -113,6 +113,25 @@ pco help route manual add
     - [pco web cert import](pco-web-cert-import.md): Serve a certificate and key of your own in the web interface
     - [pco web cert renew](pco-web-cert-renew.md): Make a new key and certificate for the web interface now
 
+## The cluster
+
+- [pco agent](pco-agent.md): The agent of this node
+  - [pco agent reset-epoch](pco-agent-reset-epoch.md): Forget the epoch the agent of this node remembers
+  - [pco agent status](pco-agent-status.md): Show what the agent of this node follows and runs
+- [pco cluster](pco-cluster.md): The cluster: its status, the lease, join tokens, the upgrade
+  - [pco cluster finish-upgrade](pco-cluster-finish-upgrade.md): End an upgrade from an earlier release
+  - [pco cluster handoff](pco-cluster-handoff.md): Hand the lease to another node
+  - [pco cluster join-token](pco-cluster-join-token.md): Make the token an appliance agent joins with
+  - [pco cluster status](pco-cluster-status.md): Show the controller, the lease, the quorum and every node
+  - [pco cluster unblock](pco-cluster-unblock.md): End the block of an address every node blocks
+- [pco node](pco-node.md): The nodes of the install: list, admit, drain, forget
+  - [pco node admit](pco-node-admit.md): Admit a node that joins
+  - [pco node drain](pco-node-drain.md): Take a node out of the shared tunnel before its maintenance
+  - [pco node forget](pco-node-forget.md): Remove a node that is gone, and the secrets it held
+  - [pco node list](pco-node-list.md): List the nodes and their states
+  - [pco node set](pco-node-set.md): Change what the admin may of a node's entry
+  - [pco node undrain](pco-node-undrain.md): Put a drained node back among the replicas
+
 ## Lifecycle
 
 - [pco appliance](pco-appliance.md): Commands of the pco appliance

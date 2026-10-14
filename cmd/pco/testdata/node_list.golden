@@ -1,0 +1,9 @@
+NAME  STATE             ROLE        KIND       INDEX  ADDRESS   AGENT
+pve1  active            controller  host       0      10.9.0.1  heard 1s ago, watching
+pve2  draining (admin)  agent       host       1      10.9.0.2  heard 3s ago, watching
+pve3  down              agent       host       2      10.9.0.3  heard 5m0s ago
+app4  contested         agent       appliance  -      -         no status yet
+
+app4 is contested (its join token was misused; pco node forget ends it); its join token was used:
+  2026-10-01T13:57:00+02:00 from 10.9.0.40, container 9004, MACs bc:24:11:00:00:40
+  2026-10-01T13:58:00+02:00 from 10.9.0.41, container 9005, MACs -

@@ -17,6 +17,11 @@ the bridge away from every node. `--detach-managed` removes the cards pco attach
 the daemon stopped and waits, bounded, for the configurations to drop them; a VM without
 network hotplug drops its card when it restarts.
 
+With `--cluster`, on the controller, the whole install goes: every other node is removed from it
+first, so that its agent stands down and stops its connectors, and the lines to run on each
+later are printed; then this node is uninstalled as the last one, with the offers of the last
+node. A node that is not online holds it unless `--force`.
+
 On a node of a cluster that other nodes keep the install running on, the node leaves it:
 it hands the lease off when it holds it, stops and removes its connectors, the egress filter,
 the web interface, its address in the firewall ipset pco-nodes and its local state, and its
@@ -52,8 +57,9 @@ pco uninstall --yes --force
 ## Flags
 
 ```text
+    --cluster              uninstall the whole install: remove every other node from it first, then this node as the last one
     --detach-managed       remove the cards pco attached on the managed network first, so that its zone and vnet can go
-    --force                take a node out of a cluster although it holds the lease and cannot hand it off, or no other node is active
+    --force                take a node out of a cluster although it holds the lease and cannot hand it off, or no other node is active; with --cluster, remove the other nodes although one is not online
 -h, --help                 help for uninstall
     --keep-cloudflare      leave the DNS records and the tunnel of the install at Cloudflare as they are, without looking at them
     --purge-cloudflare     delete the DNS records and the tunnel of the install at Cloudflare

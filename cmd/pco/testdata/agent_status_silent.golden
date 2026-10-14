@@ -1,0 +1,13 @@
+Node:        pve2
+Kind:        host
+Controller:  pve1 (silent for 1m15s)
+Epoch:       3.f00d
+Desired:     seq 42, 7s old
+Connectors:  2
+Egress set:  5 targets
+Stood down:  this node was removed from the install
+Certificate: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08, ends 2026-12-20T14:00:00+02:00
+Replicas:    ready 6f1d0c2e: 3, aaaa0c2e: 1 (heartbeat 4s old)
+
+Problems:
+  - no controller answered for 1m15s; this node serves what it was last told

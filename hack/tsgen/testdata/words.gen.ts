@@ -48,6 +48,31 @@ export const routeStateOrder: readonly string[] = [
   "frozen",
 ]
 
+// present.NodeStateText, by the state of a node; another state is shown as it
+// is.
+export const nodeStateWords: ReadonlyMap<string, string> = new Map([
+  ["", "not numbered yet (an entry of an earlier release)"],
+  ["active", "active"],
+  ["contested", "contested (its join token was misused; pco node forget ends it)"],
+  ["down", "down (the cluster lists it offline)"],
+  ["draining", "draining (out of the shared tunnel's replicas)"],
+  ["joining", "joining (enrolled, not admitted yet)"],
+  ["removed", "removed"],
+  ["unknown", "unknown (its agent sent no status for 30 seconds)"],
+])
+
+// present.NodeStateOrder: the order the nodes are listed in by state; a state
+// that is not listed follows, by name.
+export const nodeStateOrder: readonly string[] = [
+  "active",
+  "draining",
+  "joining",
+  "unknown",
+  "down",
+  "contested",
+  "removed",
+]
+
 // The forms of the values a command for a root shell may carry, by kind, as
 // present.CommandArg checks them; a value of a kind that is not here, or that
 // begins with a dash, is refused.

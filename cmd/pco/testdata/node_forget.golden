@@ -1,0 +1,5 @@
+Node pve3 is forgotten.
+  - the entry of the node is removed: its agent is refused from its next request
+  - its connections to this controller are closed
+  - its pinned tunnels are deleted in the next cycle
+  - the secret of tunnel pco-abc123 in account 0123456789abcdef0123456789abcdef is rotated: the run token the node holds stops working, and the remaining replicas restart with the new one

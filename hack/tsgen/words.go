@@ -73,6 +73,21 @@ func wordsModule() string {
 	section(&b, "present.RouteStateOrder: the order routes are counted in; a state that is not listed follows, by name.")
 	list(&b, "routeStateOrder", order)
 
+	nodeStates := make(map[string]string)
+	for _, s := range present.NodeStateOrder {
+		nodeStates[string(s)] = present.NodeStateText(string(s))
+	}
+	nodeStates[""] = present.NodeStateText("")
+	section(&b, "present.NodeStateText, by the state of a node; another state is shown as it is.")
+	table(&b, "nodeStateWords", nodeStates)
+
+	order = make([]string, len(present.NodeStateOrder))
+	for i, s := range present.NodeStateOrder {
+		order[i] = string(s)
+	}
+	section(&b, "present.NodeStateOrder: the order the nodes are listed in by state; a state that is not listed follows, by name.")
+	list(&b, "nodeStateOrder", order)
+
 	forms := make(map[string]string)
 	for _, kind := range present.ArgKinds {
 		forms[kind] = present.ArgForm(kind)
