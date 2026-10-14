@@ -389,7 +389,7 @@ func TestTheTakeoverHoldWaitsAMinuteForALateAgent(t *testing.T) {
 	st := e.cycle()
 	require.Contains(t, st.Hold, "waiting for the agents of pve2 to report to this controller; nothing is written at Cloudflare for up to 1m0s")
 	require.Empty(t, e.writes())
-	require.Empty(t, r.served)
+	require.Empty(t, r.last())
 
 	e.clock.advance(30 * time.Second)
 	e.quorum = func() (bool, time.Time) { return true, e.clock.now() }
