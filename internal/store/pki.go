@@ -333,9 +333,15 @@ type CARotation struct {
 	// Since is when the last node joined, from which every step counts:
 	// what ran before it, the node may hold. Zero is StartedAt.
 	Since time.Time `json:"since,omitzero"`
-	// StepsAt is when each step done ran.
-	StepsAt map[string]time.Time `json:"stepsAt,omitempty"`
-	Actor   string               `json:"actor,omitempty"`
+	// StepsAt is when each step done ran, and StepsFrom the join it
+	// counted from then: a step is stale once the rotation counts from
+	// another, whatever clock stamped it.
+	StepsAt   map[string]time.Time `json:"stepsAt,omitempty"`
+	StepsFrom map[string]time.Time `json:"stepsFrom,omitempty"`
+	// SecretsFrom is the join the tunnels' secrets given so far counted
+	// from.
+	SecretsFrom time.Time `json:"secretsFrom,omitzero"`
+	Actor       string    `json:"actor,omitempty"`
 	// Done are the steps finished, in their order.
 	Done       []string  `json:"done,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitzero"`

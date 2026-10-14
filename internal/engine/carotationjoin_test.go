@@ -194,6 +194,35 @@ func TestAJoinRedoesStepsStampedByAClockAhead(t *testing.T) {
 	require.True(t, rec.Since.After(latest), "the join counts from after what ran before it")
 }
 
+// A step is stale by the join it counted from, not by its stamp: one done
+// while the clock had jumped ahead, stamped later than a join recorded
+// after it once the clock was back, still predates that join, and is done
+// again; so are the secrets given then.
+func TestAStepStampedAheadOfALaterJoinIsDoneAgain(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+	jumped := time.Hour
+	w.clock.advance(jumped)
+	st := w.settle()
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+	w.clock.advance(-jumped)
+
+	// A join the record could not be cleared for, recorded once the clock
+	// was back: before the stamps, after the steps ran.
+	rec := w.rotationRecord(t)
+	w.clock.advance(time.Minute)
+	rec.Since = w.clock.now()
+	require.NoError(t, w.store.SaveCARotation(rec))
+	w.restart(t)
+
+	st = w.tick(time.Second)
+
+	require.Equal(t, stepCredentials, st.Cluster.CARotation.Next, "the credentials counted from the earlier join count for nothing")
+	require.Empty(t, w.rotationRecord(t).Rotated, "nor do the secrets given then")
+}
+
 // A forget with --compromised whose entry cannot be saved has begun the
 // rotation, which goes on, but has not removed the node: the event says
 // so, and that the forget has to be run again.

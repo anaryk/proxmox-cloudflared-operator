@@ -139,9 +139,10 @@ func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARota
 	rec.Done = slices.DeleteFunc(rec.Done, func(step string) bool { return slices.Contains(redo, step) })
 	for _, step := range redo {
 		delete(rec.StepsAt, step)
+		delete(rec.StepsFrom, step)
 	}
 	if !rec.At.IsZero() || slices.Contains(redo, stepTunnels) || slices.Contains(redo, stepRollout) {
-		rec.Rotated, rec.TakenUp, rec.At, rec.Cleaned = nil, nil, time.Time{}, nil
+		rec.Rotated, rec.TakenUp, rec.At, rec.Cleaned, rec.SecretsFrom = nil, nil, time.Time{}, nil, time.Time{}
 	}
 	// The baselines are what the node may have seen: the credentials stored
 	// and the Proxmox secret of now.
@@ -248,7 +249,11 @@ func (c *cycleRun) rotationStep() {
 		if rec.StepsAt == nil {
 			rec.StepsAt = map[string]time.Time{}
 		}
+		if rec.StepsFrom == nil {
+			rec.StepsFrom = map[string]time.Time{}
+		}
 		rec.StepsAt[step] = notBefore(c.now, rec.From())
+		rec.StepsFrom[step] = rec.From()
 		if step == stepPrevious {
 			rec.FinishedAt = c.now
 		}
@@ -279,21 +284,31 @@ func (c *cycleRun) undone(rec *store.CARotation, step string) bool {
 // staleSteps takes out of a record the steps it holds done that ran before
 // the last node joined the rotation, and the secrets given before it, as a
 // record a join could not clear shows them: that node may hold what they
-// made. It says whether it took anything out.
+// made. A step or a secret is judged by the join it counted from, which the
+// record keeps with it: a clock that jumped ahead and back stamps a time
+// that tells nothing of the order. One recorded without it is judged by
+// its stamp. It says whether it took anything out.
 func staleSteps(rec *store.CARotation) bool {
 	from := rec.From()
+	before := func(at, countedFrom time.Time) bool {
+		if !countedFrom.IsZero() {
+			return !countedFrom.Equal(from)
+		}
+		return at.Before(from)
+	}
 	stale := false
 	rec.Done = slices.DeleteFunc(rec.Done, func(step string) bool {
 		at, ok := rec.StepsAt[step]
-		if ok && at.Before(from) && slices.Contains(redoneOnJoin, step) {
+		if ok && before(at, rec.StepsFrom[step]) && slices.Contains(redoneOnJoin, step) {
 			delete(rec.StepsAt, step)
+			delete(rec.StepsFrom, step)
 			stale = true
 			return true
 		}
 		return false
 	})
-	if !rec.At.IsZero() && rec.At.Before(from) {
-		rec.Rotated, rec.TakenUp, rec.Cleaned, rec.At = nil, nil, nil, time.Time{}
+	if !rec.At.IsZero() && before(rec.At, rec.SecretsFrom) {
+		rec.Rotated, rec.TakenUp, rec.Cleaned, rec.At, rec.SecretsFrom = nil, nil, nil, time.Time{}, time.Time{}
 		stale = true
 	}
 	return stale
@@ -526,7 +541,7 @@ func (c *cycleRun) rotateTunnels(rec *store.CARotation) (bool, string) {
 		if !rec.At.IsZero() {
 			// A secret given by a clock behind the one that recorded the
 			// join must not look given before it, and be given again.
-			rec.At = notBefore(rec.At, rec.From())
+			rec.At, rec.SecretsFrom = notBefore(rec.At, rec.From()), rec.From()
 		}
 		return c.e.d.Store.SaveCARotation(*rec)
 	}
