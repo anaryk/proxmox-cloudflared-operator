@@ -28,7 +28,8 @@ const (
 	// records of its owner before it says which one it waits for.
 	recordsWaitLong = 10 * time.Minute
 
-	problemMoveWaits = "the move of %s from %s to %s waits for the record of %s: %s"
+	problemMoveRollout = "the move of %s from %s to %s waits for its rules to be rolled out: %s"
+	problemMoveWaits   = "the move of %s from %s to %s waits for the record of %s: %s"
 )
 
 // startMoves reads the moves stored. The first cycle of this process gives
@@ -213,7 +214,10 @@ func (c *cycleRun) advanceMoves() {
 		next := m
 		switch m.Step {
 		case store.MoveRulesAdded:
-			if !c.rolledOutTo(m) {
+			if ok, why := c.rolledOutTo(m); !ok {
+				if c.now.Sub(c.addedAt(owner)) >= recordsWaitLong {
+					c.problem(problemMoveRollout, owner, m.From, m.To, why)
+				}
 				continue
 			}
 			next.Step, next.At = store.MoveRolledOut, c.now
@@ -249,16 +253,17 @@ func (c *cycleRun) advanceMoves() {
 	}
 }
 
-// rolledOutTo says whether the tunnel a move goes to serves its rules:
-// every node that runs it reaches every route of the owner, its
-// configuration was verified in this cycle, and Cloudflare confirmed that
-// its connectors run it, or every node that runs it has a ready connector
-// of it and rolloutWait passed since this process saw the rules added. A
-// ready connector on a node that does not reach the target serves nothing.
-func (c *cycleRun) rolledOutTo(m store.Move) bool {
+// rolledOutTo says whether the tunnel a move goes to serves its rules, and
+// why not: every node that runs it reaches every route of the owner, its
+// configuration was verified in this cycle with the rule of each of its
+// hostnames, and Cloudflare confirmed that its connectors run it, or every
+// node that runs it has a ready connector of it and rolloutWait passed
+// since this process saw the rules added. A ready connector on a node that
+// does not reach the target serves nothing.
+func (c *cycleRun) rolledOutTo(m store.Move) (bool, string) {
 	i := slices.IndexFunc(c.tunnels, func(t reconcile.TunnelState) bool { return t.Name == m.To && t.Verified && t.ID != "" })
 	if i < 0 {
-		return false
+		return false, fmt.Sprintf("its configuration is not verified in %s", m.To)
 	}
 	t := c.tunnels[i]
 	nodes := c.replicas()
@@ -266,35 +271,59 @@ func (c *cycleRun) rolledOutTo(m store.Move) bool {
 		nodes = []string{node}
 	}
 	routes := c.routesOf(m.Owner)
+	if len(nodes) == 0 || len(routes) == 0 {
+		return false, "no node runs the tunnel, or the owner has no route"
+	}
 	for _, n := range nodes {
 		if !c.allReach(n, routes) {
-			return false
+			return false, fmt.Sprintf("node %s does not reach its routes", n)
 		}
-	}
-	if len(nodes) == 0 || len(routes) == 0 {
-		return false
 	}
 	to := c.placedOf(m.To, "")
 	for _, rt := range routes {
 		// A configuration confirmed before the rules were added confirms
 		// nothing of them.
 		dialed, ok := c.baseTarget(rt).Dialed()
-		if !ok || !c.sendsTo(rt, to, egress.Target{Addr: dialed, Port: rt.Target.Port}) {
-			return false
+		if !ok {
+			return false, fmt.Sprintf("no node resolves %s", rt.Hostname)
+		}
+		if !c.ruleIn(rt, to, egress.Target{Addr: dialed, Port: rt.Target.Port}) {
+			return false, fmt.Sprintf("%s has no rule there yet", rt.Hostname)
 		}
 	}
 	if r, ok := c.e.rolledOut[t.ID]; ok && r.Version >= t.Version {
-		return true
+		return true, ""
 	}
 	if c.now.Sub(c.addedAt(m.Owner)) < rolloutWait {
-		return false
+		return false, "its connectors are not confirmed to run the rules yet"
 	}
 	for _, n := range nodes {
 		if !c.readyOn(n, t.ID) {
-			return false
+			return false, fmt.Sprintf("node %s runs no ready connector of it", n)
 		}
 	}
-	return true
+	return true, ""
+}
+
+// ruleIn says whether the plan, which a tunnel verified in this cycle
+// holds, gives the tunnel of a placement the rule of rt's hostname to
+// target.
+func (c *cycleRun) ruleIn(rt model.Route, at placed, target egress.Target) bool {
+	zone, ok := c.zoneOf(rt.Hostname)
+	if !ok {
+		return false
+	}
+	name := c.tunnelOf(at)
+	i := slices.IndexFunc(c.plan.Tunnels, func(p planner.TunnelPlan) bool { return p.AccountID == zone.AccountID && p.Name == name })
+	if i < 0 {
+		return false
+	}
+	for _, r := range c.plan.Tunnels[i].Rules {
+		if strings.EqualFold(r.Hostname, rt.Hostname) && slices.Contains(ruleTargets([]planner.IngressRule{r}), target) {
+			return true
+		}
+	}
+	return false
 }
 
 // addedAt is when this process first saw the rules of an owner's move

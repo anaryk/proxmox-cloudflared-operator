@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
@@ -334,6 +336,49 @@ func TestAMoveThatWaitsLongForARecordSaysSo(t *testing.T) {
 	require.Equal(t, store.MoveRolledOut, m.Step)
 	require.True(t, hasProblem(st, "the move of qemu/102 from "+tunnelName), st.Problems)
 	require.True(t, hasProblem(st, "db.example.com"), st.Problems)
+}
+
+// A move rolls out only once the tunnel it goes to has the rule of each of
+// its hostnames: a rule of another hostname to the same address and port
+// confirms nothing of it.
+func TestARuleOfAnotherHostnameDoesNotRollAMoveOut(t *testing.T) {
+	addr := netip.MustParseAddr("10.0.0.9")
+	c := &cycleRun{e: &Engine{}}
+	c.zones.planned = []planner.Zone{{ID: testZone, Name: "example.com", AccountID: testAccount}}
+	c.install.ID = testInstall
+	c.plan.Tunnels = []planner.TunnelPlan{{AccountID: testAccount, Name: pinnedName, Rules: []planner.IngressRule{
+		{Hostname: "web2.example.com", Service: "http://10.0.0.9:8080"},
+		{Hostname: "db.example.com", Service: planner.BlockedService},
+	}}}
+	to := c.placedOf(pinnedName, "")
+	at := egress.Target{Addr: addr, Port: 8080}
+	rt := func(host string) model.Route {
+		return model.Route{Hostname: host, Target: model.Target{Scheme: model.SchemeHTTP, Port: 8080}}
+	}
+
+	require.True(t, c.ruleIn(rt("web2.example.com"), to, at))
+	require.False(t, c.ruleIn(rt("www.example.com"), to, at), "another hostname's rule")
+	require.False(t, c.ruleIn(rt("db.example.com"), to, at), "a block")
+	require.False(t, c.ruleIn(rt("web2.example.com"), to, egress.Target{Addr: addr, Port: 9090}), "another port")
+}
+
+// A move that waits long at its first step, as for a route whose tunnel
+// cannot be written, says so and why.
+func TestAMoveThatWaitsLongForItsRolloutSaysSo(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].fail = map[string]string{"db.example.com": "not reached"}
+	w.cf.FailNext("tunnel.write", 100000, errors.New("connection reset"))
+	w.untilMove(t, "qemu/102", store.MoveRulesAdded, 40)
+
+	var st State
+	for range 12 {
+		st = w.tick(time.Minute)
+	}
+	m, _ := w.moveOf(t, "qemu/102")
+	require.Equal(t, store.MoveRulesAdded, m.Step)
+	require.True(t, hasProblem(st, "the move of qemu/102 from "+tunnelName), st.Problems)
+	require.True(t, hasProblem(st, "waits for its rules"), st.Problems)
 }
 
 // A record whose marker is lost may still point at the tunnel a move leaves,
