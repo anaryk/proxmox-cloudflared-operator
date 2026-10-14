@@ -57,6 +57,8 @@ const (
 	purgeRetry    = 20 * time.Second
 
 	commandTimeout = 3 * time.Minute
+	// uninstallTimeout bounds pco uninstall.
+	uninstallTimeout = 10 * time.Minute
 )
 
 // suite is the node the scenarios run on, with pco set up against the cloud:
@@ -321,9 +323,12 @@ func (s *suite) uninstall(t *testing.T) {
 			// vnet of the managed network can go with the install.
 			args = append(args, "--detach-managed")
 		}
+		// With the managed network the cards of every guest it attached go
+		// first, one after the other, which takes longer than a command of
+		// the run.
 		var out string
-		out, err = s.combined(s.pco, args...)
-		t.Logf("pco %s, attempt %d of %d:\n%s", strings.Join(args, " "), attempt, purgeAttempts, out)
+		out, err = s.combinedWithin(uninstallTimeout, s.pco, args...)
+		t.Logf("pco %s, attempt %d of %d (%v):\n%s", strings.Join(args, " "), attempt, purgeAttempts, err, out)
 		if err == nil {
 			break
 		}

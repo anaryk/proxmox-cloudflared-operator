@@ -84,7 +84,10 @@ func (s *suite) setConsent(t testing.TB, mode string) {
 	t.Helper()
 	s.editSettings(t, func(v *store.Settings) { v.Managed.Consent = mode })
 	s.sync(t)
-	s.waitState(t, "consent "+mode, time.Minute, func(st engine.State) bool { return st.Managed.Consent == mode })
+	// The cycle that reads the change attaches under automatic consent
+	// every guest with the gate tag, those of the other scenarios too, one
+	// card after the other, and its state shows the mode when it ends.
+	s.waitState(t, "consent "+mode, 4*time.Minute, func(st engine.State) bool { return st.Managed.Consent == mode })
 }
 
 func attachmentOf(st engine.State, owner string) (engine.AttachmentView, bool) {
