@@ -11,6 +11,14 @@ restart on the new cloudflared one after the other, and each has 60 s to be read
 With all, pco is upgraded first and cloudflared follows the manifest of the release pco
 came from.
 
+In an agent of a cluster, upgrade the agents first, one after the other, and the
+controller last. A connector of an agent restarts only while the heartbeat of the
+controller counts another ready replica of its tunnel; pco waits up to 5 minutes for one,
+and otherwise leaves the connector on the cloudflared before and names the line that
+restarts it later. An agent that cannot tell, because its daemon does not answer or its
+last heartbeat is missing or older than 30 s, refuses to upgrade cloudflared before it
+installs anything; `--force` restarts its connectors without waiting.
+
 The package of the version that is replaced is kept in `/var/lib/pco/upgrades/previous`,
 one per package, and `--rollback` installs it again. A rollback of pco is refused while the
 store holds an object the kept pco cannot read, and one of cloudflared to a version the
@@ -53,6 +61,7 @@ pco upgrade cloudflared --rollback
 
 ```text
     --check            only say what is installed and what is available; exit status 1 when an upgrade is available
+    --force            in an agent of a cluster, restart the connectors without waiting for another ready replica of their tunnel
 -h, --help             help for upgrade
     --rollback         install the package the last upgrade replaced
     --version string   the version of pco or of cloudflared to install, instead of the newest

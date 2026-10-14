@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -167,8 +168,26 @@ func (u *Upgrader) restarted(ctx context.Context, restart func(ctx context.Conte
 	if restart == nil {
 		return nil
 	}
-	if err := restart(ctx); err != nil {
-		return fmt.Errorf("cloudflared %s is installed, but %w; pco upgrade cloudflared --rollback goes back to %s", now, err, before)
+	err := restart(ctx)
+	switch {
+	case err == nil:
+		return nil
+	case onlyWaiting(err):
+		return fmt.Errorf("cloudflared %s is installed, but %w", now, err)
 	}
-	return nil
+	return fmt.Errorf("cloudflared %s is installed, but %w; pco upgrade cloudflared --rollback goes back to %s", now, err, before)
+}
+
+// onlyWaiting says whether every connector that did not restart waits for
+// another ready replica of its tunnel: the new cloudflared is not at fault.
+func onlyWaiting(err error) bool {
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range j.Unwrap() {
+			if !onlyWaiting(e) {
+				return false
+			}
+		}
+		return true
+	}
+	return errors.Is(err, ErrNoOtherReplica)
 }

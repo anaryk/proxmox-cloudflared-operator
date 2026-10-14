@@ -151,6 +151,19 @@ func TestAConnectorThatIsNotReadyAfterTheUpgradeIsAnError(t *testing.T) {
 		"pco upgrade cloudflared --rollback goes back to 2026.9.3")
 }
 
+// A connector left on the old cloudflared for want of another ready replica
+// needs a restart later, not a rollback.
+func TestAConnectorLeftForWantOfAReplicaIsNoCauseForARollback(t *testing.T) {
+	r, m := cloudflaredRig(t)
+	s := &restarts{err: fmt.Errorf("the connector of tunnel t1 is not restarted: %w 5m0s later", ErrNoOtherReplica)}
+
+	_, err := r.u.Cloudflared(t.Context(), Options{Yes: true}, m, s.restart)
+
+	require.ErrorIs(t, err, ErrNoOtherReplica)
+	require.EqualError(t, err, "cloudflared 2026.10.1 is installed, but the connector of tunnel t1 is not restarted: "+
+		"no other replica of the tunnel is ready 5m0s later")
+}
+
 func TestACheckOfCloudflaredChangesNothing(t *testing.T) {
 	r, m := cloudflaredRig(t)
 	s := &restarts{}

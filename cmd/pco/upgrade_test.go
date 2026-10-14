@@ -77,6 +77,7 @@ type fakeDaemon struct {
 	socket  string
 	mu      sync.Mutex
 	version string
+	agent   string // the JSON of GET /v1/local/agent; empty: not found
 	srv     *httptest.Server
 }
 
@@ -86,15 +87,18 @@ func startFakeDaemon(t *testing.T, version string) *fakeDaemon {
 	ln, err := net.Listen("unix", d.socket)
 	require.NoError(t, err)
 	d.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/version" {
-			http.NotFound(w, r)
-			return
-		}
 		d.mu.Lock()
-		v := d.version
+		v, agent := d.version, d.agent
 		d.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"version":%q}`, v)
+		switch {
+		case r.URL.Path == "/v1/version":
+			_, _ = fmt.Fprintf(w, `{"version":%q}`, v)
+		case r.URL.Path == "/v1/local/agent" && agent != "":
+			_, _ = fmt.Fprint(w, agent)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	d.srv.Listener = ln
 	d.srv.Start()
@@ -516,6 +520,103 @@ func (*oneConnector) IsActive(context.Context, string) (bool, error) { return tr
 func (s *oneConnector) Restart(_ context.Context, unit string) error {
 	s.restarted = append(s.restarted, unit)
 	return nil
+}
+
+// enrol gives the appliance the client certificate an agent dials its
+// controller with: it is one node of a cluster.
+func (u *upgradeRig) enrol(t *testing.T) {
+	t.Helper()
+	dir := filepath.Join(u.paths.Local, "agent", "tls")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "client.pem"), []byte("a certificate"), 0o600))
+}
+
+const cannotTell = "pco cannot tell whether another replica of each tunnel is ready: "
+
+func TestAnAgentThatCannotTellRefusesToUpgradeCloudflared(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		agent string // empty: no daemon
+		why   string
+	}{
+		{"no daemon", "", "the daemon does not answer: "},
+		{"no heartbeat", `{"node":"pve2","heartbeatAge":0}`, "the agent of this node has heard no heartbeat of its controller;"},
+		{"stale heartbeat", `{"node":"pve2","readyReplicas":{"t1":2},"heartbeatAge":95000000000}`, "the last heartbeat of the controller is 1m35s old;"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			u := newUpgradeRig(t)
+			u.enrol(t)
+			if tt.agent != "" {
+				d := startFakeDaemon(t, "v1.2.3")
+				d.agent = tt.agent
+				u.r.socket = d.socket
+			}
+
+			res := u.r.run("", "upgrade", "cloudflared", "--yes")
+
+			require.ErrorIs(t, res.err, upgrade.ErrCannotTell)
+			require.ErrorContains(t, res.err, cannotTell+tt.why)
+			require.ErrorContains(t, res.err, "an agent restarts its connectors only beside a ready replica, and --force restarts them without")
+			require.Empty(t, u.host.commands(), "nothing is installed")
+		})
+	}
+}
+
+func TestAnAgentUpgradesPcoAloneWithoutAskingForReplicas(t *testing.T) {
+	u := newUpgradeRig(t)
+	u.enrol(t)
+
+	res := u.r.run("", "upgrade", "pco", "--yes")
+
+	require.NoError(t, res.err, res.errOut)
+	require.Contains(t, res.out, "pco 1.2.4 is installed")
+}
+
+func TestAnAgentWithForceRestartsWithoutTheReplicas(t *testing.T) {
+	u := newUpgradeRig(t)
+	u.enrol(t)
+
+	res := u.r.run("", "upgrade", "cloudflared", "--yes", "--force")
+
+	require.NoError(t, res.err, res.errOut)
+	require.Contains(t, res.errOut, "warning: --force: the connectors restart without waiting for another ready replica of their tunnel\n")
+	require.Contains(t, res.out, "cloudflared 2026.10.1 is installed\n")
+}
+
+func TestAnAgentThatHearsItsControllerUpgradesCloudflared(t *testing.T) {
+	u := newUpgradeRig(t)
+	u.enrol(t)
+	d := startFakeDaemon(t, "v1.2.3")
+	d.agent = `{"node":"pve2","readyReplicas":{"` + oneTunnel + `":2},"heartbeatAge":4000000000}`
+	u.r.socket = d.socket
+
+	res := u.r.tty().run("y\n", "upgrade", "cloudflared")
+
+	require.NoError(t, res.err, res.errOut)
+	require.Contains(t, res.errOut, "The connectors restart on the new cloudflared one after the other, each only while another\n"+
+		"replica of its tunnel is ready; pco waits up to 5m0s for one.\n")
+	require.NotContains(t, res.errOut, "no connection from this appliance")
+	require.Contains(t, res.out, "cloudflared 2026.10.1 is installed\n")
+}
+
+// A node alone has no replica to wait for, whether its daemon answers or
+// not: its connectors restart as they always did.
+func TestANodeAloneRestartsItsConnectorsAsBefore(t *testing.T) {
+	u := newUpgradeRig(t)
+	sigs := newFakeSignals()
+	u.r.env.upgrade.signals = sigs
+	sd := &oneConnector{}
+	u.r.env.upgrade.systemd = sd
+	u.r.env.upgrade.sleep = func(context.Context, time.Duration) error {
+		sigs.send(syscall.SIGTERM)
+		return nil
+	}
+
+	res := u.r.run("", "upgrade", "cloudflared", "--yes")
+
+	require.ErrorContains(t, res.err, "pco upgrade stopped on terminated", "it waits for the connector, not for a replica")
+	require.Equal(t, []string{"pco-cloudflared@" + oneTunnel + ".service"}, sd.restarted)
+	require.Contains(t, res.out, "the tunnel has no connection from this appliance until it is ready again")
 }
 
 func TestARollbackOfPcoWaitsForTheDaemonToo(t *testing.T) {

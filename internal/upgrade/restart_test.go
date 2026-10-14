@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 )
 
@@ -144,4 +145,114 @@ func (s statusFunc) List(context.Context) ([]string, error) { return s.ids, nil 
 
 func (s statusFunc) Status(_ context.Context, id string) (connector.Status, error) {
 	return s.status(id)
+}
+
+// heard is the view of an agent whose controller's heartbeat, age old,
+// counted ready replicas of the tunnels.
+func heard(age time.Duration, ready map[string]int) agentproto.AgentView {
+	return agentproto.AgentView{Node: "pve2", HeartbeatAge: age, ReadyReplicas: ready}
+}
+
+func views(vs ...agentproto.AgentView) func(context.Context) (agentproto.AgentView, error) {
+	return func(context.Context) (agentproto.AgentView, error) {
+		v := vs[0]
+		if len(vs) > 1 {
+			vs = vs[1:]
+		}
+		return v, nil
+	}
+}
+
+func TestAnAgentRestartsItsConnectorBesideAnotherReadyReplica(t *testing.T) {
+	rr := newRestartRig(map[string][]connector.Status{tunnelA: {ready("old", 4), ready("new", 4)}}, tunnelA)
+	rr.r.Replicas = views(heard(4*time.Second, map[string]int{tunnelA: 2}))
+
+	require.NoError(t, rr.r.Restart(t.Context()))
+
+	require.Equal(t, []string{"pco-cloudflared@" + tunnelA + ".service"}, rr.sd.restarted)
+	require.Equal(t, []string{
+		"restarting the connector of tunnel " + tunnelA + ": 1 other replica of the tunnel is ready and serves it meanwhile",
+		"the connector of tunnel " + tunnelA + " is ready again after 1s: active, ready, 4 connections",
+	}, rr.said)
+}
+
+func TestAnAgentWaitsForAnotherReplicaToBeReady(t *testing.T) {
+	rr := newRestartRig(map[string][]connector.Status{tunnelA: {ready("old", 4), ready("new", 4)}}, tunnelA)
+	rr.r.Replicas = views(
+		heard(3*time.Second, map[string]int{tunnelA: 1}),
+		heard(8*time.Second, map[string]int{tunnelA: 1}),
+		heard(2*time.Second, map[string]int{tunnelA: 2}),
+	)
+
+	require.NoError(t, rr.r.Restart(t.Context()))
+
+	require.Len(t, rr.sd.restarted, 1)
+	require.Equal(t, "waiting up to 5m0s for another replica of tunnel "+tunnelA+" to be ready before its connector restarts: "+
+		"the controller counts no other ready replica", rr.said[0])
+	require.Len(t, rr.said, 3, "the wait is said once")
+}
+
+func TestAnAgentWithoutAnotherReadyReplicaRefusesAfterFiveMinutes(t *testing.T) {
+	rr := newRestartRig(map[string][]connector.Status{
+		tunnelA: {ready("a1", 4)},
+		tunnelB: {ready("b1", 4), ready("b2", 4)},
+	}, tunnelA, tunnelB)
+	rr.r.Replicas = func(context.Context) (agentproto.AgentView, error) {
+		return heard(5*time.Second, map[string]int{tunnelA: 1, tunnelB: 3}), nil
+	}
+	start := rr.clock.now
+
+	err := rr.r.Restart(t.Context())
+
+	require.ErrorIs(t, err, ErrNoOtherReplica)
+	require.EqualError(t, err, "the connector of tunnel "+tunnelA+" is not restarted: no other replica of the tunnel is ready "+
+		"5m0s later (the controller counts no other ready replica); it runs the cloudflared before until "+
+		"systemctl restart pco-cloudflared@"+tunnelA+".service, once pco agent status counts another ready replica")
+	require.Equal(t, []string{"pco-cloudflared@" + tunnelB + ".service"}, rr.sd.restarted, "the other tunnel restarts all the same")
+	require.Equal(t, 5*time.Minute, rr.clock.now.Sub(start)-time.Second, "five minutes, and the second tunnel's wait for ready")
+}
+
+func TestAnAgentTakesNoStaleOrMissingHeartbeatForAReadyReplica(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		view func(context.Context) (agentproto.AgentView, error)
+		why  string
+	}{
+		{"no heartbeat", views(agentproto.AgentView{Node: "pve2"}), "the agent of this node has heard no heartbeat of its controller"},
+		{"stale", views(heard(45*time.Second, map[string]int{tunnelA: 3})), "the last heartbeat of the controller is 45s old"},
+		{"no daemon", func(context.Context) (agentproto.AgentView, error) {
+			return agentproto.AgentView{}, errors.New("dial unix /run/pco/pco.sock: connect: no such file or directory")
+		}, "the daemon does not answer: dial unix /run/pco/pco.sock: connect: no such file or directory"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := newRestartRig(map[string][]connector.Status{tunnelA: {ready("old", 4)}}, tunnelA)
+			rr.r.Replicas = tt.view
+
+			err := rr.r.Restart(t.Context())
+
+			require.ErrorIs(t, err, ErrNoOtherReplica)
+			require.ErrorContains(t, err, "("+tt.why+")")
+			require.Empty(t, rr.sd.restarted)
+
+			require.ErrorIs(t, CheckReplicas(t.Context(), tt.view), ErrCannotTell)
+			require.EqualError(t, CheckReplicas(t.Context(), tt.view), "pco cannot tell whether another replica of each tunnel is ready: "+
+				tt.why+"; an agent restarts its connectors only beside a ready replica, and --force restarts them without")
+		})
+	}
+	require.NoError(t, CheckReplicas(t.Context(), views(heard(time.Second, nil))), "a heartbeat that counts nothing still tells")
+}
+
+// A connector that is not ready serves nothing a restart could take away.
+func TestAnAgentRestartsAConnectorThatIsNotReadyWithoutWaiting(t *testing.T) {
+	rr := newRestartRig(map[string][]connector.Status{tunnelA: {{Active: true}, ready("new", 1)}}, tunnelA)
+	asked := 0
+	rr.r.Replicas = func(context.Context) (agentproto.AgentView, error) {
+		asked++
+		return agentproto.AgentView{}, nil
+	}
+
+	require.NoError(t, rr.r.Restart(t.Context()))
+
+	require.Len(t, rr.sd.restarted, 1)
+	require.Zero(t, asked)
 }

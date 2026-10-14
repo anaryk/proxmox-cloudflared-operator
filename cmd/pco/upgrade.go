@@ -13,6 +13,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -82,6 +84,14 @@ restart on the new cloudflared one after the other, and each has 60 s to be read
 With all, pco is upgraded first and cloudflared follows the manifest of the release pco
 came from.
 
+In an agent of a cluster, upgrade the agents first, one after the other, and the
+controller last. A connector of an agent restarts only while the heartbeat of the
+controller counts another ready replica of its tunnel; pco waits up to 5 minutes for one,
+and otherwise leaves the connector on the cloudflared before and names the line that
+restarts it later. An agent that cannot tell, because its daemon does not answer or its
+last heartbeat is missing or older than 30 s, refuses to upgrade cloudflared before it
+installs anything; --force restarts its connectors without waiting.
+
 The package of the version that is replaced is kept in /var/lib/pco/upgrades/previous,
 one per package, and --rollback installs it again. A rollback of pco is refused while the
 store holds an object the kept pco cannot read, and one of cloudflared to a version the
@@ -112,6 +122,7 @@ const upgradeExample = `  # Say what is installed and what the latest release of
 
 func (a *app) upgradeCmd() *cobra.Command {
 	var o upgrade.Options
+	var force bool
 	cmd := &cobra.Command{
 		Use:       "upgrade [pco|cloudflared|all]",
 		Short:     "Upgrade pco and cloudflared in the appliance from signed releases",
@@ -124,13 +135,14 @@ func (a *app) upgradeCmd() *cobra.Command {
 			if len(args) == 1 {
 				which = args[0]
 			}
-			return a.upgradePackages(cmd, which, o)
+			return a.upgradePackages(cmd, which, o, force)
 		},
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&o.Version, "version", "", "the version of pco or of cloudflared to install, instead of the newest")
 	flags.BoolVar(&o.Check, "check", false, "only say what is installed and what is available; exit status 1 when an upgrade is available")
 	flags.BoolVar(&o.Rollback, "rollback", false, "install the package the last upgrade replaced")
+	flags.BoolVar(&force, "force", false, "in an agent of a cluster, restart the connectors without waiting for another ready replica of their tunnel")
 	addYesFlag(cmd, &o.Yes)
 	return cmd
 }
@@ -142,7 +154,7 @@ type upgradePlan struct {
 	release  string // whose manifest cloudflared follows
 }
 
-func (a *app) upgradePackages(cmd *cobra.Command, which string, o upgrade.Options) error {
+func (a *app) upgradePackages(cmd *cobra.Command, which string, o upgrade.Options, force bool) error {
 	errOut := &screen{w: cmd.ErrOrStderr()}
 	if upgrade.Overridden(a.getenv) {
 		errOut.printf("warning: %s\n", upgrade.OverrideLine)
@@ -190,7 +202,7 @@ func (a *app) upgradePackages(cmd *cobra.Command, which string, o upgrade.Option
 	if o.Check {
 		return a.printCheck(out, plans)
 	}
-	return a.applyUpgrade(cmd, u, paths, plans, o)
+	return a.applyUpgrade(cmd, u, paths, plans, o, force)
 }
 
 func checkUpgradeArgs(which string, o upgrade.Options) error {
@@ -316,13 +328,15 @@ func (a *app) printCheck(out *screen, plans []upgradePlan) error {
 	return nil
 }
 
-func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.Paths, plans []upgradePlan, o upgrade.Options) error {
+func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.Paths, plans []upgradePlan, o upgrade.Options, force bool) error {
 	ctx := cmd.Context()
 	out, errOut := &screen{w: cmd.OutOrStdout()}, &screen{w: cmd.ErrOrStderr()}
 	var changes []upgradePlan
+	cloudflared := false
 	for _, p := range plans {
 		if p.res.Target != "" {
 			changes = append(changes, p)
+			cloudflared = cloudflared || p.res.Package == "cloudflared"
 		}
 	}
 	if len(changes) == 0 {
@@ -330,6 +344,10 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 			out.printf("%s %s is installed, the newest there is\n", p.res.Package, p.res.Installed)
 		}
 		return out.done()
+	}
+	replicas, err := a.replicaGate(ctx, paths, cloudflared, force, errOut)
+	if err != nil {
+		return err
 	}
 	if !o.Rollback {
 		remindOfSnapshot(errOut, paths, u.SnapshotName())
@@ -348,7 +366,11 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 	}
 	for _, p := range changes {
 		what = append(what, fmt.Sprintf("%s from %s to %s", p.res.Package, p.res.Installed, p.res.Target))
-		if p.res.Package == "cloudflared" {
+		switch {
+		case p.res.Package == "cloudflared" && replicas != nil:
+			errOut.printf("The connectors restart on the new cloudflared one after the other, each only while another\n"+
+				"replica of its tunnel is ready; pco waits up to %s for one.\n", upgrade.ReplicaWait)
+		case p.res.Package == "cloudflared":
 			errOut.printf("The connectors restart on the new cloudflared: a tunnel has no connection from this appliance\n"+
 				"until its connector is ready again, at most %s.\n", upgrade.ReadyWait)
 		}
@@ -367,7 +389,7 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 	defer guard.release()
 	errOut.println("From here a signal stops pco upgrade only once what it installs is held again.")
 	sleep := guard.sleep(a.upgrade.sleep)
-	restart := a.connectorRestart(paths, sleep, out)
+	restart := a.connectorRestart(paths, sleep, out, replicas)
 	daemonRan := a.daemonAnswers(ctx)
 	for _, p := range changes {
 		do := upgrade.Options{Rollback: o.Rollback, Yes: true}
@@ -437,7 +459,8 @@ func remindOfSnapshot(errOut *screen, paths store.Paths, name string) {
 
 // connectorRestart restarts the connectors of the appliance on a new
 // cloudflared.
-func (a *app) connectorRestart(paths store.Paths, sleep func(context.Context, time.Duration) error, out *screen) func(ctx context.Context) error {
+func (a *app) connectorRestart(paths store.Paths, sleep func(context.Context, time.Duration) error, out *screen,
+	replicas upgrade.AgentView) func(ctx context.Context) error {
 	e := a.upgrade
 	return func(ctx context.Context) error {
 		conns := connector.NewManager(e.systemd, filepath.Join(paths.Local, tunnelsDir), nil, zerolog.Nop())
@@ -447,6 +470,35 @@ func (a *app) connectorRestart(paths store.Paths, sleep func(context.Context, ti
 			Now:        a.now,
 			Sleep:      sleep,
 			Say:        func(format string, args ...any) { out.printf(format+"\n", args...) },
+			Replicas:   replicas,
 		}.Restart(ctx)
 	}
+}
+
+// replicaGate is the view of the agent a restart of the connectors asks for
+// the other ready replicas of their tunnels, in an agent of a cluster: nil
+// on a node alone, and with force. Without force, an agent that cannot tell
+// whether the other replicas are ready refuses an upgrade of cloudflared
+// before anything is installed.
+func (a *app) replicaGate(ctx context.Context, paths store.Paths, cloudflared, force bool, errOut *screen) (upgrade.AgentView, error) {
+	if !cloudflared || !enrolledAgent(paths) {
+		return nil, nil
+	}
+	if force {
+		errOut.println("warning: --force: the connectors restart without waiting for another ready replica of their tunnel")
+		return nil, nil
+	}
+	view := func(ctx context.Context) (agentproto.AgentView, error) { return a.client().AgentStatus(ctx) }
+	if err := upgrade.CheckReplicas(ctx, view); err != nil {
+		return nil, err
+	}
+	return view, nil
+}
+
+// enrolledAgent says whether this node's agent holds the client certificate
+// it dials a controller with: then its tunnels have replicas on other nodes.
+// A certificate that cannot be read counts: the node was enrolled.
+func enrolledAgent(paths store.Paths) bool {
+	_, err := agent.TLSFiles{Dir: agent.TLSDir(paths)}.Client()
+	return !errors.Is(err, agent.ErrNoCredentials)
 }
