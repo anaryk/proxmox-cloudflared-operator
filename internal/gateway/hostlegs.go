@@ -73,6 +73,7 @@ func (b *hostBackend) sync(ctx context.Context, legs []Leg, services []Service, 
 	if stickyErr != nil {
 		return nil, stickyErr
 	}
+	notePending(states, valid, b.pendingPorts(sticky))
 	announceRaised(ctx, b.sys, valid, b.records, b.sleep, b.log)
 	return states, nil
 }
@@ -714,6 +715,55 @@ func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// pendingNote is how long a guest's port may be there without being a port
+// of its bridge before the managed leg says so: a guest that starts takes a
+// moment, a card whose firewall was turned on waits for the next cycle.
+const pendingNote = time.Minute
+
+// pendingPorts says which guests' ports have been there, and not ports of
+// their bridge, for pendingNote or longer. It is no difference for Verify:
+// the gateway is as pco wants it, and bringing it back would mend nothing.
+func (b *hostBackend) pendingPorts(sticky []Sticky) []string {
+	now := b.now()
+	since := map[string]time.Time{}
+	var out []string
+	for _, s := range sticky {
+		if s.Port == "" {
+			continue
+		}
+		l, ok, err := b.sys.link(onHost, s.Port)
+		if err != nil || !ok || portPlace(l, ok, s.Bridge) != portPending {
+			continue
+		}
+		t, seen := b.pendingSince[s.Port]
+		if !seen {
+			t = now
+		}
+		since[s.Port] = t
+		// Since when, not for how long: the words stay the same from one
+		// cycle to the next, and so make one event, not one a cycle.
+		if now.Sub(t) >= pendingNote {
+			out = append(out, fmt.Sprintf("the port %s of the card %s is not a port of %s since %s; its sticky entry waits on the leg",
+				s.Port, s.MAC, s.Bridge, t.UTC().Format(time.RFC3339)))
+		}
+	}
+	b.pendingSince = since
+	return out
+}
+
+// notePending adds what pendingPorts says to the state of the managed leg.
+func notePending(states []LegState, legs []Leg, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	for i := range states {
+		if !slices.ContainsFunc(legs, func(l Leg) bool { return l.ID == states[i].ID && l.Managed && l.Bridge == ManagedBridge }) {
+			continue
+		}
+		states[i].Problem = strings.Join(slices.DeleteFunc(append([]string{states[i].Problem}, notes...), func(s string) bool { return s == "" }), "; ")
+	}
 }
 
 // placeSticky gives a card its entry and returns the port the entry is on,

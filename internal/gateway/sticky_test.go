@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -231,6 +232,35 @@ func TestAPendingPortWaitsForNothingButItsEntry(t *testing.T) {
 	var changed *ChangedError
 	require.True(t, errors.As(err, &changed), "%v", err)
 	require.Contains(t, strings.Join(changed.Differences, "\n"), "the sticky entry of 0650434f7605 on veth101i1 is missing")
+}
+
+// A port that stays off its bridge for longer than a guest takes to start,
+// as a card that runs behind its firewall bridge, is said on the managed
+// leg; it is no difference that bringing the gateway back could mend.
+func TestAPortPendingForLongIsSaidOnTheManagedLeg(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	sticky := []Sticky{{MAC: mac("06:50:43:4f:76:05"), Bridge: ManagedBridge, Port: "tap101i1"}}
+	h.sync(t, []Leg{legM}, nil, nil, sticky)
+	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, master: "fwbr101i1"}}
+
+	st := h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.Empty(t, st[0].Problem, "a moment is no matter")
+	h.now = h.now.Add(2 * time.Minute)
+	st = h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.Equal(t, "the port tap101i1 of the card 06:50:43:4f:76:05 is not a port of pconet since 2026-10-06T12:00:00Z; its sticky entry waits on the leg", st[0].Problem)
+	h.now = h.now.Add(time.Minute)
+	require.Equal(t, st, h.sync(t, []Leg{legM}, nil, nil, sticky), "the same words a cycle later")
+	require.NoError(t, h.b.Verify(t.Context()))
+
+	h.sys.host.links["tap101i1"].master = ManagedBridge
+	st = h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.Empty(t, st[0].Problem)
+
+	delete(h.sys.host.links, "tap101i1")
+	h.now = h.now.Add(10 * time.Minute)
+	st = h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.Empty(t, st[0].Problem, "a stopped guest has no port, and that is no matter")
 }
 
 // parked reports whether the guest's MAC has its sticky entry on the bridge

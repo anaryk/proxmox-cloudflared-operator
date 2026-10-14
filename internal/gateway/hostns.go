@@ -62,6 +62,9 @@ type hostBackend struct {
 	pins     []Pin
 	sticky   []Sticky
 	records  map[string]*legRecord // by network id
+	// pendingSince is, by port, since when a guest's port is there and not
+	// a port of its bridge.
+	pendingSince map[string]time.Time
 }
 
 // legRecord is what Sync did with a leg.
