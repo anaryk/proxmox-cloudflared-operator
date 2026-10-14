@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/registry"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -36,6 +37,23 @@ type placementMemory struct {
 	// moved are, by node, MAC, bridge, VLAN and time, the moves of a MAC an
 	// agent reported, with when this controller first heard each.
 	moved map[string]time.Time
+	// diverged are, by owner, since when its replicas diverge; reaching
+	// since when every replica reaches it; waiting since when a route
+	// without a placement waits for its replicas to report it.
+	diverged, reaching, waiting map[string]time.Time
+	// listedAt is, by node and hostname, the seq of the first snapshot of
+	// the epoch listedIn that listed the target: a report of an earlier
+	// seq says nothing of it.
+	listedAt map[string]map[string]uint64
+	listedIn agentproto.Epoch
+	// movesRead says that this process read the moves stored, and aborted
+	// those a controller before it had not switched the records of.
+	movesRead bool
+	// tokens are the run tokens of tunnels the agents of other nodes run,
+	// by tunnel id; emptySince is since when each pinned tunnel serves
+	// nothing.
+	tokens     map[string]string
+	emptySince map[tunnelRef]time.Time
 }
 
 // coverageView is coverage as one cycle judges it.

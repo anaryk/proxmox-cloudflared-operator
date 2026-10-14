@@ -363,9 +363,13 @@ func (q *seqs) stamp(s *agentproto.Snapshot, applied agentproto.Epoch, appliedSe
 }
 
 // snapshotTunnel is a tunnel as a snapshot names it: one the node runs a
-// connector of with token, or, without one, keeps as it is.
-func snapshotTunnel(account, id, name, token string) agentproto.Tunnel {
+// connector of with token, or, without one, keeps as it is; pinned when its
+// name is that of a tunnel pinned to a node.
+func (c *cycleRun) snapshotTunnel(account, id, name, token string) agentproto.Tunnel {
 	t := agentproto.Tunnel{AccountID: account, TunnelID: id, Name: name, Kind: agentproto.TunnelShared}
+	if _, pinned := planner.PinnedTunnelNode(c.install.ID, name); pinned {
+		t.Kind = agentproto.TunnelPinned
+	}
 	if token != "" {
 		t.Run, t.Token = true, agentproto.NewSecret(token)
 	}

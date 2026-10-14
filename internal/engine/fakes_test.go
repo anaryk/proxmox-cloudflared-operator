@@ -395,6 +395,7 @@ type ensureCall struct{ id, token string }
 // fakeConnectors records what the engine asks of the connector manager.
 type fakeConnectors struct {
 	mu        sync.Mutex
+	disabled  []string          // the tunnels whose units were taken off boot
 	tokens    map[string]string // what the manager has on disk
 	ensured   []ensureCall
 	pruned    [][]string
@@ -546,8 +547,11 @@ func (f *fakeConnectors) Stop(context.Context, string) error {
 	return errors.New("a single node stops no single connector")
 }
 
-func (f *fakeConnectors) Disable(context.Context, string) error {
-	return errors.New("a single node keeps its connectors enabled at boot")
+func (f *fakeConnectors) Disable(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.disabled = append(f.disabled, id)
+	return nil
 }
 
 func (f *fakeConnectors) Token(id string) (string, bool, error) {

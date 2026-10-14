@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -175,6 +176,16 @@ type cycleRun struct {
 	fleet      *fleetView
 	cover      coverageView
 	placements map[string]store.Placement
+	// placing is where the cycle placed the routes, moves the moves under
+	// way, and movesFailed says that they could not be read.
+	placing     *placement
+	moves       map[string]store.Move
+	movesFailed bool
+	// runTokens are the tokens of the connectors this node keeps running,
+	// by tunnel id, and pruned says that the cycle removed the connectors of
+	// every other tunnel.
+	runTokens map[string]string
+	pruned    bool
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -196,6 +207,9 @@ func (c *cycleRun) run() State {
 			c.hold(why)
 		}
 		c.reconcile()
+		c.advanceMoves()
+		c.savePlacements()
+		c.retirePinned()
 		c.publishRemote()
 	}
 	c.watchTunnels()
@@ -495,7 +509,8 @@ func (c *cycleRun) build() {
 	if writer.InstallID == "" {
 		writer = planner.Writer{InstallID: c.install.ID}
 	}
-	c.plan = planner.Build(planner.BuildInput{
+	c.place()
+	in := planner.BuildInput{
 		Winners:   c.claims.Winners,
 		Conflicts: c.claims.Conflicts,
 		Claims:    c.claims.Claims,
@@ -503,7 +518,12 @@ func (c *cycleRun) build() {
 		Zones:     c.zones.planned,
 		Writer:    writer,
 		Refused:   slices.Concat(c.refused, c.unzoned),
-	})
+	}
+	if p := c.placing; p != nil {
+		in.Placements, in.Also = p.inputs, p.also
+		maps.Copy(in.Targets, p.targets)
+	}
+	c.plan = planner.Build(in)
 	c.st.Routes = c.routeViews()
 }
 

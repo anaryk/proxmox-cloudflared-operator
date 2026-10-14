@@ -62,6 +62,7 @@ func (c *cycleRun) reconcileConnectors() {
 	}
 	shown := slices.Concat(existing, others, invisible)
 	c.connected, c.existing, c.shown = true, existing, shown
+	c.runTokens, c.pruned = run, prune
 	c.keepConnectors(shown, run, prune, true)
 }
 
@@ -94,7 +95,7 @@ func (c *cycleRun) keepConnectors(shown []reconcile.TunnelState, run map[string]
 			// connector of it that runs here.
 			continue
 		}
-		tunnels = append(tunnels, snapshotTunnel(t.AccountID, t.ID, t.Name, run[t.ID]))
+		tunnels = append(tunnels, c.snapshotTunnel(t.AccountID, t.ID, t.Name, run[t.ID]))
 	}
 	s := c.keptSnapshot(tunnels, prune)
 	if keep {

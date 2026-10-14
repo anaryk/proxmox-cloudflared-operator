@@ -429,6 +429,12 @@ func (c *cycleRun) routeViews() []RouteView {
 				v.Guest = c.guestView(ref)
 			}
 		}
+		if p := c.placing; p != nil && winner[st.Hostname] == st.Owner {
+			v.Placement, v.Replicas = p.views[st.Hostname], p.replicas[st.Hostname]
+			if m, ok := c.moves[st.Owner]; ok && v.Placement != nil {
+				v.Placement.Move = moveView(m)
+			}
+		}
 		if res, ok := c.results[st.Hostname]; ok && winner[st.Hostname] == st.Owner {
 			v.Candidates = slices.Clone(res.Candidates)
 			v.Path = pathOf(c.e.d.Node, st.Owner, res.Binding, c.snap, c.e.legState)

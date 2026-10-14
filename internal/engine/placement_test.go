@@ -1,0 +1,326 @@
+package engine
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+var hosts3 = []string{"app.example.com", "db.example.com", "www.example.com"}
+
+// rulesByTunnel are the rules of every tunnel of the account, by name.
+func (w *world) rulesByTunnel(t *testing.T) map[string][]planner.IngressRule {
+	t.Helper()
+	out := map[string][]planner.IngressRule{}
+	for _, tun := range w.cf.TunnelsIn(testAccount) {
+		cfg, err := w.cf.TunnelConfig(t.Context(), testAccount, tun.ID)
+		require.NoError(t, err)
+		out[tun.Name] = cfg.Ingress
+	}
+	return out
+}
+
+// servedIn are the tunnels whose configuration sends host to a target.
+func (w *world) servedIn(t *testing.T, host string) []string {
+	t.Helper()
+	var out []string
+	for name, rules := range w.rulesByTunnel(t) {
+		if slices.ContainsFunc(rules, func(r planner.IngressRule) bool { return r.Hostname == host && r.Service != planner.BlockedService }) {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// recordTunnel is the tunnel name the record of host points at; empty
+// when it has none.
+func (w *world) recordTunnel(t *testing.T, host string) string {
+	t.Helper()
+	ids := map[string]string{}
+	for _, tun := range w.cf.TunnelsIn(testAccount) {
+		ids[tun.ID+".cfargotunnel.com"] = tun.Name
+	}
+	for _, r := range w.records() {
+		if r.Name == host {
+			return ids[r.Content]
+		}
+	}
+	return ""
+}
+
+// requireNothingWithdrawn fails when a hostname of hosts has no rule that
+// serves it in the tunnel its record points at, or when a record was
+// deleted.
+func (w *world) requireNothingWithdrawn(t *testing.T, hosts ...string) {
+	t.Helper()
+	for _, host := range hosts {
+		rec := w.recordTunnel(t, host)
+		require.NotEmpty(t, rec, "%s has a record", host)
+		require.Contains(t, w.servedIn(t, host), rec, "%s is served where its record points", host)
+	}
+	for _, call := range w.writes() {
+		require.False(t, strings.HasPrefix(call, "DeleteRecord"), call)
+	}
+}
+
+// moves are the events of the moves of placements.
+func (w *world) placementEvents() []string {
+	var out []string
+	for _, ev := range w.eng.Events(time.Time{}) {
+		if ev.Kind == kindPlacement {
+			out = append(out, ev.Subject+": "+ev.Message)
+		}
+	}
+	return out
+}
+
+// Three nodes, a guest on each: every route is shared once every replica
+// reached it, the guests of other nodes at port through their node's
+// attestation, and every replica runs the shared tunnel.
+func TestEveryRouteIsSharedOnceEveryReplicaReachesIt(t *testing.T) {
+	w := threeNodes(t)
+
+	st := w.tick(time.Second)
+	for _, host := range hosts3 {
+		require.Contains(t, route(st, host).Reason, "waiting for pve2, pve3 to verify it", host)
+	}
+	require.Empty(t, w.records(), "nothing is published before every replica has it")
+
+	st = w.settle()
+
+	for _, host := range hosts3 {
+		r := route(st, host)
+		require.Equal(t, planner.StateActive, r.State, host)
+		require.Equal(t, TunnelShared, r.Placement.Kind, host)
+		require.Len(t, r.Replicas, 3, host)
+		require.Equal(t, tunnelName, w.recordTunnel(t, host))
+	}
+	require.Equal(t, "port", route(st, "db.example.com").Replicas[0].Level, "pve1 proves it through pve2's attestation")
+	for _, node := range []string{"pve2", "pve3"} {
+		s, _ := w.r.lastOf(node)
+		i := slices.IndexFunc(s.Tunnels, func(tun agentproto.Tunnel) bool { return tun.Name == tunnelName })
+		require.GreaterOrEqual(t, i, 0, node)
+		require.True(t, s.Tunnels[i].Run, node)
+		require.NotEmpty(t, s.Tunnels[i].Token.Reveal(), node)
+	}
+	placements, err := w.store.Placements()
+	require.NoError(t, err)
+	require.Len(t, placements, 3)
+	require.Equal(t, "pve2", placements["db.example.com"].ResolvingNode)
+}
+
+// An agent that stops: once its node has no status for long, every route
+// of a guest on another node is pinned to its node at once, and nothing is
+// withdrawn at Cloudflare at any point; the routes move with their rules in
+// both tunnels until the records are switched.
+func TestAStoppedAgentPinsEveryCrossNodeRouteAndWithdrawsNothing(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.requireNothingWithdrawn(t, hosts3...)
+
+	w.acts["pve3"].silent = true
+	for range 40 {
+		st := w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+		_ = st
+	}
+
+	st := w.tick(time.Second)
+	require.True(t, hasProblem(st, "node pve3 has no pco agent with a running watch"), st.Problems)
+	for host, node := range map[string]string{"www.example.com": "pve1", "db.example.com": "pve2"} {
+		name, _ := planner.PinnedTunnelName(testInstall, node)
+		require.Equal(t, TunnelPinned, route(st, host).Placement.Kind, host)
+		require.Equal(t, name, w.recordTunnel(t, host), host)
+	}
+}
+
+// An agent that restarts every 50 seconds for ten minutes: its first
+// restart is forgiven, the second pins the routes, they stay pinned for as
+// long as it flaps, and no route moves twice.
+func TestAFlappingAgentMovesNothingTwice(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+
+	for i := range 12 {
+		w.acts["pve3"].started = w.clock.now()
+		for range 5 {
+			w.tick(10 * time.Second)
+			w.requireNothingWithdrawn(t, hosts3...)
+		}
+		_ = i
+	}
+
+	moved := map[string]int{}
+	for _, ev := range w.placementEvents() {
+		if strings.Contains(ev, " moves from ") {
+			moved[strings.SplitN(ev, ":", 2)[0]]++
+		}
+	}
+	for owner, n := range moved {
+		require.Equal(t, 1, n, "%s moved %d times", owner, n)
+	}
+	st := w.tick(time.Second)
+	require.Equal(t, TunnelPinned, route(st, "www.example.com").Placement.Kind)
+	require.True(t, hasProblem(st, "the watch of the agent of node pve3 broke twice within ten minutes"), st.Problems)
+}
+
+// Coverage regained: the routes it pinned are shared again once every node
+// watched for ten minutes without a break, not before.
+func TestRoutesAreSharedAgainTenMinutesAfterCoverageIsBack(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].noWatch = true
+	for range 10 {
+		w.tick(10 * time.Second)
+	}
+	st := w.tick(time.Second)
+	require.Equal(t, TunnelPinned, route(st, "www.example.com").Placement.Kind)
+
+	w.acts["pve3"].noWatch = false
+	w.acts["pve3"].started = w.clock.now()
+	for range 50 {
+		st = w.tick(10 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+	require.Equal(t, TunnelPinned, route(st, "www.example.com").Placement.Kind, "under ten minutes")
+	for range 40 {
+		st = w.tick(10 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+	require.Equal(t, TunnelShared, route(st, "www.example.com").Placement.Kind)
+}
+
+// A route that moves keeps its rule in the tunnel it leaves until its
+// record was switched and five minutes more, and has it in the tunnel it
+// goes to before the record points there.
+func TestAMoveKeepsTheOldRulesUntilTheRecordsSwitched(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	pinned1, _ := planner.PinnedTunnelName(testInstall, "pve1")
+	w.acts["pve3"].noWatch = true
+
+	sawBoth := false
+	switched := time.Time{}
+	for range 80 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, "www.example.com")
+		in := w.servedIn(t, "www.example.com")
+		rec := w.recordTunnel(t, "www.example.com")
+		if rec == tunnelName && slices.Contains(in, pinned1) {
+			sawBoth = true
+		}
+		if rec == pinned1 && switched.IsZero() {
+			switched = w.clock.now()
+			require.True(t, sawBoth, "the rule was in the pinned tunnel before the record pointed there")
+		}
+		if !switched.IsZero() && w.clock.now().Sub(switched) < oldRulesFor {
+			require.Contains(t, in, tunnelName, "the old rule stays for five minutes after the switch")
+		}
+	}
+	require.False(t, switched.IsZero(), "the record was switched")
+	require.Equal(t, []string{pinned1}, w.servedIn(t, "www.example.com"), "the old rule is gone at the end")
+	moves, err := w.store.Moves()
+	require.NoError(t, err)
+	require.Empty(t, moves)
+}
+
+// A new controller takes over in the middle of a move: one that had not
+// switched the records is given up, one that had is finished.
+func TestANewControllerAbortsAMoveBeforeTheSwitchAndFinishesOneAfter(t *testing.T) {
+	for _, step := range []string{store.MoveRulesAdded, store.MoveRolledOut, store.MoveCNAMEsSwitched} {
+		t.Run(step, func(t *testing.T) {
+			w := threeNodes(t)
+			w.settle()
+			pinned1, _ := planner.PinnedTunnelName(testInstall, "pve1")
+			require.NoError(t, w.store.SaveMove(store.Move{Owner: "qemu/101", From: tunnelName, To: pinned1, Step: step, At: w.clock.now(), CNAMEAt: w.clock.now()}))
+			if step == store.MoveCNAMEsSwitched {
+				placements, err := w.store.Placements()
+				require.NoError(t, err)
+				p := placements["www.example.com"]
+				p.Kind, p.Node, p.Tunnel = store.PlacementPinned, "pve1", pinned1
+				placements["www.example.com"] = p
+				require.NoError(t, w.store.SavePlacements(placements))
+			}
+
+			w.eng = w.newEngine()
+			w.watchHere(t)
+			w.tick(time.Second)
+			w.tick(time.Second)
+
+			moves, err := w.store.Moves()
+			require.NoError(t, err)
+			if step == store.MoveCNAMEsSwitched {
+				require.Contains(t, moves, "qemu/101", "finished, not given up")
+				require.Equal(t, pinned1, w.recordTunnel(t, "www.example.com"))
+				return
+			}
+			require.Empty(t, moves)
+			require.Equal(t, tunnelName, w.recordTunnel(t, "www.example.com"))
+			w.requireNothingWithdrawn(t, hosts3...)
+		})
+	}
+}
+
+// A controller that takes over writes nothing until the agents reported,
+// then keeps every placement it finds stored: no route moves and nothing
+// is withdrawn.
+func TestATakeoverMovesNothing(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	before, err := w.store.Placements()
+	require.NoError(t, err)
+	writes := len(w.writes())
+
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	for range 10 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, hosts3...)
+	}
+
+	after, err := w.store.Placements()
+	require.NoError(t, err)
+	for host, p := range before {
+		require.Equal(t, p.Kind, after[host].Kind, host)
+		require.Equal(t, p.Node, after[host].Node, host)
+	}
+	for _, call := range w.writes()[writes:] {
+		require.False(t, strings.HasPrefix(call, "DeleteRecord") || strings.HasPrefix(call, "UpdateRecord"), call)
+	}
+	require.Empty(t, w.placementEvents())
+}
+
+// A pinned guest that moves to another node follows it: a move to the
+// tunnel pinned to its new node, once that node reaches it.
+func TestAPinnedGuestFollowsItsNode(t *testing.T) {
+	w := threeNodes(t)
+	w.acts["pve3"].fail = map[string]string{"db.example.com": "not reached"}
+	for range 10 {
+		w.tick(5 * time.Second)
+	}
+	st := w.tick(time.Second)
+	require.Equal(t, TunnelPinned, route(st, "db.example.com").Placement.Kind)
+	require.Equal(t, "pve2", route(st, "db.example.com").Placement.Node)
+
+	snap := w.inv.snapshot()
+	snap.Guests[1].Node = "pve3"
+	w.inv.set(snap)
+	w.acts["pve3"].fail = nil
+	w.acts["pve2"].fail = map[string]string{"db.example.com": "gone"}
+	pinned3, _ := planner.PinnedTunnelName(testInstall, "pve3")
+	for range 30 {
+		w.tick(5 * time.Second)
+	}
+	st = w.tick(time.Second)
+	require.Equal(t, "pve3", route(st, "db.example.com").Placement.Node, fmt.Sprint(w.placementEvents()))
+	require.Equal(t, pinned3, w.recordTunnel(t, "db.example.com"))
+}

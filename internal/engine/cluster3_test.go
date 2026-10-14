@@ -14,6 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -145,6 +146,11 @@ func (w *world) statusOf(node string, act *agentAct) agentproto.Status {
 	snap, served := w.r.lastOf(node)
 	if served {
 		st.EpochSeen, st.SeqApplied = snap.Epoch, snap.Seq
+		for _, tun := range snap.Tunnels {
+			if tun.Run {
+				st.Connectors = append(st.Connectors, connector.Status{TunnelID: tun.TunnelID, Active: true, Ready: true, Connections: 4, ConnectorID: node + "-" + tun.TunnelID})
+			}
+		}
 		for _, t := range snap.Targets {
 			r := agentproto.TargetReport{Key: t.Key, Addr: t.Addr, Level: "port", OK: true, InEgressSet: true, VerifiedAt: now}
 			if a, ok := act.addrs[t.Key]; ok {
