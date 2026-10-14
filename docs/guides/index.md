@@ -3,7 +3,8 @@
 Each guide is one task, from start to end: when you need it, what to have ready, the steps with
 the commands and the Notes to write, how to check the result, and how to undo it. The guides
 under the first four headings are for a node of the host profile, set up as in
-[Quickstart](../quickstart.md); the last four are for the appliance. They link the concept pages
+[Quickstart](../quickstart.md), and those under A cluster for a host or an appliance on more
+than one node; the last ones are for the appliance. They link the concept pages
 and the reference where those say more.
 
 ## Publishing
@@ -44,20 +45,32 @@ and the reference where those say more.
 
 ## Running pco
 
-- [Run pco on a cluster](clusters.md): which node to install on, guests of other nodes and
-  their segments, and what stops when that node is down.
-- [Upgrade and go back](upgrade-and-rollback.md): pco and `cloudflared`, held packages, and
-  earlier versions.
-- [Back up and recover](backup-and-recovery.md): what to back up, a lost store, a restored node
-  or guest, and moving pco to another node.
+- [Upgrade and go back](upgrade-and-rollback.md): pco and `cloudflared`, held packages,
+  earlier versions, and a rolling upgrade of a cluster.
+- [Back up and recover](backup-and-recovery.md): what to back up, the bundle of `pco export`, a
+  lost store, and a restored node or guest.
 - [Monitor pco](monitoring.md): `pco doctor` from a timer, `pco status --json`, events, the
   journal and the metrics of the connectors.
+
+## A cluster
+
+- [Run pco on a cluster](clusters.md): pco on every node, the controller and the agents, what to
+  have in place, and what a node's loss costs.
+- [Add a node](add-a-node.md): a host node with `pco setup`, an appliance agent with a join
+  token, and the admission.
+- [Remove a node](remove-a-node.md): drain, uninstall, forget, and replace a node.
+- [Controller failover](controller-failover.md): what happens when the controller is lost, and
+  what you see until another takes over.
+- [A compromised node](compromised-node.md): `pvecm delnode`, `pco node forget --compromised`,
+  and what pco cannot rotate.
+- [Runbooks of a cluster](cluster-runbooks.md): from what you see to what to do, for the larger
+  cases.
 
 ## The appliance
 
 The same tasks for [the appliance](../appliance.md), pco in a container of its own.
 
-- [Install the appliance](appliance-install.md): the installer and its questions, the segment,
+- [Install the appliance](appliance-install.md): the installer and its questions, the kinds of a cluster, the segment,
   the approvals, and what `pco doctor` shows on a fresh install.
 - [The managed network of the appliance](managed-network-appliance.md): the vnet made and
   granted from the node, the grant per guest or per pool, the guest firewall and the level
@@ -66,3 +79,5 @@ The same tasks for [the appliance](../appliance.md), pco in a container of its o
   node before it, and the upgrade of pco and `cloudflared`.
 - [Restore the appliance from a backup](appliance-restore.md): the container restored with
   `pct restore`, and its install brought back with `pco appliance repair --recover`.
+- [Run the appliance's controller as an HA resource](appliance-ha.md): shared and replicated
+  storage, the node rule, and the fencing of the node that runs it.

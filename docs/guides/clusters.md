@@ -1,215 +1,219 @@
 # Run pco on a cluster
 
-This guide places pco in a Proxmox VE cluster: which node to install it on, how the guests of
-the other nodes are served, and what stops when that node is down. The node that runs pco in
-the examples is `node1`; `node2` is another node of the cluster.
+This guide puts pco on every node of a Proxmox VE cluster: what each node runs, what to have in
+place first, the order to set the nodes up in, how to look after them, and what the loss of a
+node costs. The examples use the nodes `node1`, `node2` and `node3`, and the host profile;
+[the appliance](#the-appliance) does the same with containers.
 
 ## When you need it
 
 Your Proxmox VE nodes form a cluster, and the guests you publish run on more than one of them,
-or may move between them.
+or move between them, and published hostnames should keep answering when a node is down.
 
-## pco runs on one node
+## How pco runs on a cluster
 
-In this release pco serves from one node of a cluster at a time. Its state is on the cluster
-filesystem, `/etc/pve/pco`, and the node registry in it names the nodes. `pco setup` on a
-further node joins the install, with a certificate of the install's CA and an entry of the
-registry as joining. The node that holds the lease is the controller: it writes, and serves the
-routes. The other nodes follow it, and one of them takes over when it is lost.
-
-The connectors run on that node too, and every request to a published hostname passes through
-one of them. The guests of the other nodes are reached from it, across the network the nodes
-share:
+Every node runs pco: the package, `pco.service`, and in its daemon an agent, which serves that
+node: its connectors, its egress filter, its gateway and the proofs of the addresses of its
+guests. One node, the controller, the one that holds the lease on the cluster filesystem, reads
+the inventory, decides where each route is served and writes the store, Cloudflare and Proxmox
+for all of them. The agents follow it over the agent channel, TCP port 8644.
 
 ```mermaid
 flowchart LR
-    visitor["Visitor"] --> edge["Cloudflare edge"]
-    edge --> conn
-    subgraph node1["node1"]
-        daemon["pco daemon"]
-        conn["Connector"]
-        g1["Guests of node1: proven at port"]
+    edge["Cloudflare edge"]
+    subgraph node1["node1: the controller"]
+        ctl["Controller"]
+        a1["Agent and connectors"]
+        g1["app: guest on node1"]
     end
     subgraph node2["node2"]
-        g2["Guests of node2: observed at best"]
+        a2["Agent and connectors"]
+        g2["wiki: guest on the managed network of node2"]
     end
-    conn --> g1
-    conn -->|"the bridge and VLAN both nodes share"| g2
+    subgraph node3["node3"]
+        a3["Agent and connectors"]
+    end
+    ctl -->|"desired state, tcp/8644"| a2
+    ctl -->|"desired state, tcp/8644"| a3
+    edge -->|"app.example.com: shared tunnel, a replica on every node"| a1
+    edge --> a2
+    edge --> a3
+    a1 --> g1
+    a2 --> g1
+    a3 --> g1
+    edge -->|"wiki.example.com: tunnel pinned to node2"| a2
+    a2 --> g2
 ```
 
-When the controller's node fails, another node that runs pco takes the lease once it expired,
-about two minutes later, and starts the connectors there. Serving the routes from several nodes
-at once is planned for a later release.
-
-## Which node to install on
-
-- The node that runs most of the guests you publish. Only a guest on the node that runs pco
-  can be proven at `port`, the highest identity level, because only there can pco read where
-  the bridge delivers the guest's frames. A guest of another node reaches `observed` at best,
-  and is not served unless you allow it (below).
-- A node with an address of its own on every bridge and VLAN of those guests, as for a single
-  node ([Identity](../identity.md#what-is-checked)).
-- A node you seldom take down, since every published hostname goes down with it. If Proxmox
-  VE's high availability moves the published guests, prefer that node for them, so that they
-  come back to it.
+A hostname that every node reaches is in the shared tunnel, and Cloudflare spreads its requests
+over a connector on every active node, so it keeps answering when a node is lost. One that only
+one node can reach, as a guest on that node's managed network, is in a tunnel pinned to that
+node. The node that runs a guest proves its address at `port`; the other nodes prove it at
+`port (attested)`, on the word of that node's forwarding-table watch, as long as every node of
+the cluster runs pco. [Architecture](../architecture.md#pco-on-a-cluster) has the details.
 
 ## Before you start
 
-- pco is set up on the node you chose, and publishes.
-- The guests of the other nodes that you want to publish are on a bridge and VLAN that the
-  node running pco shares at layer 2, with an address of its own there.
+- **The cluster is quorate**, and every node you want pco on is a member: `pvecm status`. A
+  node that stands alone and runs pco loses its `/etc/pve` when `pvecm add` joins it to a
+  cluster: export its install first with `pco export`, or uninstall pco from it, and set it up
+  as a further node once it joined.
+- **The clocks are in step**: chrony on every node, as Proxmox VE asks anyway, with
+  `chronyc tracking` showing a small offset. The cluster filesystem judges whether the lease
+  expired by the clock of the node with the lowest node id (`pvecm nodes` lists the ids); never
+  step that clock by hand.
+- **Two nodes have a quorum device.** Without one a cluster of two loses its quorum with either
+  node, and no controller takes over: `pvecm qdevice setup <address>` on a machine outside the
+  cluster. The connectors serve on either way.
+- **Every node has an address of its own on the bridges and VLANs of the guests it should serve**,
+  as for a node alone ([Identity](../identity.md#what-is-checked)). A node that lacks one cannot
+  verify the shared routes there, and they move to their guests' nodes.
+- **The agent channel can pass.** By default the controller listens on the address each node's
+  name resolves to, its management address. To keep that traffic off a network, set
+  `cluster.agentNetwork` to the prefix of another the nodes share, and not one of corosync's
+  links. With the firewall of Proxmox VE on, setup offers the rule for TCP 8644; accept it.
+- **The same release of pco** is on every node before a further node joins.
 
 ## Steps
 
-1. Tag the guest of `node2` and write its routes, as on any node. With the default settings the
-   route is proven at `observed` and held back:
+1. **The first node.** Set pco up on `node1` as [Quickstart](../quickstart.md) describes. If
+   pco runs there already from an earlier release, upgrade it first: the first start of this
+   release writes what a cluster needs beside the old objects, makes the install's CA and draws
+   one new epoch, which rewrites the sentinel of each tunnel once.
+
+2. **Each further node, one at a time.** Install the package on `node2` as on `node1`, then run
+   `pco setup` there. It finds the install on the cluster filesystem and joins it; nothing
+   changes at Cloudflare. Among its lines:
+
+   ```text
+   store: install 7f3a9c0d41b2 kept; joining the nodes node1
+   certificates: issued the client certificate of node node2 (serial 5c1e..., SHA-256 3b9f...) and the server certificate node-node2.pco-7f3a9c0d41b2.invalid, both until 2027-01-12
+   node registry: registered node2 as joining; the controller admits it
+   firewall: ipset pco-nodes holds 10.0.0.2 (node2)
+   firewall: added the datacenter rule IN ACCEPT -p tcp -dport 8644 -source +pco-nodes
+   pco.service: enabled and running
+   ```
+
+   It asks for no Cloudflare token: the credentials of the install are on the cluster filesystem
+   already, `credentials: 1 stored, nothing needed`. [Add a node](add-a-node.md) has this step in
+   full, with what the admission does.
+
+3. **Watch the node become active.** On the controller:
 
    ```sh
-   pco routes
+   pco node list
    ```
 
    ```text
-   HOSTNAME          STATE        LEVEL     SERVICE                VIA     OWNER     ZONE         NOTE
-   app.example.com   active       port      http://10.0.0.12:3000  direct  lxc/120   example.com  -
-   wiki.example.com  unreachable  observed  -                      -       qemu/105  example.com  identity level observed is below the required port
+   NAME   STATE    ROLE        KIND  INDEX  ADDRESS   AGENT
+   node1  active   controller  host  0      10.0.0.1  heard 1s ago, watching
+   node2  joining  agent       host  1      10.0.0.2  heard 2s ago, watching
    ```
 
-   `pco status` counts such routes in a problem line, `1 route is held back: its identity level
-   is observed, below the required port; ...`, and exits 1. The hostname answers 503 and has
-   no record. Either move the guest to `node1`, which is the better answer for a few guests, or
-   go on.
+   The node is admitted once its agent has reported every route of the shared tunnel, usually
+   within a cycle or two, and runs its replica of the shared tunnel from then on. A route it
+   cannot reach while the others can moves to the tunnel pinned to its guest's node first.
 
-2. Lower the identity minimum to `observed`. Read [Identity](../identity.md#identityminimum)
-   first: at `observed` pco proves an address by ARP alone, which whoever may set the MAC of a
-   guest's card can satisfy, and the setting holds for every guest of the install:
+4. **The rest of the nodes**, the same way, one at a time.
+
+5. **A node that should never be the controller**, a small or remote one, is marked so; it serves
+   its guests and the shared tunnel all the same:
 
    ```sh
-   pco settings show --json > /root/pco-settings.json
-   jq '.settings.identityMinimum = "observed"' /root/pco-settings.json > /root/pco-settings.new.json
-   pco settings apply /root/pco-settings.new.json
+   pco node set node3 --controller-eligible=false
    ```
-
-3. A route proven at `observed` is served only on a segment, a bridge and VLAN, that an admin
-   acknowledged. The route now says which:
-
-   ```text
-   HOSTNAME          STATE        LEVEL     SERVICE                VIA     OWNER     ZONE         NOTE
-   app.example.com   active       port      http://10.0.0.12:3000  direct  lxc/120   example.com  -
-   wiki.example.com  unreachable  observed  -                      -       qemu/105  example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
-   ```
-
-   ```sh
-   pco segment list
-   ```
-
-   ```text
-   SEGMENT  ACKNOWLEDGED  ROUTES
-   vmbr0    no            1
-   ```
-
-4. Acknowledge the segment, when every guest on it is one you would trust with the routes of
-   the others. The command lists the routes it releases and asks:
-
-   ```sh
-   pco segment acknowledge vmbr0
-   ```
-
-   ```text
-   1 route at observed waits for segment vmbr0:
-     wiki.example.com  qemu/105 (wiki)
-   Acknowledging it serves the routes at observed proven on it, unless they wait for an approval of their guest.
-   Acknowledge segment vmbr0? [y/N] y
-   Acknowledged segment vmbr0; its routes at observed are served from the next cycle.
-   ```
-
-   A segment of a VLAN is named with its tag, `vmbr0:20`.
-
-5. Approve the guests that still wait. At `observed` a route also waits for an approval of its
-   guest when anyone but the admins may change the guest's network, when its address answers
-   from another MAC than the one first seen, or when the address is the gateway or a resolver
-   of a node. `pco guest list` names them with the reason, and `pco guest approve` shows what
-   it records before it asks ([Identity](../identity.md#routes-that-wait-for-an-admin)).
-
-## When the node that runs pco is down
-
-Nothing that pco publishes is served. The connectors run on that node, so every tunnel loses its
-connections and visitors get Cloudflare's error 1033 for every hostname, those of guests on other
-nodes included. The DNS records stay as they are, and nothing changes at Cloudflare until the node
-is back. The guests of the other nodes run on, unpublished.
-
-When it comes back, the connectors start before the daemon has verified anything, with an egress
-filter that holds no target, and visitors get a 502 until the first cycle has given the filter
-its targets ([Operations](../operations.md#the-daemon-and-its-units)). Plan a reboot of that
-node as an outage of everything published.
-
-A guest that moves from `node1` to another node, by migration or by high availability, is proven
-at `observed` from then on: with the default minimum its routes are held back and answer 503
-until it is back on `node1`.
-
-Without quorum the cluster filesystem is read-only. The daemon goes on reading and serving what
-is published; a cycle that has a changed claim to save holds, and an approval or another admin
-action that writes to the store fails, until quorum is back.
-
-To move pco to another node for good, follow
-[Back up and recover](backup-and-recovery.md#move-pco-to-another-node).
-
-## Look after the nodes
-
-Ask the controller, on the node that holds the lease:
-
-- [pco cluster status](../cli/pco-cluster-status.md) shows the controller, quorum, the
-  upgrade and a rotation under way, and [pco node list](../cli/pco-node-list.md) the state of
-  every node.
-- Before a node's maintenance, [pco node drain](../cli/pco-node-drain.md) takes it out of the
-  shared tunnel, and [pco node undrain](../cli/pco-node-undrain.md) takes it back. Proxmox's
-  maintenance mode drains it by itself.
-- [pco node admit](../cli/pco-node-admit.md) lets a node in that waits for the admin, as an
-  appliance agent by the fingerprint of its certificate, and
-  [pco cluster join-token](../cli/pco-cluster-join-token.md) makes the token such an agent
-  joins with.
-- [pco node forget](../cli/pco-node-forget.md) removes a node that is gone and rotates the
-  secret it held; with `--compromised`, every secret of the install (see
-  [Security](../security.md#what-a-compromised-forget-leaves-open-and-for-how-long)).
-- [pco cluster handoff](../cli/pco-cluster-handoff.md) moves the lease to another node, and
-  [pco node set](../cli/pco-node-set.md) says whether a node may hold it.
-- [pco cluster unblock](../cli/pco-cluster-unblock.md) ends the block of an address before
-  its time, and [pco cluster finish-upgrade](../cli/pco-cluster-finish-upgrade.md) ends an
-  upgrade once every node runs the new release.
-
-On any node, [pco agent status](../cli/pco-agent-status.md) shows what the agent of that node
-follows, and [pco agent reset-epoch](../cli/pco-agent-reset-epoch.md) makes it forget the epoch
-it remembers. The groups: [pco cluster](../cli/pco-cluster.md), [pco node](../cli/pco-node.md),
-[pco agent](../cli/pco-agent.md).
 
 ## Check
 
+On the controller:
+
 ```sh
-pco status
-pco segment list
-pco diagnose wiki.example.com
+pco cluster status
+pco doctor --cluster
+pco routes
 ```
 
-`pco status` has no problem line about routes held back or held by the observed rules, and
-`pco diagnose` passes its `identity` step at level `observed`.
+`pco cluster status` names every node `active`, with `heard ... ago, watching`, a replica that is
+`ready`, and the line `Coverage:    every node watches its forwarding tables`. `pco doctor
+--cluster` has no failure, and its checks `clock skew`, `agent channel` and
+`replicas <tunnel> in account <id>` pass. On every other node, `pco status` has the lines
+
+```text
+Controller:  node1 (10.0.0.1), generation 3
+Agent:       hears the controller, heartbeat 4s old; snapshot 42 of generation 3, 7s old; 2 connectors, 5 egress targets
+```
+
+## Look after the nodes
+
+- **Run the commands on the controller.** On another node a command that changes the install
+  says `this node is not the controller; run it on node1 (10.0.0.1)`, and the web interface
+  sends the page to the controller's. `pco status`, `pco agent status` and `pco doctor` answer on
+  every node about that node.
+- **Before a node's maintenance**, take it out of the shared tunnel, and take it back after:
+
+  ```sh
+  pco node drain node2
+  pco node undrain node2
+  ```
+
+  Proxmox's maintenance mode, `ha-manager crm-command node-maintenance enable node2`, drains it
+  by itself while `cluster.followMaintenance` is on, and undrains it when the mode ends. The
+  routes pinned to the node go on until their guests migrate.
+- **Before the controller's maintenance**, hand the lease to another node, so that it takes over
+  within seconds and not two minutes:
+
+  ```sh
+  pco cluster handoff --to node2
+  ```
+
+  A clean shutdown or reboot of the controller's node does the same by itself.
+- **A node that is gone for good** is forgotten, and a node to take out is drained and
+  uninstalled: [Remove a node](remove-a-node.md). A node whose disk left your hands:
+  [A compromised node](compromised-node.md).
+- **Upgrades**, one node at a time, the controller last: [Upgrade and go back](upgrade-and-rollback.md#on-a-cluster).
+- **When something is wrong**, [the runbooks of a cluster](cluster-runbooks.md) go from what you
+  see to what to do.
+
+## What a node's loss costs
+
+- **A node that is not the controller.** The shared routes go on through the other replicas, as
+  soon as Cloudflare sees the lost connector gone. The routes pinned to the node are down until
+  their guests run on another node, as high availability of Proxmox restarts them there; the
+  controller then moves their routes to the new node's pinned tunnel. The node is `down` in
+  `pco node list` at once.
+- **The controller's node.** Every connector of the other nodes serves on, from the last desired
+  state each was given. Nothing new is published or withdrawn until another node takes the lease,
+  about two and a half minutes after the loss; [Controller failover](controller-failover.md) says
+  what you see meanwhile.
+- **The quorum.** Nothing is written anywhere while the cluster has none, and every connector
+  serves on.
+
+A guest that migrates to another node keeps being served: its routes follow it. Its new node
+proves it at `port` at once, and the other nodes prove it at `port (attested)` once its MAC has
+stayed on its new port for five minutes; with the default `identityMinimum` its routes are served
+from the tunnel pinned to its new node meanwhile, and go back to the shared tunnel later.
+
+## The appliance
+
+The appliance has the same roles, in containers: a controller container, which serves the node
+it runs on and the agent endpoint, and an agent container on each other node, enrolled with a
+join token and admitted by the fingerprint of its certificate. It proves `observed`, as it reads
+no bridge. [Install the appliance](appliance-install.md#on-a-cluster) sets it up,
+[Appliance](../appliance.md#a-cluster-of-appliances) describes it, and
+[Run the appliance's controller as an HA resource](appliance-ha.md) makes its controller fail over.
 
 ## Undo
 
-Take an acknowledgement back; the routes at `observed` on the segment are held from the next
-cycle:
-
-```sh
-pco segment revoke vmbr0
-```
-
-Set `identityMinimum` back to `port` the way it was lowered. The routes of guests on other nodes
-are then held back again and answer 503.
+Take the further nodes out, one at a time, as [Remove a node](remove-a-node.md) describes; the
+last node left is a node alone again. To remove pco from every node at once,
+`pco uninstall --cluster` on the controller ([Uninstall](../uninstall.md#the-whole-cluster)).
 
 ## Read on
 
-- [Identity](../identity.md#the-levels): what `port` and `observed` prove.
-- [Security](../security.md#identity-levels-against-five-attackers): what `observed` does not
-  stop.
-- [Architecture](../architecture.md#pco-on-a-cluster): pco on a cluster.
-- Reference: [pco segment list](../cli/pco-segment-list.md),
-  [pco segment acknowledge](../cli/pco-segment-acknowledge.md),
-  [pco segment revoke](../cli/pco-segment-revoke.md).
+- [Architecture](../architecture.md#pco-on-a-cluster): the roles, the lease, placement and the
+  proofs across nodes.
+- [Operations](../operations.md#a-cluster): running a cluster, in the reference.
+- [Identity](../identity.md#port-attested-on-a-cluster): `port (attested)` and coverage.
+- [Security](../security.md#between-the-nodes-of-a-cluster): what the nodes trust each other with.
+- Reference: [pco cluster](../cli/pco-cluster.md), [pco node](../cli/pco-node.md),
+  [pco agent](../cli/pco-agent.md).

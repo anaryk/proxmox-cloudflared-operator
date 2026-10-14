@@ -3,8 +3,9 @@
 ## When you need it
 
 You want pco on a Proxmox VE node without installing anything on the node itself: pco and its
-connectors in a container of their own. [Appliance](../appliance.md) says what that gives and
-what it costs against the host profile.
+connectors in a container of their own, on a node alone or on every node of a cluster
+([On a cluster](#on-a-cluster)). [Appliance](../appliance.md) says what that gives and what it
+costs against the host profile.
 
 ## Before you start
 
@@ -69,6 +70,58 @@ what it costs against the host profile.
        pct exec 120 -- pco plan
        pct exec 120 -- pco apply
 
+## On a cluster
+
+On a cluster the appliance comes in kinds: a **controller** container, which serves the node it
+runs on as a combined appliance does and serves the agent endpoint, TCP 8644 on its card's
+address, and an **agent** container on each other node, which serves that node. The steps above
+make a `combined` appliance, the kind for a node alone.
+
+1. **The controller.** On the node that is to run it, with `--kind controller`. Add `--ha` and
+   `--ha-nodes` to make it a Proxmox HA resource, after reading
+   [Run the appliance's controller as an HA resource](appliance-ha.md):
+
+       pco appliance install --kind controller --storage local-zfs --vmid 120 --cf-token-file /root/cf-token --checksums checksums.txt
+
+   Its container's firewall gets the ipset `pco-agents` and one rule that lets those addresses,
+   and no others, reach TCP 8644. A combined appliance that runs already becomes the controller in
+   place, with its connectors running throughout: `pco appliance convert --vmid 120` on its node.
+   Then go through steps 3 to 7 above on the controller.
+
+2. **A join token for each other node**, made on the controller into a file only root reads,
+   good once, for that node, for 15 minutes:
+
+       pct exec 120 -- pco cluster join-token --node node2 --file /root/node2.join
+       pct pull 120 /root/node2.join /root/node2.join
+
+   Copy it to `node2` as root, and remove the copies you no longer need.
+
+3. **The agent**, on `node2`, with the token:
+
+       pco appliance install --kind agent --storage local-zfs --vmid 121 --join-file /root/node2.join --checksums checksums.txt
+
+   `--join -` reads the token from standard input instead. It is never an argument, an
+   environment variable or a line of the journal: the installer pushes it onto the agent's state
+   volume with `pct push`, and the agent removes it once the controller answered. The agent's
+   token holds the reading role `PCO` and nothing more. The agent makes its key and joins: the
+   controller checks the token and the container, an LXC on `node2` in pool `pco`, no HA
+   resource, with the MACs and the address it said, and records the node as `joining`.
+
+4. **Admit it** by the fingerprint of its certificate, which the agent shows:
+
+       pct exec 121 -- pco agent status
+       pct exec 120 -- pco node list
+       pct exec 120 -- pco node admit node2 --fingerprint 9f86d081
+
+   `pco node list` on the controller shows every use of the join token; admit only when they are
+   yours. A token used twice, or by a container that is not what it said, holds the node
+   `contested` until `pco node forget node2`; a new token enrols it again.
+
+Check it with `pct exec 120 -- pco cluster status` and `pct exec 120 -- pco doctor --cluster`:
+every agent `active`, its replica `ready`, and the checks `agent container <node>` fine.
+[Appliance](../appliance.md#a-cluster-of-appliances) has the whole of it, and
+[Add a node](add-a-node.md#steps-an-appliance-agent) the agent of a node added later.
+
 ## Check
 
     pct exec 120 -- pco status
@@ -97,6 +150,9 @@ Open `https://192.0.2.120:8643/`, compare the fingerprint the browser shows with
 installer printed, and sign in with a Proxmox VE user that holds `Sys.Modify` on `/`.
 
 ## Undo
+
+On a cluster, remove the agent containers first, each with `pco appliance uninstall --vmid
+<vmid>` on its node and `pco node forget <node>` on the controller, then the controller as below.
 
 On the node, with the release the appliance runs:
 

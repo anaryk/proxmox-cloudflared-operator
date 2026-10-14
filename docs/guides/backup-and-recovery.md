@@ -1,15 +1,15 @@
 # Back up and recover
 
 This guide says what of pco to back up and how, how to bring pco back after its store is lost
-or the node is restored, what a restored guest does, and how to move pco to another node of a
-cluster.
+or the node is restored, from a bundle of `pco export` or from Cloudflare, what a restored guest
+does, and what differs on a cluster.
 
 ## When you need it
 
 - You set up backups of a node that runs pco.
 - The store of pco is lost: the cluster filesystem was rebuilt, or the node was reinstalled.
 - The node, or a guest, was restored from a backup.
-- pco should run on another node, because the one it runs on is retired or lost.
+- A cluster that ran pco was lost, and is built again.
 
 ## What to back up
 
@@ -57,7 +57,31 @@ the addresses in use, and an address that had been released may be given out aga
 
 ## Back up
 
-1. Save the decisions as the commands print them, in the form the commands take back:
+1. Write the bundle, on the controller or, on a host, on any node, and copy it off the cluster.
+   With `--credentials` it holds the Cloudflare tokens too; keep the passphrase somewhere else
+   than the file:
+
+   ```sh
+   pco export --credentials /root/pco.bundle
+   ```
+
+   ```text
+   Wrote /root/pco.bundle.
+   install                 7f3a9c0d41b2
+   manual routes           1
+   approvals               3
+   acknowledged segments   0
+   nodes                   3
+   CA and its key          yes
+   controller objects      12
+   Cloudflare credentials  1
+   ```
+
+   An empty passphrase at the question has pco draw one and show it once. Write a new bundle
+   after every change you would not like to make again, and before `pco cluster finish-upgrade`.
+   The steps below keep the same in a form you can read and apply by hand.
+
+2. Save the decisions as the commands print them, in the form the commands take back:
 
    ```sh
    mkdir -m 700 -p /root/pco-export
@@ -68,7 +92,7 @@ the addresses in use, and an address that had been released may be given out aga
    pco credential list > /root/pco-export/credentials.txt
    ```
 
-2. Save the files, as they are:
+3. Save the files, as they are:
 
    ```sh
    tar --ignore-failed-read -czf /root/pco-backup.tar.gz \
@@ -148,6 +172,68 @@ Without a token that sees the tunnel, there is nothing to recover from: `pco set
 new install with a new id, and the tunnel and records of the old one stay at Cloudflare until
 you delete them there.
 
+## Restore from a bundle
+
+[`pco import`](../cli/pco-import.md) restores the install of a bundle on a node where pco has no
+install, with the daemon stopped, and before `pco setup`, which keeps the install it finds. The
+restored install observes until `pco apply`, and its `leader.json` is the one of the bundle, so
+the daemon writes nothing until `pco promote` draws an epoch above every sentinel at Cloudflare
+and every epoch an agent remembers.
+
+**The store lost, the cluster kept**, as after `/etc/pve/pco` was removed by mistake:
+
+1. Stop pco on every node; the connectors run on:
+
+   ```sh
+   systemctl stop pco
+   ```
+
+2. On one node, restore the install:
+
+   ```sh
+   pco import /root/pco.bundle
+   ```
+
+   ```text
+   Restored the install from /root/pco.bundle.
+   install                 7f3a9c0d41b2
+   manual routes           1
+   approvals               3
+   acknowledged segments   0
+   nodes                   3
+   CA and its key          yes
+   controller objects      12
+   Cloudflare credentials  1
+   pco only observes until pco apply.
+   Next: run pco setup if this node has none, then run pco promote.
+   ```
+
+3. Start pco on every node again, `systemctl start pco`, and on the node that takes the lease,
+   which `pco status` names, read what differs and promote it:
+
+   ```sh
+   pco promote
+   ```
+
+   The agents remember a later epoch than the bundle's, and the promotion draws above it.
+4. `pco credential add` for each token the bundle did not carry, then read `pco plan`, and
+   `pco apply`.
+
+**A node alone, reinstalled**: install the package without the setup (`PCO_SKIP_SETUP=1`),
+`pco import /root/pco.bundle`, then `pco setup`, which keeps the install, and `pco promote`.
+
+**A cluster lost whole, built again.** The bundle records the cluster it was made in, by the
+fingerprint of the cluster CA of Proxmox VE, and a new cluster has another. In this release
+`pco setup` refuses such a store before it sets anything up (`the store was made in cluster
+<name> (<fingerprint>), not in this one ...`), and `pco promote` needs a node that runs pco, so a
+bundle does not restore into a new cluster. Adopt the install from Cloudflare there instead, as
+in [Recover after a lost store](#recover-after-a-lost-store), with the files of step 2 of
+[Back up](#back-up), and set the other nodes up as further nodes.
+
+**The appliance**: `pco import` restores the install of a host only. An appliance's controller
+whose state volume is lost is adopted from Cloudflare with `pco appliance repair --recover`, as
+[Restore the appliance from a backup](appliance-restore.md) describes.
+
 ## After a restore of the node
 
 A node restored from a backup brings back the store as it was then, and the connectors in
@@ -175,6 +261,13 @@ A node restored from a backup brings back the store as it was then, and the conn
 The approvals, manual routes and settings are those of the backup; anything decided since is to
 be decided again.
 
+On a cluster a node restored from a backup gets the cluster filesystem from the other nodes, not
+from its backup: only its own state in `/var/lib/pco` is old. It issues its certificate again if
+it must, joins as `joining`, and is admitted as after a reboot. A copy of `/etc/pve/pco` restored
+under a running cluster is another matter: the controller finds the store older than what the
+agents remember and writes nothing; [the runbook](cluster-runbooks.md#behind-after-a-restore)
+says what to do.
+
 ## A restored guest
 
 - **Restored to its own VMID**, it is the same owner: it keeps the hostnames of that VMID, and
@@ -187,48 +280,13 @@ be decided again.
   [Move a hostname to another guest](move-a-hostname.md) hands a hostname over when the copy is
   to take over.
 
-## Move pco to another node
+## On a cluster
 
-pco runs on one node of a cluster, and the store, which the cluster filesystem shares, names it.
-To move pco from `node1` to `node2`, the store is taken down on `node1` and the install is
-recovered on `node2`. The published hostnames are down from the moment `node1` stops its
-connectors until `pco apply` on `node2`: Cloudflare's error 1033 for every one.
-
-1. Back up on `node1`, as above.
-2. Make sure `node2` has what `node1` had: an address of its own on the bridges and VLANs of
-   the published guests, and the way out to Cloudflare. Install the package on `node2` without
-   setting it up, as [Quickstart](../quickstart.md#install) describes with `PCO_SKIP_SETUP=1`.
-3. On `node1`, take pco down and leave Cloudflare as it is:
-
-   ```sh
-   pco uninstall --yes --keep-cloudflare
-   ```
-
-   This stops the connectors and removes the store, which lets `node2` take the install, and
-   what setup made in Proxmox, which `node2` makes again.
-4. On `node2`, recover the install, then put back the decisions and start publishing as in
-   [Recover after a lost store](#recover-after-a-lost-store), steps 2 to 5:
-
-   ```sh
-   pco setup --recover --cf-token-file /root/cf-token
-   ```
-
-When `node1` is lost for good, the store it left is still on the cluster filesystem and names
-it, and `pco setup` on `node2` would join it, as a further node of an install that `node1`
-still runs as far as the registry says; `pco uninstall` on `node2` would then only take `node2`
-out of it and keep the store. Save `/etc/pve/pco` and `/etc/pve/priv/pco` first, which every
-node of the cluster has, with `tar -czf /root/pco-node1-store.tar.gz /etc/pve/pco /etc/pve/priv/pco`:
-the settings are the object in `data` of `/etc/pve/pco/meta/settings.json`, and the approvals,
-manual routes and segments are files of their own. Then remove the entry of the lost node,
-`/etc/pve/pco/nodes/node1.json`, so that `node2` is the last node of the install, and on `node2`
-with the package installed, `pco uninstall --yes --keep-cloudflare` removes that store, and nothing else,
-since `node2` has no manifest of its own. Recover as in step 4. The role and the user that
-`node1` made stay in Proxmox, and setup on `node2` uses them; it makes the token anew, as its
-secret went with the store. If `node1` comes back with its
-disk as it was, its connectors start and serve the tunnel beside those of `node2`: `pco status`
-on `node2` names them as connectors that pco does not run, and
-[Rotate the tunnel token](rotate-the-tunnel-token.md) cuts them off. Reinstall `node1` before it
-joins the cluster again.
+There is no pco to move between the nodes of a cluster: it runs on every node, and the lease
+moves by itself. A node that is lost for good is forgotten, `pco node forget <node>`, and the
+store stays on the cluster filesystem of the others ([Remove a node](remove-a-node.md)). A
+standalone node that runs pco and is to join a cluster loses its `/etc/pve` with `pvecm add`:
+write a bundle first, and import it into the cluster, as above.
 
 ## Check
 
@@ -245,8 +303,8 @@ what you saved.
 
 ## Undo
 
-A recovery needs no undo: it only adopts what is at Cloudflare and starts in observe-only mode.
-A move is undone by the same move in the other direction.
+A recovery needs no undo: it only adopts what is at Cloudflare, or what the bundle holds, and
+starts in observe-only mode.
 
 ## Read on
 
@@ -254,4 +312,6 @@ A move is undone by the same move in the other direction.
 - [Uninstall](../uninstall.md#after-a-lost-store): a lost store, in full.
 - [Architecture](../architecture.md#one-writer): the writer identity, and why two copies of a
   store must not run side by side.
-- Reference: [pco setup](../cli/pco-setup.md), [pco uninstall](../cli/pco-uninstall.md).
+- Reference: [pco export](../cli/pco-export.md), [pco import](../cli/pco-import.md),
+  [pco promote](../cli/pco-promote.md), [pco setup](../cli/pco-setup.md),
+  [pco uninstall](../cli/pco-uninstall.md).

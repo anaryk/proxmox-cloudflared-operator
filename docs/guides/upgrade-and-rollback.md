@@ -1,8 +1,8 @@
 # Upgrade and go back
 
-This guide upgrades pco and `cloudflared` on a node, keeps `cloudflared` to the versions you
-choose, and says what going back to an earlier version means. pco and `cloudflared` are two
-packages and are upgraded apart.
+This guide upgrades pco and `cloudflared` on a node, and on every node of a cluster, keeps
+`cloudflared` to the versions you choose, and says what going back to an earlier version means.
+pco and `cloudflared` are two packages and are upgraded apart.
 
 ## When you need it
 
@@ -126,12 +126,74 @@ On a node nothing enforces the list; it tells you what to choose.
 
    Its line under `Tunnels` says `active, ready` again when it is.
 
+## On a cluster
+
+Every node of a cluster runs the package, and you upgrade them one at a time. A build speaks the
+protocol of its release and of the one before, so the controller and the agents may run either
+while the others are upgraded, and `pco cluster status` and `pco doctor` show which node runs
+what.
+
+1. **The nodes that are not the controller first.** On each, install the new package as above,
+   then check that it is back before the next:
+
+   ```sh
+   pco status
+   ```
+
+   Its `Agent:` line says `hears the controller`, and on the controller `pco node list` shows the
+   node `active` again: an upgrade restarts the daemon, and the node passes through `joining`
+   once its agent reports. The connectors run on throughout.
+
+2. **The controller last.** Hand the lease to an upgraded node first, so that the hand-over takes
+   seconds, then upgrade the node that held it:
+
+   ```sh
+   pco cluster handoff --to node2
+   ```
+
+   A restart of the package on the node that holds the lease gives it back by itself, and the
+   node that takes it next draws a new epoch, which rewrites the sentinel of every tunnel once.
+   A node that stands alone keeps its epoch over the restart.
+
+3. **Finish the upgrade**, from an earlier release that ran on one node, once every node runs
+   the new one. Until then the earlier release can still be installed again, and the settings
+   this release adds cannot be set:
+
+   ```sh
+   pco cluster status
+   ```
+
+   ```text
+   Upgrade:     not finished since 2026-10-01T14:00:00+02:00, from 0.9.0 (pco cluster finish-upgrade)
+   ```
+
+   Write a bundle to keep, then finish on the controller:
+
+   ```sh
+   pco export /root/pco-before-finish.bundle
+   pco cluster finish-upgrade
+   ```
+
+   It is refused while a node that was not forgotten runs an older build, a node that is down
+   included: forget a dead node first. It copies the store below `/var/lib/pco/backup` on the
+   controller's node before it changes anything.
+
+**cloudflared** on a cluster is upgraded on each node by apt, and its connectors restarted on each
+node in turn: restart them on one node, wait until `pco cluster status` shows that node's replica
+`ready` again, then go on to the next, so that the shared tunnel always has a ready replica.
+In the appliance, `pco upgrade` in an agent container restarts its connectors only while the
+controller counts another ready replica of the tunnel, and waits for one up to five minutes.
+
+To go back before the upgrade is finished, see
+[the runbook](cluster-runbooks.md#an-upgrade-is-not-finished): the earlier release ran on one node.
+
 ## Go back to an earlier version
 
 **cloudflared.** Install the earlier version the same way as a chosen one above, never one the
 list denies, hold it, and restart the connectors one at a time.
 
-**pco.** pco does not support a downgrade, and this guide gives no steps for one. An earlier
+**pco.** pco does not support a downgrade, and this guide gives no steps for one, but for the
+release before this one while an upgrade from it is not finished ([on a cluster](#on-a-cluster)). An earlier
 build is not tested against what a later one wrote, and the host has no rollback of its own (the
 appliance has one, which [Upgrade the appliance](appliance-upgrade.md) describes). What an
 earlier build does with the store is fixed, though: it refuses a file of a newer schema version
@@ -166,4 +228,5 @@ An upgrade of pco is not undone by a downgrade; see above. A hold is lifted with
 - [Operations](../operations.md#upgrades): upgrades in the reference.
 - [Files](../files.md#what-the-package-installs): what the package installs.
 - Reference: [pco setup](../cli/pco-setup.md), [pco version](../cli/pco-version.md),
-  [pco upgrade](../cli/pco-upgrade.md).
+  [pco upgrade](../cli/pco-upgrade.md), [pco cluster handoff](../cli/pco-cluster-handoff.md),
+  [pco cluster finish-upgrade](../cli/pco-cluster-finish-upgrade.md).
