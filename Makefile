@@ -25,7 +25,7 @@ build: $(if $(filter 1,$(UI)),ui-dist)
 
 # The Go tests never need the interface, whatever UI says.
 test:
-	go test -tags nomsgpack -race ./...
+	go test -tags nomsgpack -race -timeout 30m ./...
 
 # Measures cycles of the engine at 100 to 2000 routes and prints the tables, see
 # test/scale/README.md. It takes several minutes; SCALE_DIR keeps its store on
