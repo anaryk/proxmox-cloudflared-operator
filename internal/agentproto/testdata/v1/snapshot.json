@@ -195,6 +195,7 @@
       "name": "pco-0123456789ab-node2",
       "kind": "pinned",
       "run": true,
+      "stop": true,
       "verified": null,
       "token": "test-run-token-of-the-pinned-tunnel"
     }

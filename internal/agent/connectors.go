@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -11,7 +12,7 @@ import (
 // connectors keeps a connector running for every tunnel the snapshot runs,
 // with the run token it gives, or else the one on disk, as for a tunnel the
 // controller may not ask Cloudflare about. A tunnel it keeps without running
-// is left as it is. The boot gate and the self-demotion may hold the shared
+// is left as it is, unless the snapshot says to stop it. The boot gate and the self-demotion may hold the shared
 // tunnels' back. Once a second node is registered, the shared units are not
 // enabled at boot. Only a snapshot that says so removes the connectors of the
 // install of the tunnels it does not list. The status of every connector on
@@ -23,6 +24,9 @@ func (p *pass) connectors() {
 	for _, t := range p.s.Tunnels {
 		shared := t.Kind == agentproto.TunnelShared
 		switch {
+		case t.Stop && !t.Run:
+			p.stop(t)
+			continue
 		case !t.Run:
 			continue
 		case shared && gateHolds:
@@ -79,6 +83,24 @@ func (p *pass) ensure(t agentproto.Tunnel) bool {
 		return false
 	}
 	return true
+}
+
+// stop stops the connector of a tunnel the controller retires, when it runs.
+func (p *pass) stop(t agentproto.Tunnel) {
+	a := p.a
+	st, err := a.d.Connectors.Status(p.ctx, t.TunnelID)
+	switch {
+	case err != nil:
+		p.problem("tunnel %s in account %s: reading the status of its connector, which is to stop: %v", t.Name, t.AccountID, err)
+		return
+	case !st.Active:
+		return
+	}
+	if err := a.d.Connectors.Stop(p.ctx, t.TunnelID); err != nil {
+		p.problem("tunnel %s in account %s: stopping its connector: %v", t.Name, t.AccountID, err)
+		return
+	}
+	a.event(levelInfo, kindConnector, t.Name, fmt.Sprintf("stopped the connector of tunnel %s in account %s: the controller retires the tunnel", t.Name, t.AccountID))
 }
 
 // readStatuses reads the status of the connector of every tunnel of the

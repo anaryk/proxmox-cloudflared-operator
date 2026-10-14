@@ -71,6 +71,7 @@
       "name": "pco-0123456789ab-node2",
       "kind": "pinned",
       "run": true,
+      "stop": true,
       "token": "[redacted]",
       "verified": null
     }

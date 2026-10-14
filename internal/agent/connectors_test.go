@@ -74,6 +74,30 @@ func TestATunnelNotToRunIsLeftAsItIs(t *testing.T) {
 	require.Len(t, st.Connectors, 1)
 }
 
+// A tunnel the controller retires, as a pinned one that serves nothing any
+// more, has its connector stopped: Cloudflare deletes no tunnel that has
+// connections. One stopped already is left alone.
+func TestATunnelToStopHasItsConnectorStopped(t *testing.T) {
+	e := newEnv(t)
+	e.apply(pinned(e.snapshot()))
+	require.True(t, e.conn.isRunning(pinnedID))
+	e.conn.reset()
+	s := pinned(e.snapshot())
+	s.Tunnels[1].Run, s.Tunnels[1].Token, s.Tunnels[1].Stop = false, agentproto.Secret{}, true
+
+	st := e.apply(s)
+
+	require.Equal(t, []string{"Ensure " + sharedID + " " + sharedToken, "Stop " + pinnedID}, e.conn.changes())
+	require.False(t, e.conn.isRunning(pinnedID))
+	require.True(t, e.conn.isRunning(sharedID))
+	require.Empty(t, st.Problems)
+
+	e.conn.reset()
+	s.Seq++
+	e.apply(s)
+	require.Equal(t, []string{"Ensure " + sharedID + " " + sharedToken}, e.conn.changes(), "a connector stopped is not stopped again")
+}
+
 func TestConnectorsArePrunedOnlyWhenTheSnapshotSaysSo(t *testing.T) {
 	e := newEnv(t)
 	e.conn.put(otherID, testInstall, "old")

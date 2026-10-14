@@ -93,6 +93,9 @@ func fullSnapshot() Snapshot {
 				Kind:      TunnelPinned,
 				Run:       true,
 				Token:     NewSecret(pinnedToken),
+				// Only the wire is pinned here: an agent stops a
+				// connector only of a tunnel it is not told to run.
+				Stop: true,
 			},
 		},
 		Targets: []Target{

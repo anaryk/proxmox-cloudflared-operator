@@ -81,7 +81,12 @@ type Tunnel struct {
 	Name      string `json:"name"`
 	Kind      string `json:"kind"` // shared or pinned
 	Run       bool   `json:"run"`
-	Token     Secret `json:"token,omitzero"`
+	// Stop says that the node stops the connector of the tunnel, and keeps
+	// its files: the controller retires the tunnel, which serves nothing,
+	// and Cloudflare deletes no tunnel while it has a connection. Without
+	// Run and Stop a connector is left as it is.
+	Stop  bool   `json:"stop,omitempty"`
+	Token Secret `json:"token,omitzero"`
 	// Verified are the targets of the configuration last verified at
 	// Cloudflare, which stay in the egress set while it still names them.
 	Verified []netip.AddrPort `json:"verified"`
