@@ -84,7 +84,14 @@ export function DrainDialog({ ask, onClose, onDone }: { ask?: DrainAsk; onClose:
         <>
           {ask.undrain ? (
             <p>
-              Node <b className="mono">{<Untrusted text={ask.node.name} />}</b> was drained{ask.node.drained ? ` (${ask.node.drained})` : ''}. Ending the drain makes it a replica of
+              Node <b className="mono">{<Untrusted text={ask.node.name} />}</b> was drained
+              {ask.node.drained && (
+                <>
+                  {' '}
+                  (<Untrusted text={ask.node.drained} />)
+                </>
+              )}
+              . Ending the drain makes it a replica of
               the shared tunnel again: it starts its connector and serves every shared route it reaches.
               {maintenance && ' Proxmox has it in maintenance mode, which drains it: end the maintenance there (ha-manager crm-command node-maintenance disable), and pco follows.'}
             </p>

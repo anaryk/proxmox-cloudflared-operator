@@ -152,7 +152,11 @@ export function NodeDetail({ name, variant }: { name: string; variant: 'drawer' 
         </span>
         <Badge outline>{nodeRoleText(node)}</Badge>
         <Badge outline>{kindText(node)}</Badge>
-        {node.drained && <Badge tone="info">drained ({node.drained})</Badge>}
+        {node.drained && (
+          <Badge tone="info">
+            drained (<Untrusted text={node.drained} />)
+          </Badge>
+        )}
       </p>
       <div className="node-actions">
         {node.state === 'joining' && (

@@ -157,6 +157,18 @@ describe('draining and forgetting', () => {
     expect(writes(sent)[1]).toEqual({ method: 'POST', path: '/api/v1/nodes/pve2/undrain', body: {} })
   })
 
+  test('why a node is drained is shown as untrusted text, on the page and in the dialog', async () => {
+    const odd: State = { ...st, nodes: st.nodes.map((n) => (n.name === 'pve2' ? { ...n, state: 'draining', drained: 'admin\u202egnp' } : n)) }
+    const { store } = await fakeStore({ state: odd })
+    renderPage(store, <NodeDetail name="pve2" variant="page" />)
+    const badge = screen.getByText((_, el) => el?.classList.contains('badge') === true && /^drained \(/.test(el.textContent ?? ''))
+    expect(badge.textContent).not.toContain('\u202e')
+    expect(badge.querySelector('bdi .cp')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'End the drain…' }))
+    expect(dialog().textContent).toContain('was drained (admin')
+    expect(dialog().textContent).not.toContain('\u202e')
+  })
+
   test('a drain of maintenance mode is ended in Proxmox, not here', async () => {
     const maintenance: State = { ...st, nodes: st.nodes.map((n) => (n.name === 'pve2' ? { ...n, state: 'draining', drained: 'maintenance' } : n)) }
     const { store } = await fakeStore({ state: maintenance })
