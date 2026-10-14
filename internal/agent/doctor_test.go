@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -95,4 +97,69 @@ func TestDoctorActionsRunOneAtATime(t *testing.T) {
 
 	require.Equal(t, 1, most)
 	require.Len(t, e.agent.Status(t.Context()).Actions, 2)
+}
+
+// A check that does not heed its deadline, as one that reads a stalled
+// mount, is answered as timed out, and the next run does not wait for it.
+func TestAStalledDoctorRunIsAnsweredAndHoldsUpNoOther(t *testing.T) {
+	e := newEnv(t)
+	deadline, expire := context.WithCancel(t.Context())
+	e.agent.timeout = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		return deadline, func() {}
+	}
+	stalled := make(chan struct{})
+	defer close(stalled)
+	var calls atomic.Int32
+	changed := make(chan struct{}, 4)
+	e.agent.d.Changed = func() { changed <- struct{}{} }
+	e.agent.d.Doctor = func(context.Context) (json.RawMessage, error) {
+		if calls.Add(1) == 1 {
+			<-stalled // it never looks at its context
+		}
+		return json.RawMessage(`[]`), nil
+	}
+
+	e.apply(withAction(e.snapshot(), "d1", agentproto.ActionDoctor, `{}`))
+	expire()
+	<-changed
+	require.Equal(t, []agentproto.ActionResult{{ID: "d1", Error: "the checks timed out: they did not end within 25s"}},
+		e.agent.Status(t.Context()).Actions)
+
+	e.apply(withAction(e.snapshot(), "d2", agentproto.ActionDoctor, `{}`))
+	<-changed
+	got := e.agent.Status(t.Context()).Actions
+	require.Len(t, got, 1, "the stalled run holds up no other")
+	require.Equal(t, "d2", got[0].ID)
+}
+
+// A run the controller took back while it waited for the one before is not
+// made.
+func TestADoctorRunTakenBackIsNotMade(t *testing.T) {
+	e := newEnv(t)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	changed := make(chan struct{}, 4)
+	e.agent.d.Changed = func() { changed <- struct{}{} }
+	e.agent.d.Doctor = func(context.Context) (json.RawMessage, error) {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			<-release
+		}
+		return json.RawMessage(`[]`), nil
+	}
+
+	e.apply(withAction(withAction(e.snapshot(), "d1", agentproto.ActionDoctor, `{}`), "d2", agentproto.ActionDoctor, `{}`))
+	e.apply(withAction(e.snapshot(), "d1", agentproto.ActionDoctor, `{}`)) // d2 taken back
+	close(release)
+	<-changed
+	e.apply(withAction(withAction(e.snapshot(), "d1", agentproto.ActionDoctor, `{}`), "d3", agentproto.ActionDoctor, `{}`))
+	<-changed
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 2, calls, "d1 and d3, not d2")
 }

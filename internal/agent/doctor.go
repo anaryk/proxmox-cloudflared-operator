@@ -50,10 +50,17 @@ func (a *Agent) startDoctor(ctx context.Context, id string) {
 	go func() {
 		one <- struct{}{}
 		defer func() { <-one }()
+		// The controller may have taken the action back while it waited.
+		d.mu.Lock()
+		_, listed := d.runs[id]
+		d.mu.Unlock()
+		if !listed {
+			return
+		}
 		ctx, cancel := a.timeout(ctx, doctorTimeout)
 		defer cancel()
 		res := agentproto.ActionResult{ID: id}
-		data, err := a.d.Doctor(ctx)
+		data, err := a.checksWithin(ctx)
 		switch {
 		case err != nil:
 			res.Error = err.Error()
@@ -73,6 +80,28 @@ func (a *Agent) startDoctor(ctx context.Context, id string) {
 			a.d.Changed()
 		}
 	}()
+}
+
+// checksWithin makes the checks of the doctor until ctx ends. A check that
+// does not heed ctx, as one that reads a stalled mount, is left to end on
+// its own: the run is answered as timed out, and the next one is not held
+// up by it.
+func (a *Agent) checksWithin(ctx context.Context) (json.RawMessage, error) {
+	type result struct {
+		data json.RawMessage
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := a.d.Doctor(ctx)
+		done <- result{data, err}
+	}()
+	select {
+	case r := <-done:
+		return r.data, r.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("the checks timed out: they did not end within %s", doctorTimeout)
+	}
 }
 
 // doctorOwn says whether the doctor runs answer for the action id.
