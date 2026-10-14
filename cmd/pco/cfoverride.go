@@ -11,6 +11,13 @@ import (
 
 const cloudflareURLVar = "PCO_CLOUDFLARE_API_URL"
 
+// testHooksVar switches on what the test suites drive the daemon with: a
+// cycle holds while /run/pco/hold-cycle exists. Every state says so.
+const (
+	testHooksVar  = "PCO_TEST_HOOKS"
+	testHooksLine = "the test hooks are on (PCO_TEST_HOOKS); this is for tests only"
+)
+
 // errOverride does not quote the value, which may carry a secret.
 var errOverride = errors.New(cloudflareURLVar + " must be an http or https URL of a loopback address or localhost, " +
 	"without credentials, query or fragment, such as http://127.0.0.1:8787/client/v4; it is for tests only")

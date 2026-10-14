@@ -58,6 +58,11 @@ type Config struct {
 	// Problems are problem lines that every cycle reports, about how the
 	// daemon was started.
 	Problems []string
+	// TestHooks switches on what the test suites drive the daemon with: a
+	// cycle holds as it begins for as long as the file HoldCycle names
+	// exists, /run/pco/hold-cycle when empty. Never on in production.
+	TestHooks bool
+	HoldCycle string
 }
 
 // Deps are the parts of the daemon that a test replaces. The zero value is what
@@ -330,7 +335,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	ports := func(ctx context.Context) { gw.watchPorts(ctx, deps.WatchPorts, deps.Sleep) }
 	sources := newSourceWatch(gw, st, eng, deps, log)
-	beside := []func(context.Context){watch, keep, traffic.run, ports, sources.keep}
+	wd := newWatchdog(deps.Notifier, eng.Healthy, deps.Now, log)
+	beside := []func(context.Context){watch, keep, traffic.run, ports, sources.keep, wd.run}
 	if cfg.profile() == store.ProfileHost {
 		web := newWebKeeper(cfg, deps, client, eng.NoteWeb, log)
 		env.Web = web.facts
@@ -477,6 +483,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Guests: managednet.NewHostConfigurer(setup.NewHostRunner(), cfg.Node),
 
 		StartOnlyFields: wiredFields(),
+		HoldCycle:       holdHook(cfg, deps.Sleep, log),
 	}
 	managedReaders(&ed, client, cfg.Node)
 	eng, err := engine.New(ed)

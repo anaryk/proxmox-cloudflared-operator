@@ -360,6 +360,7 @@ type fakeNotifier struct {
 	events  []string
 	ready   chan struct{} // closed by the first Ready
 	onReady func()        // runs first in Ready
+	pings   int
 }
 
 func newFakeNotifier() *fakeNotifier { return &fakeNotifier{ready: make(chan struct{})} }
@@ -384,6 +385,21 @@ func (n *fakeNotifier) Stopping() error {
 	defer n.mu.Unlock()
 	n.events = append(n.events, "STOPPING=1")
 	return nil
+}
+
+// Watchdog counts the pings apart from the events, whose order the tests
+// read.
+func (n *fakeNotifier) Watchdog() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.pings++
+	return nil
+}
+
+func (n *fakeNotifier) pinged() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.pings
 }
 
 func (n *fakeNotifier) sent() []string {

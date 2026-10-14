@@ -96,6 +96,11 @@ func (a *app) daemonCmd() *cobra.Command {
 				log.Warn().Msg(upgrade.OverrideLine)
 				cfg.Problems = append(cfg.Problems, upgrade.OverrideLine)
 			}
+			if a.getenv(testHooksVar) == "1" {
+				log.Warn().Msg(testHooksLine)
+				cfg.Problems = append(cfg.Problems, testHooksLine)
+				cfg.TestHooks = true
+			}
 			ctx, stop := signalContext(cmd.Context(), osSignals{}, os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return daemon.Run(ctx, cfg, deps)

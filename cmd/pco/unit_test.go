@@ -60,6 +60,7 @@ func TestTheUnitOfTheDaemon(t *testing.T) {
 	require.Equal(t, "0700", u.one(t, "Service", "StateDirectoryMode"))
 	require.Equal(t, "150", u.one(t, "Service", "TimeoutStartSec"), "longer than the 2 minutes the daemon waits for the cluster filesystem at boot")
 	require.Equal(t, "always", u.one(t, "Service", "Restart"))
+	require.Equal(t, "90s", u.one(t, "Service", "WatchdogSec"), "a daemon whose engine hangs is restarted")
 	require.Equal(t, "0", u.one(t, "Service", "LimitCORE"), "a core dump of the daemon would hold the tokens")
 	require.Equal(t, "invisible", u.one(t, "Service", "ProtectProc"))
 	require.Equal(t, "multi-user.target", u.one(t, "Install", "WantedBy"))
@@ -72,7 +73,8 @@ func TestTheUnitOfTheDaemon(t *testing.T) {
 func TestTheDaemonDoesNotHoldTheGuestsBack(t *testing.T) {
 	u := parseUnit(t, filepath.Join("..", "..", "packaging", "systemd", "pco.service"))
 
-	require.Equal(t, "network-online.target pve-cluster.service pveproxy.service pco-netns.service", u.one(t, "Unit", "After"))
+	require.Equal(t, "network-online.target pve-cluster.service corosync.service pveproxy.service pco-netns.service", u.one(t, "Unit", "After"),
+		"after corosync too, so that a stop gives the lease back before quorum goes")
 	for _, before := range u["Unit"]["Before"] {
 		require.NotContains(t, strings.Fields(before), "pve-guests.service")
 		require.NotContains(t, strings.Fields(before), "pve-ha-lrm.service")

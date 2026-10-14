@@ -209,7 +209,8 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	dh := newDHCPPart(st, cfg.Node, parts.gw, false, eng.DHCPLeases(), deps, eng.NoteDHCP, log)
 	dh.allowed = parts.gw.mayChange
 	defer dh.start(ctx)()
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, nil, log, watch, keep, traffic.run, keepWeb, sources.keep)
+	wd := newWatchdog(deps.Notifier, eng.Healthy, deps.Now, log)
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, nil, log, watch, keep, traffic.run, keepWeb, sources.keep, wd.run)
 }
 
 // applianceStore is the check of the store the doctor makes in the appliance:
@@ -412,6 +413,7 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		Firewall: client,
 
 		StartOnlyFields: wiredFields(),
+		HoldCycle:       holdHook(cfg, deps.Sleep, log),
 	}
 	managedReaders(&ed, client, a.Node)
 	eng, err = engine.New(ed)

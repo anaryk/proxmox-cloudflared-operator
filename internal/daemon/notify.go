@@ -10,6 +10,8 @@ type Notifier interface {
 	Ready() error
 	// Stopping says that the daemon begins to stop.
 	Stopping() error
+	// Watchdog says that the daemon makes progress, for WatchdogSec.
+	Watchdog() error
 }
 
 // systemdNotifier speaks sd_notify. Without a notify socket, which is the case
@@ -23,5 +25,10 @@ func (systemdNotifier) Ready() error {
 
 func (systemdNotifier) Stopping() error {
 	_, err := sd.SdNotify(false, sd.SdNotifyStopping)
+	return err
+}
+
+func (systemdNotifier) Watchdog() error {
+	_, err := sd.SdNotify(false, sd.SdNotifyWatchdog)
 	return err
 }

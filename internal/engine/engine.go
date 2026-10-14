@@ -147,6 +147,10 @@ type Deps struct {
 	Lease   Lease
 	Quorum  func() (quorate bool, at time.Time)
 	Cluster func() (store.ClusterIdentity, error)
+	// HoldCycle, when set, is called as a cycle begins, with the context of
+	// the daemon rather than of the cycle: the test suites hold a cycle
+	// there to see what a hung engine does.
+	HoldCycle func(ctx context.Context)
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -344,6 +348,9 @@ type Engine struct {
 	tenureAt    time.Time
 	tenureWrote bool
 	leaseSaid   leaseSaidAs
+	// progress is what the watchdog of the daemon and the heartbeat read of
+	// the cycles.
+	progress progressBook
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.
@@ -451,12 +458,19 @@ func (e *Engine) acquireAdmin(ctx context.Context) error {
 // cycle or admin action that is running; when ctx ends first, it runs nothing
 // and returns the last state. The access control of Proxmox is read before,
 // when it is due, without the cycle lock.
-func (e *Engine) Cycle(ctx context.Context) State {
+func (e *Engine) Cycle(ctx context.Context) State { return e.cycle(ctx, 0) }
+
+// cycle is Cycle, with a deadline for the cycle once it holds the lock when
+// deadline is above zero.
+func (e *Engine) cycle(ctx context.Context, deadline time.Duration) State {
 	e.refreshAccess(ctx)
 	if err := e.acquire(ctx); err != nil {
 		return e.State()
 	}
 	defer e.release()
+	defer e.progress.ended()
+	ctx, cancel := e.beginCycle(ctx, deadline)
+	defer cancel()
 	e.cycleCtx = ctx
 	defer func() { e.cycleCtx = nil }()
 
@@ -493,19 +507,23 @@ func (e *Engine) logCycle(st State) {
 // Run cycles on the poll interval until ctx ends; Trigger asks for an early
 // cycle. Before a cycle it checks the credentials never checked, and between
 // cycles those that are due again, beside the cycles; it returns once that
-// check has ended too.
+// check has ended too. A cycle runs with a deadline, and Progress says what
+// the loop does.
 func (e *Engine) Run(ctx context.Context) error {
 	var checks sync.WaitGroup
 	defer checks.Wait()
 	defer e.moving.Wait()
+	e.progress.due(e.d.Now())
 	for {
 		e.checkNew(ctx)
-		e.Cycle(ctx)
+		e.timedCycle(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
 		checks.Go(func() { e.recheck(ctx) })
-		wait, stop := e.after(time.Duration(e.interval.Load()))
+		interval := time.Duration(e.interval.Load())
+		e.progress.due(e.d.Now().Add(interval))
+		wait, stop := e.after(interval)
 		select {
 		case <-ctx.Done():
 			stop()

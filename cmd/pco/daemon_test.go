@@ -242,6 +242,8 @@ func (n *readyNotifier) Stopping() error {
 	return nil
 }
 
+func (n *readyNotifier) Watchdog() error { return nil }
+
 func (n *readyNotifier) sent() []string {
 	n.mu.Lock()
 	defer n.mu.Unlock()
