@@ -122,6 +122,75 @@ func TestStepsThatRanBeforeTheLastJoinAreDoneAgain(t *testing.T) {
 	require.Empty(t, w.rotationRecord(t).Rotated)
 }
 
+// A controller whose clock is behind the one that recorded the last join
+// stamps what it does no earlier than the join: its own steps, the secrets
+// it gives and the CA it makes never look as if they ran before, and none
+// is done a second time. A rollout counts from the secret's time, so it
+// waits for the clock to pass the join.
+func TestAClockBehindTheJoinDoesNoStepTwice(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	id := w.tunnelID(t, tunnelName)
+	rec := w.rotationRecord(t)
+	rec.Since = w.clock.now().Add(10 * time.Minute)
+	require.NoError(t, w.store.SaveCARotation(rec))
+	w.restart(t)
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: rec.Since.Add(time.Second)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+
+	var st State
+	for range 3 {
+		st = w.settle()
+	}
+	require.Equal(t, stepRollout, st.Cluster.CARotation.Next, st.Problems)
+	w.clock.advance(10 * time.Minute)
+	for range 3 {
+		st = w.settle()
+	}
+
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id), "the secret is given once")
+	rec = w.rotationRecord(t)
+	for _, step := range rec.Done {
+		require.False(t, rec.StepsAt[step].Before(rec.From()), "%s is stamped no earlier than the join", step)
+	}
+	require.False(t, rec.At.Before(rec.From()))
+	_, _, rotatedAt, err := w.store.CA()
+	require.NoError(t, err)
+	require.False(t, rotatedAt.Before(rec.From()), "the CA counts as made in this rotation")
+}
+
+// A node that joins has every step done so far done again, also those a
+// clock ahead of this one stamped later than now, and the join counts from
+// after them.
+func TestAJoinRedoesStepsStampedByAClockAhead(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+	st := w.settle()
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+	rec := w.rotationRecord(t)
+	ahead := 10 * time.Minute
+	for step, at := range rec.StepsAt {
+		rec.StepsAt[step] = at.Add(ahead)
+	}
+	rec.At = rec.At.Add(ahead)
+	require.NoError(t, w.store.SaveCARotation(rec))
+	latest := rec.At
+
+	*w.listed = []members.Member{{Name: "pve1", ID: 1, Online: true}}
+	w.acts["pve2"].silent = true
+	w.clock.advance(time.Second)
+	_, err := w.eng.ForgetNode(t.Context(), "pve2", true)
+	require.NoError(t, err)
+
+	rec = w.rotationRecord(t)
+	require.Empty(t, rec.Done, "every step is done again")
+	require.Empty(t, rec.Rotated)
+	require.True(t, rec.Since.After(latest), "the join counts from after what ran before it")
+}
+
 // underCA says whether a certificate is signed by a CA, both in PEM.
 func underCA(t *testing.T, certPEM, caPEM string) bool {
 	t.Helper()

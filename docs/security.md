@@ -1153,6 +1153,10 @@ A second node forgotten with `--compromised` while a rotation runs joins it. Eve
 ran while that node was still a member is done again, since it may hold what each step made:
 new API tokens and a new Proxmox secret are needed again, every tunnel gets another secret, and
 a CA rotated already is rotated a second time once the ten minutes of its previous one ended.
+The controllers' clocks need not agree for this: what a controller does in the rotation is
+stamped no earlier than the last join, and a join counts from after everything stamped before
+it. A controller whose clock is behind waits for it to pass the join before it counts a
+connector as running with the new secret, and API tokens added before then do not count.
 `pco cluster status` names every node of the rotation. Every join token not used yet is
 deleted as well, at the first forget and at each that joins: make new ones afterwards.
 

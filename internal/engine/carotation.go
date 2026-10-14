@@ -121,12 +121,18 @@ var redoneOnJoin = []string{stepCredentials, stepProxmox, stepTunnels, stepRollo
 // at once. The rotation keeps when it began.
 func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARotation, res ForgetResult) (ForgetResult, error) {
 	now := e.d.Now()
+	since, err := e.joinedAt(now, rec)
+	if err != nil {
+		return res, err
+	}
 	if name != rec.Node && !slices.Contains(rec.Also, name) {
 		rec.Also = append(rec.Also, name)
 	}
 	var redo []string
+	// Every step done so far ran before now, whatever time it is stamped
+	// with: one stamped by a clock ahead of this one included.
 	for _, step := range redoneOnJoin {
-		if slices.Contains(rec.Done, step) && !rec.StepsAt[step].After(now) {
+		if slices.Contains(rec.Done, step) {
 			redo = append(redo, step)
 		}
 	}
@@ -134,12 +140,12 @@ func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARota
 	for _, step := range redo {
 		delete(rec.StepsAt, step)
 	}
-	if slices.Contains(redo, stepTunnels) || slices.Contains(redo, stepRollout) {
+	if !rec.At.IsZero() || slices.Contains(redo, stepTunnels) || slices.Contains(redo, stepRollout) {
 		rec.Rotated, rec.TakenUp, rec.At, rec.Cleaned = nil, nil, time.Time{}, nil
 	}
 	// The baselines are what the node may have seen: the credentials stored
 	// and the Proxmox secret of now.
-	rec.Since, rec.PVESecretSHA256 = now, ""
+	rec.Since, rec.PVESecretSHA256 = since, ""
 	if tok, found, err := e.d.Store.PVEToken(); err != nil {
 		return res, fmt.Errorf("reading the Proxmox token: %w", err)
 	} else if found {
@@ -242,7 +248,7 @@ func (c *cycleRun) rotationStep() {
 		if rec.StepsAt == nil {
 			rec.StepsAt = map[string]time.Time{}
 		}
-		rec.StepsAt[step] = c.now
+		rec.StepsAt[step] = notBefore(c.now, rec.From())
 		if step == stepPrevious {
 			rec.FinishedAt = c.now
 		}
@@ -291,6 +297,35 @@ func staleSteps(rec *store.CARotation) bool {
 		stale = true
 	}
 	return stale
+}
+
+// joinedAt is when a join counts from: now, or just after the latest time
+// the rotation stamped what it did, a step, a secret or the CA, when a
+// clock ahead of this one stamped it. Whatever ran before the join counts
+// as before it, and is done again.
+func (e *Engine) joinedAt(now time.Time, rec store.CARotation) (time.Time, error) {
+	_, _, rotatedAt, err := e.d.Store.CA()
+	if err != nil && !errors.Is(err, store.ErrNoCA) {
+		return time.Time{}, fmt.Errorf("reading the CA: %w", err)
+	}
+	stamps := append(slices.Collect(maps.Values(rec.StepsAt)), rec.At, rec.From(), rotatedAt)
+	join := now
+	for _, at := range stamps {
+		if !at.Before(join) {
+			join = at.Add(time.Nanosecond)
+		}
+	}
+	return join, nil
+}
+
+// notBefore is t, or from when t is before it. What a controller does in a
+// rotation is stamped no earlier than the last join: a clock behind the one
+// that recorded it would make it look stale, and have it done again.
+func notBefore(t, from time.Time) time.Time {
+	if t.Before(from) {
+		return from
+	}
+	return t
 }
 
 // rotatedThrough says whether the secret of a tunnel was rotated and the
@@ -487,7 +522,14 @@ func (c *cycleRun) rotateTunnels(rec *store.CARotation) (bool, string) {
 		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels",
 			fmt.Errorf("no credential reaches %s: add one for the account with pco credential add; the CA is not rotated until its secret is", andList(unreached)))
 	}
-	save := func() error { return c.e.d.Store.SaveCARotation(*rec) }
+	save := func() error {
+		if !rec.At.IsZero() {
+			// A secret given by a clock behind the one that recorded the
+			// join must not look given before it, and be given again.
+			rec.At = notBefore(rec.At, rec.From())
+		}
+		return c.e.d.Store.SaveCARotation(*rec)
+	}
 	for _, t := range c.tunnels {
 		if !t.Exists || t.ID == "" || rotatedThrough(rec.TunnelsRotated, t.ID) {
 			continue
@@ -613,7 +655,7 @@ func (c *cycleRun) rotateCA(since time.Time) error {
 			return err
 		}
 		next := store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}
-		if err := c.e.d.Store.SaveCA(next, &cur, c.now); err != nil {
+		if err := c.e.d.Store.SaveCA(next, &cur, notBefore(c.now, since)); err != nil {
 			return fmt.Errorf("saving the new CA: %w", err)
 		}
 	}
