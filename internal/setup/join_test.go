@@ -211,6 +211,12 @@ func TestTwoJoinsAtOnceLeaveTwoEntriesWithoutAnIndex(t *testing.T) {
 	other.clusterAs("pve3", "192.0.2.30", firstNode, testNode)
 	other.paths.Cluster, other.paths.Private = e.paths.Cluster, e.paths.Private
 	other.reopen()
+	// The nodes of one cluster share its CA.
+	for from, to := range map[string]string{e.s.host.clusterCA: other.s.host.clusterCA, e.s.host.clusterCAKey: other.s.host.clusterCAKey} {
+		b, err := os.ReadFile(from)
+		require.NoError(t, err)
+		other.writeFile(to, b, 0o640)
+	}
 	e.script(joined()...)
 	other.script(joined()...)
 
@@ -385,21 +391,40 @@ func TestSetupFillsTheClusterNameOfAnInstallMadeAlone(t *testing.T) {
 	require.Equal(t, "lab", e.install().Cluster.Name)
 }
 
-func TestSetupWarnsOfAStoreMadeInAnotherCluster(t *testing.T) {
-	e := newTestEnv(t)
-	e.installUnit(serviceUnit)
-	e.joinable()
-	inst := e.install()
-	inst.Cluster = &store.ClusterIdentity{CASHA256: strings.Repeat("ab", 32), Name: "elsewhere"}
-	require.NoError(t, e.st.SaveInstall(inst))
-	e.script(joined()...)
+// A store made in another cluster is refused before anything of the node
+// is registered, issued or opened: setup and repair alike.
+func TestSetupRefusesAStoreMadeInAnotherCluster(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		options Options
+	}{
+		{"setup", Options{Yes: true, Node: testNode, firewallAlone: true}},
+		{"repair", Options{Yes: true, Repair: true, Node: testNode}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit(serviceUnit)
+			e.joinable()
+			inst := e.install()
+			inst.Cluster = &store.ClusterIdentity{CASHA256: strings.Repeat("ab", 32), Name: "elsewhere"}
+			require.NoError(t, e.st.SaveInstall(inst))
+			e.script(preflight("9.0.10"))
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
-	e.done()
+			err := e.setup(tt.options)
 
-	require.Equal(t, "elsewhere", e.install().Cluster.Name, "the record is not rewritten")
-	e.requireShown("warn: cluster: the store was made in cluster elsewhere")
-	e.requireShown("pco promote")
+			require.ErrorContains(t, err, "the store was made in cluster elsewhere")
+			require.ErrorContains(t, err, "pco promote")
+			require.ErrorContains(t, err, "pco setup --recover")
+			e.done()
+			require.Equal(t, "elsewhere", e.install().Cluster.Name, "the record is not rewritten")
+			_, registered := e.nodes()[testNode]
+			require.False(t, registered)
+			_, found, err := e.st.Enrolment(testNode)
+			require.NoError(t, err)
+			require.False(t, found)
+			require.NotContains(t, strings.Join(e.run.ran, "\n"), "firewall")
+		})
+	}
 }
 
 func TestACertificateNearItsEndIsIssuedAgainWithANewKey(t *testing.T) {

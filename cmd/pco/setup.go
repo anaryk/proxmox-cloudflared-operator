@@ -56,7 +56,9 @@ func (a *app) setupCmd() *cobra.Command {
 			"install's CA, which the first node makes, and an entry of the node registry as joining, which\n" +
 			"the controller admits; nothing changes at Cloudflare. Every node runs the same release of pco\n" +
 			"before a further node joins. A new install records the identity of the cluster and makes the\n" +
-			"CA.\n\n" +
+			"CA. A store that records another cluster, as one restored from elsewhere, is refused before\n" +
+			"anything is changed: pco promote makes this cluster its writer, and --recover adopts the\n" +
+			"install from Cloudflare instead.\n\n" +
 			"Once pco runs on more than one node, setup offers the datacenter firewall rule that admits\n" +
 			"the agent channel of the controller, TCP port 8644, from the nodes; a node alone needs none,\n" +
 			"and is not asked. The rule is IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset\n" +

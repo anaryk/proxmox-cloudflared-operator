@@ -79,13 +79,17 @@ func (r *run) ensureIdentity(m members.Members) error {
 		} else {
 			r.ask.Info("cluster: recorded the identity of cluster %s (%s)", m.Cluster, fingerprint)
 		}
-	case inst.Cluster.CASHA256 != fingerprint:
+	case inst.Cluster.CASHA256 != fingerprint && !r.o.Recover && !r.o.NewInstall:
+		// A node set up into a store of another cluster would register,
+		// enrol and open the firewall for an install whose writer is
+		// elsewhere: the admin decides first.
 		name := inst.Cluster.Name
 		if name == "" {
 			name = "without a name"
 		}
-		r.ask.Warn("cluster: the store was made in cluster %s (%s), not in this one (%s); the daemon holds every write until "+
-			"pco promote makes this cluster its writer", name, inst.Cluster.CASHA256, fingerprint)
+		return fmt.Errorf("the store was made in cluster %s (%s), not in this one (%s): run pco promote on a node "+
+			"that runs pco to make this cluster its writer, or pco setup --recover to adopt the install from Cloudflare; "+
+			"nothing was changed", name, inst.Cluster.CASHA256, fingerprint)
 	case inst.Cluster.Name == "" && m.Cluster != "":
 		inst.Cluster.Name = m.Cluster
 		if err := r.st.SaveInstall(inst); err != nil {
