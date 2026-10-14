@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -319,6 +321,41 @@ func TestTheObserveOnlyWindowOutlivesTheProcess(t *testing.T) {
 	later.note(w.store, true, true, began.Add(7*time.Hour), log)
 	_, on = later.window()
 	require.False(t, on, "a start that cannot be read takes no certificate")
+}
+
+// noLease is a node that does not hold the lease.
+type noLease struct{}
+
+func (noLease) State() lease.State { return lease.State{} }
+
+func (noLease) Gate(context.Context) (planner.Writer, error) {
+	return planner.Writer{}, errors.New("this node does not hold the lease")
+}
+
+// After a whole-cluster uninstall took the store from under a node, every
+// tick finds the registry gone: that is said once, and again only when the
+// registry was read in between.
+func TestARegistryThatCannotBeReadIsSaidOnce(t *testing.T) {
+	base := t.TempDir()
+	paths := store.Paths{Cluster: filepath.Join(base, "cluster"), Private: filepath.Join(base, "private"), Local: filepath.Join(base, "local")}
+	st, err := store.Open(paths)
+	require.NoError(t, err)
+	var logs strings.Builder
+	c := &clusterPart{node: testNode, st: st, paths: paths, keeper: noLease{}, first: &firstStart{done: true},
+		now: time.Now, log: zerolog.New(&logs)}
+	said := func() int { return strings.Count(logs.String(), "the node registry cannot be read") }
+
+	for range 3 {
+		c.tick(t.Context())
+	}
+	require.Equal(t, 1, said())
+
+	require.NoError(t, st.Init())
+	c.tick(t.Context())
+	require.NoError(t, os.RemoveAll(paths.Cluster))
+	c.tick(t.Context())
+	c.tick(t.Context())
+	require.Equal(t, 2, said())
 }
 
 // listens says whether something takes a connection at addr.

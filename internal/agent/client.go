@@ -156,7 +156,12 @@ func (c *Client) Run(ctx context.Context) error {
 // returns how long to wait before the next and whether it got anywhere.
 func (c *Client) round(ctx context.Context, attempt int) (time.Duration, bool) {
 	ep, err := c.d.Discover.Endpoint(ctx)
-	if err != nil {
+	var refused *refusedError
+	switch {
+	case errors.As(err, &refused) && refused.r.Definitive():
+		c.standDown(ctx, refused.r)
+		return c.standDownWait, true
+	case err != nil:
 		c.note("no controller to follow: " + err.Error())
 		return c.backoff(attempt), false
 	}
@@ -178,7 +183,6 @@ func (c *Client) round(ctx context.Context, attempt int) (time.Duration, bool) {
 		return c.backoff(attempt), false
 	}
 	served, err := c.session(ctx, ep, creds)
-	var refused *refusedError
 	switch {
 	case ctx.Err() != nil:
 		return 0, true
@@ -303,8 +307,14 @@ func (c *Client) watch(ctx context.Context, ep Endpoint, creds Creds) error {
 		case <-t.C:
 		}
 		// A discovery that fails keeps the session: the controller that
-		// serves it is still the one to follow until another is named.
-		if next, err := c.d.Discover.Endpoint(ctx); err == nil && !next.same(ep) {
+		// serves it is still the one to follow until another is named. One
+		// that refuses the node for good ends it.
+		next, err := c.d.Discover.Endpoint(ctx)
+		var refused *refusedError
+		switch {
+		case errors.As(err, &refused) && refused.r.Definitive():
+			return err
+		case err == nil && !next.same(ep):
 			return errMoved
 		}
 		now := c.a.d.Now()

@@ -78,6 +78,9 @@ type clusterPart struct {
 	// doctor makes the checks of this node that the controller asks its
 	// agent for.
 	doctor agentDoctor
+	// unreadable says that the last tick could not read the registry,
+	// which was said then: after the store is gone, every tick finds that.
+	unreadable bool
 }
 
 // clusterRun is a part that runs until stopped.
@@ -155,14 +158,17 @@ func (c *clusterPart) tick(ctx context.Context) {
 	following, listening := c.following, c.listening
 	c.mu.Unlock()
 
+	unreadable := err != nil
 	switch {
-	case err != nil:
+	case err != nil && !c.unreadable:
 		c.log.Warn().Err(err).Msg("the node registry cannot be read; this node serves no agent until it can")
+	case err != nil:
 	case multi && following == nil:
 		c.startClient(ctx)
 	case !multi && following != nil:
 		c.stopPart(&c.following)
 	}
+	c.unreadable = unreadable
 	switch {
 	case multi && holder && listening == nil:
 		c.startListener(ctx)

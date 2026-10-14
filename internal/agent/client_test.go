@@ -229,6 +229,12 @@ func (d *fakeDiscover) set(ep Endpoint) {
 	d.ep = ep
 }
 
+func (d *fakeDiscover) fail(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.err = err
+}
+
 // countingDiscover counts the questions asked of another.
 type countingDiscover struct {
 	Discoverer
@@ -437,6 +443,35 @@ func TestADefinitiveRefusalStandsTheAgentDownOnce(t *testing.T) {
 		srv.auth.refuseAlways(nil)
 		srv.ctrl.publish(ce.desired())
 		require.Eventually(t, func() bool { return ce.c.View().StoodDown == "" }, waitFor, tick)
+	})
+}
+
+// A forgotten node's agent is not let through to the controller, which
+// cannot tell it so: the registry does, through its discovery.
+func TestARemovalTheDiscoveryReadsStandsTheAgentDown(t *testing.T) {
+	removed := &refusedError{r: agentproto.Refusal{Code: agentproto.RefusalRemoved, Message: "the registry holds node pve1 removed"}}
+
+	t.Run("while no controller answers", func(t *testing.T) {
+		disc := &fakeDiscover{err: removed}
+		ce := newClientEnv(t, pki.KindHost, func(*clientEnv) Discoverer { return disc })
+		ce.apply(ce.desired())
+		ce.run(t)
+
+		require.Eventually(t, func() bool { return ce.c.View().StoodDown != "" }, waitFor, tick)
+		require.Contains(t, ce.c.View().StoodDown, "this node was removed from install "+pkiInstall)
+		require.Empty(t, ce.EgressSetOf())
+		require.Contains(t, ce.conn.changes(), "StopAll")
+	})
+	t.Run("in the middle of a session", func(t *testing.T) {
+		ce, srv := oneController(t, pki.KindHost)
+		srv.ctrl.publish(ce.desired())
+		ce.run(t)
+		require.Eventually(t, func() bool { return ce.agent.Status(t.Context()).SeqApplied == 1 }, waitFor, tick)
+
+		ce.disc.(*fakeDiscover).fail(removed)
+
+		require.Eventually(t, func() bool { return ce.c.View().StoodDown != "" }, waitFor, tick)
+		require.Contains(t, ce.c.View().StoodDown, "this node was removed from install "+pkiInstall)
 	})
 }
 

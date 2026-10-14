@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -69,6 +70,37 @@ func TestTheHostAgentFollowsTheNodeLeaderJSONNames(t *testing.T) {
 		}))
 		_, err := d.Endpoint(t.Context())
 		require.ErrorContains(t, err, "install")
+	})
+}
+
+// A host agent reads its own entry where it reads the controller's: a node
+// forgotten while its agent cannot reach the controller, or is kept from it,
+// learns it there.
+func TestTheHostAgentLearnsItsRemovalFromTheRegistry(t *testing.T) {
+	e := newEnv(t)
+	d := HostDiscovery{Node: testNode, InstallID: pkiInstall, Store: e.store}
+	saveLeader(t, e.store, "pve2", strings.Repeat("ab", 32))
+	saveAgentAddress(t, e.store, "pve2", netip.MustParseAddr("10.0.0.2"))
+	require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: testNode, Since: t0, Kind: string(pki.KindHost), State: store.NodeRemoved}))
+
+	_, err := d.Endpoint(t.Context())
+
+	var refused *refusedError
+	require.ErrorAs(t, err, &refused)
+	require.True(t, refused.r.Definitive())
+	require.Equal(t, agentproto.RefusalRemoved, refused.r.Code)
+	require.Contains(t, refused.r.Message, "the registry")
+
+	t.Run("also while this node holds the lease", func(t *testing.T) {
+		saveLeader(t, e.store, testNode, strings.Repeat("ab", 32))
+		_, err := d.Endpoint(t.Context())
+		require.ErrorAs(t, err, &refused)
+	})
+	t.Run("not once it is enrolled again", func(t *testing.T) {
+		require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: testNode, Since: t0, Kind: string(pki.KindHost), State: store.NodeJoining}))
+		ep, err := d.Endpoint(t.Context())
+		require.NoError(t, err)
+		require.True(t, ep.Self)
 	})
 }
 

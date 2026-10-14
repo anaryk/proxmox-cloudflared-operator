@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/clusterapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -61,8 +62,19 @@ type HostDiscovery struct {
 	Port      uint16 // zero is the agent endpoint's port
 }
 
-// Endpoint reads leader.json and the registry.
+// Endpoint reads leader.json and the registry. An entry of this node the
+// registry holds removed is a definitive refusal, as the controller would
+// give it: a forgotten node whose agent the controller no longer takes a
+// connection from learns it this way, without the network.
 func (d HostDiscovery) Endpoint(context.Context) (Endpoint, error) {
+	nodes, nodesErr := d.Store.Nodes()
+	if nodesErr == nil {
+		i := slices.IndexFunc(nodes, func(n store.NodeEntry) bool { return n.Name == d.Node })
+		if i >= 0 && nodes[i].State == store.NodeRemoved {
+			return Endpoint{}, &refusedError{r: agentproto.Refusal{Code: agentproto.RefusalRemoved,
+				Message: fmt.Sprintf("the registry holds node %s removed from install %s", d.Node, d.InstallID)}}
+		}
+	}
 	rec, _, found, err := d.Store.Leader()
 	switch {
 	case err != nil:
@@ -76,9 +88,8 @@ func (d HostDiscovery) Endpoint(context.Context) (Endpoint, error) {
 	case rec.Node == d.Node:
 		return Endpoint{Self: true, Node: rec.Node, CASHA256: rec.CASHA256}, nil
 	}
-	nodes, err := d.Store.Nodes()
-	if err != nil {
-		return Endpoint{}, fmt.Errorf("reading the registry: %w", err)
+	if nodesErr != nil {
+		return Endpoint{}, fmt.Errorf("reading the registry: %w", nodesErr)
 	}
 	i := slices.IndexFunc(nodes, func(n store.NodeEntry) bool { return n.Name == rec.Node })
 	if i < 0 || !nodes[i].AgentAddress.IsValid() {
