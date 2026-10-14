@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -44,6 +45,9 @@ type applianceCluster struct {
 	rand    io.Reader
 	log     zerolog.Logger
 	eng     *engine.Engine
+	// proven says that the container showed it is the one installed: the
+	// identity flag is there. A copy takes no join and serves no agent.
+	proven func() bool
 
 	mu        sync.Mutex
 	listening *clusterRun
@@ -57,6 +61,7 @@ func newApplianceCluster(cfg Config, deps Deps, app ApplianceDeps, st *store.Sto
 		st: st, paths: cfg.Paths, install: state.install.ID, vmid: state.install.Appliance.VMID, node: state.install.Appliance.Node,
 		addrs: app.Net0Addrs, port: cmp.Or(deps.Cluster.Port, uint16(clusterapi.Port)), every: cmp.Or(deps.Cluster.Every, 10*time.Second),
 		now: deps.Now, rand: app.Rand, log: cfg.Log,
+		proven: func() bool { _, err := os.Stat(app.Flag); return err == nil },
 	}
 	c.joins = &applianceJoins{st: st, px: px, install: c.install, node: c.node, now: deps.Now, rand: app.Rand, log: cfg.Log}
 	c.remote = newRemoteFleet(deps.Now, func() agentproto.Epoch {
@@ -106,6 +111,16 @@ func (c *applianceCluster) run(ctx context.Context) {
 }
 
 func (c *applianceCluster) tick(ctx context.Context) {
+	if !c.proven() {
+		c.mu.Lock()
+		running := c.listening != nil
+		c.mu.Unlock()
+		if running {
+			c.log.Warn().Msg("this container is not proven to be the controller installed; the agent endpoint is closed until it is")
+			c.stop()
+		}
+		return
+	}
 	creds, err := c.ensureCerts()
 	if err != nil {
 		c.log.Warn().Err(err).Msg("the agent endpoint has no certificate yet")

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -88,4 +89,29 @@ func TestAControllerContainerEnrolsAnAgentThatJoins(t *testing.T) {
 	var refused *agent.JoinRefusedError
 	require.ErrorAs(t, err, &refused, "a token is good once")
 	require.NoError(t, d.stop())
+}
+
+// A controller container that is not proven, as a copy, takes no join: its
+// endpoint is not opened, and one that is open closes.
+func TestAnUnprovenControllerServesNoAgent(t *testing.T) {
+	stopped := false
+	c := &applianceCluster{
+		proven: func() bool { return false },
+		addrs: func(context.Context) ([]netip.Addr, error) {
+			t.Fatal("an unproven controller looks for no address to listen on")
+			return nil, nil
+		},
+		log:    zerolog.Nop(),
+		remote: newRemoteFleet(time.Now, func() agentproto.Epoch { return agentproto.Epoch{} }),
+	}
+	c.tick(t.Context())
+	require.Nil(t, c.listening)
+
+	c.listening = start(t.Context(), func(ctx context.Context) {
+		<-ctx.Done()
+		stopped = true
+	})
+	c.tick(t.Context())
+	require.Nil(t, c.listening)
+	require.True(t, stopped)
 }
