@@ -541,11 +541,16 @@ func TestUnreadableBlocksServeNothing(t *testing.T) {
 	w.acts["pve3"].edit = dbConflict
 	w.tick(time.Second)
 	served := len(w.r.served)
-	require.NoError(t, os.WriteFile(filepath.Join(w.paths.Cluster, "blocks", "10.0.0.9.json"), []byte("{"), 0o600))
+	bad := filepath.Join(w.paths.Cluster, "blocks", "10.0.0.9.json")
+	require.NoError(t, os.WriteFile(bad, []byte("{"), 0o600))
 	w.eng = w.newEngine()
 	w.watchHere(t)
 
 	st := w.tick(time.Second)
+	w.tick(time.Second)
+	// The error reads differently once the file is another: it is one
+	// thing still.
+	require.NoError(t, os.Rename(bad, filepath.Join(w.paths.Cluster, "blocks", "10.0.0.8.json")))
 	w.tick(time.Second)
 
 	require.Contains(t, st.Hold, "reading the blocked addresses")

@@ -133,16 +133,17 @@ func (c *cycleRun) readBlocks() bool {
 	return true
 }
 
-// sayOnce adds an event once per process and key.
+// sayOnce adds an event once per process and key, whatever its words: an
+// error that reads differently from one cycle to the next is one thing.
 func (c *cycleRun) sayOnce(key string, ev Event) {
 	mem := &c.e.place
 	if mem.refused == nil {
 		mem.refused = map[string]bool{}
 	}
-	if mem.refused[key+"\x00"+ev.Message] {
+	if mem.refused[key] {
 		return
 	}
-	mem.refused[key+"\x00"+ev.Message] = true
+	mem.refused[key] = true
 	c.events = append(c.events, ev)
 }
 
