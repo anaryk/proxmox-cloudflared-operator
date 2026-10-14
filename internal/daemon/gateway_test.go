@@ -450,7 +450,7 @@ func TestTheApplianceDrivesTheGatewayOfItsNetworks(t *testing.T) {
 		Mark: 1, CreatedAt: t0,
 	}, 0))
 	changedc := make(chan func(), 1)
-	a.deps.WatchGateway = func(ctx context.Context, changed func()) error {
+	a.deps.WatchGateway = func(ctx context.Context, changed func(), _ func(error)) error {
 		changedc <- changed
 		<-ctx.Done()
 		return ctx.Err()
@@ -504,7 +504,7 @@ func TestTheKeeperChecksTheGatewayOnLinkAndRouteChanges(t *testing.T) {
 	noted := r.k.noteGw
 	r.k.noteGw = func(c engine.GatewayCheck) { mu.Lock(); defer mu.Unlock(); noted(c) }
 	changedc := make(chan func(), 1)
-	r.k.watchNet = func(ctx context.Context, changed func()) error {
+	r.k.watchNet = func(ctx context.Context, changed func(), _ func(error)) error {
 		changedc <- changed
 		<-ctx.Done()
 		return ctx.Err()

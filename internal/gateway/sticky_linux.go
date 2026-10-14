@@ -4,7 +4,6 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/vishvananda/netlink"
@@ -18,7 +17,8 @@ import (
 // each that joins or changes later, until ctx ends. A guest that starts
 // makes its port anew, without the sticky entry its card had, so the entry
 // is to be given again right then. It returns an error when it cannot
-// subscribe, or when the subscription ends.
+// subscribe, or when the subscription ends; a message the library skips
+// ends nothing.
 func WatchGuestPorts(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string)) error {
 	h, err := netlink.NewHandleAt(ns)
 	if err != nil {
@@ -28,16 +28,10 @@ func WatchGuestPorts(ctx context.Context, ns netns.NsHandle, bridge string, join
 	ch := make(chan netlink.LinkUpdate, 256)
 	done := make(chan struct{})
 	defer close(done)
-	failed := make(chan error, 1)
-	opts := netlink.LinkSubscribeOptions{
-		ListExisting: true,
-		ErrorCallback: func(err error) {
-			select {
-			case failed <- err:
-			default:
-			}
-		},
-	}
+	// A message the library skips, as one from a sender other than the
+	// kernel, ends nothing.
+	errs := NewSubscriptionErrors(nil)
+	opts := netlink.LinkSubscribeOptions{ListExisting: true, ErrorCallback: errs.Report}
 	if ns.IsOpen() {
 		opts.Namespace = &ns
 	}
@@ -48,11 +42,9 @@ func WatchGuestPorts(ctx context.Context, ns netns.NsHandle, bridge string, join
 		select {
 		case <-ctx.Done():
 			return nil
-		case err := <-failed:
-			return fmt.Errorf("watching the links: %w", err)
 		case u, ok := <-ch:
 			if !ok {
-				return errors.New("watching the links: the subscription ended")
+				return errs.Ended("watching the links")
 			}
 			if port, ok := joinedPort(h, u, bridge); ok {
 				joined(port)

@@ -117,9 +117,10 @@ type Deps struct {
 	// on the host the namespace pco, in the appliance the container's own
 	// network cards, which it adds through the Proxmox API. WatchGateway
 	// calls changed whenever a link or a route of the node, or of the
-	// container, changes, which has the gateway checked; default: netlink.
+	// container, changes, which has the gateway checked, and skipped of the
+	// first message it skips and goes on past; default: netlink.
 	Gateway      gateway.Backend
-	WatchGateway func(ctx context.Context, changed func()) error
+	WatchGateway func(ctx context.Context, changed func(), skipped func(error)) error
 	// WatchPorts calls joined with every port of a guest that joins the
 	// managed bridge, on the host; WatchSources listens on the managed leg
 	// for frames of cards no lease knows. Defaults: netlink and a packet

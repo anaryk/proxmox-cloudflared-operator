@@ -534,7 +534,7 @@ func newWorld(t *testing.T) *world {
 		WatchRuleset: w.rules.watch,
 		UnitEnabled:  func(context.Context, string) (bool, error) { return false, nil },
 		Gateway:      w.gw,
-		WatchGateway: func(ctx context.Context, _ func()) error { <-ctx.Done(); return ctx.Err() },
+		WatchGateway: func(ctx context.Context, _ func(), _ func(error)) error { <-ctx.Done(); return ctx.Err() },
 		WatchPorts: func(ctx context.Context, _ netns.NsHandle, _ string, _ func(string)) error {
 			<-ctx.Done()
 			return ctx.Err()

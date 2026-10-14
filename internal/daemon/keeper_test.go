@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -346,4 +347,29 @@ func TestTheKeeperChecksOnTheTimerAndOnNotifications(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// A netlink message the watch skips, as one from a sender other than the
+// kernel, ends no watch: it is logged once, and the watch is not made again.
+func TestASkippedNetlinkMessageKeepsTheLinkWatch(t *testing.T) {
+	var logs strings.Builder
+	log := zerolog.New(&logs)
+	ctx, cancel := context.WithCancel(t.Context())
+	watches := 0
+	watch := func(ctx context.Context, _ func(), skipped func(error)) error {
+		watches++
+		for range 5 {
+			skipped(errors.New("Wrong sender portid 4242, expected 0"))
+		}
+		cancel()
+		<-ctx.Done()
+		return nil
+	}
+	slept := false
+	watchLinks(ctx, watch, func() {}, func(context.Context, time.Duration) error { slept = true; return nil }, log)
+
+	require.Equal(t, 1, watches)
+	require.False(t, slept, "nothing waits to watch again")
+	require.Equal(t, 1, strings.Count(logs.String(), "skipped a netlink message"), logs.String())
+	require.NotContains(t, logs.String(), "failed")
 }

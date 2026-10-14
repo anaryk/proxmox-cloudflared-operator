@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -70,7 +71,7 @@ type keeper struct {
 	// changes, and idle runs a function while no cycle runs.
 	gw       *gatewayPart
 	noteGw   func(engine.GatewayCheck)
-	watchNet func(ctx context.Context, changed func()) error
+	watchNet func(ctx context.Context, changed func(), skipped func(error)) error
 	idle     func(ctx context.Context, fn func()) error
 
 	state         string    // as the last check that could tell found it
@@ -265,12 +266,20 @@ func settled(ctx context.Context, ch chan struct{}, sleep func(context.Context, 
 
 // watchLinks runs the watch of the links and routes until ctx ends. A watch
 // that fails is started again after a while; until then the gateway is
-// checked on the timer only.
-func watchLinks(ctx context.Context, watch func(context.Context, func()) error, changed func(),
+// checked on the timer only. A message the watch skips, as netlink has it
+// for one from a sender other than the kernel, is said once and ends
+// nothing.
+func watchLinks(ctx context.Context, watch func(context.Context, func(), func(error)) error, changed func(),
 	sleep func(context.Context, time.Duration) error, log zerolog.Logger,
 ) {
+	var told sync.Once
+	skipped := func(err error) {
+		told.Do(func() {
+			log.Info().Err(err).Msg("the watch of the links and routes skipped a netlink message and goes on; further ones are not logged")
+		})
+	}
 	for {
-		err := watch(ctx, changed)
+		err := watch(ctx, changed, skipped)
 		if ctx.Err() != nil {
 			return
 		}

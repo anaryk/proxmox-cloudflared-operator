@@ -8,6 +8,6 @@ import (
 )
 
 // watchLinksAndRoutes needs the netlink of Linux.
-func watchLinksAndRoutes(context.Context, func()) error {
+func watchLinksAndRoutes(context.Context, func(), func(error)) error {
 	return errors.New("watching the links and routes needs Linux")
 }

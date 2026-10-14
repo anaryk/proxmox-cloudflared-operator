@@ -35,7 +35,7 @@ func TestLinuxTheGatewayIsCheckedWhenALinkOrARouteChanges(t *testing.T) {
 			return
 		}
 		ready <- ns
-		done <- watchLinksAndRoutes(ctx, func() { changes <- struct{}{} })
+		done <- watchLinksAndRoutes(ctx, func() { changes <- struct{}{} }, nil)
 	}()
 	var ns netns.NsHandle
 	select {
