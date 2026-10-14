@@ -276,6 +276,26 @@ func TestRotateGivesTheTunnelANewSecretAndRestartsItsConnector(t *testing.T) {
 	require.NotContains(t, st.Problems, theirProblem)
 }
 
+// A single node whose agent the fleet has not made yet, as before the
+// cycle after an install that got to it, still has its connector restarted:
+// the rotation makes the agent of the install the store names.
+func TestRotateMakesTheAgentOfThisNodeWhenThereIsNoneYet(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	id := e.tunnels()[0].ID
+	e.eng.fleet.mu.Lock()
+	e.eng.fleet.a = nil
+	e.eng.fleet.mu.Unlock()
+
+	_, err := e.eng.RotateTunnel(t.Context(), "")
+
+	require.NoError(t, err)
+	token, err := e.cf.TunnelToken(t.Context(), testAccount, id)
+	require.NoError(t, err)
+	require.Equal(t, token, e.lastToken(id), "the connector runs with the new token")
+}
+
 func TestRotateNamesTheAccountWhenThereAreSeveral(t *testing.T) {
 	e := newEnv(t)
 	e.cf.AddAccount("acc2", "Second")

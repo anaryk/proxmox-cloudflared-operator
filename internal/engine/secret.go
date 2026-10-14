@@ -251,7 +251,7 @@ func (e *Engine) takeUpSecret(ctx context.Context, t reconcile.TunnelState) erro
 			"its connector on this node takes it up when Cloudflare refuses the old one", what, err)
 	}
 	if e.runsHere(t) {
-		a := e.fleet.current()
+		a := e.fleet.made()
 		if a == nil {
 			return fmt.Errorf("the secret of %s was rotated, but the agent of this node does not run to restart its connector; "+
 				"it takes the new token up when Cloudflare refuses the old one", what)
