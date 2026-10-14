@@ -13,10 +13,12 @@ import (
 // An uninstall is no such stop: the install goes with the node, and a setup
 // after it would wait two minutes for the lock to expire. The lock goes only
 // when the install goes with this node, the node stands alone by the members
-// file, and leader.json gives the lease to this node or to nobody: the lock
-// of a node of a cluster is as its daemon left it, given back on a clean stop
-// or left to expire, and a lock that leader.json gives to another node is
-// that node's. A lock with a file in it never expires and is never removed by
+// file, and leader.json, read without error, gives the lease of this install
+// to this node or to nobody: the lock of a node of a cluster is as its daemon
+// left it, given back on a clean stop or left to expire, a lock that
+// leader.json gives to another node or another install is theirs, and a
+// leader.json that cannot be read says nothing of whose the lock is, so the
+// lock stays. A lock with a file in it never expires and is never removed by
 // pco. It runs once the daemon has stopped.
 func (u *uninstall) removeLeaseLock() {
 	path := u.host.leaseLock
@@ -26,7 +28,13 @@ func (u *uninstall) removeLeaseLock() {
 	if !u.last || !u.standsAlone() {
 		return
 	}
-	if leader, _, found, err := u.st.Leader(); err == nil && found && leader.Node != "" && leader.Node != u.node {
+	leader, _, found, err := u.st.Leader()
+	if err != nil {
+		u.ask.Warn("lease: leader.json cannot be read (%v), so the lock %s is kept; the next setup on this node waits for it to expire", err, path)
+		return
+	}
+	if found && (leader.Node != "" && leader.Node != u.node ||
+		leader.InstallID != "" && u.installID != "" && leader.InstallID != u.installID) {
 		return
 	}
 	switch err := os.Remove(path); {

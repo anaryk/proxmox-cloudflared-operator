@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -116,7 +117,7 @@ func (r *run) recoveryToken() error {
 	if r.token = strings.TrimSpace(token); r.token == "" {
 		return errors.New(missing)
 	}
-	return nil
+	return credentials.CheckToken(r.token)
 }
 
 // findInstalls returns the tunnels of every install the token sees, by

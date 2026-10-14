@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -72,6 +73,15 @@ func TestUninstallLeavesALockThatIsNotItsOwn(t *testing.T) {
 		shown   string
 	}{
 		{"leader.json names another node", func(e *testEnv) { e.heldBy("pve2") }, ""},
+		{"leader.json is of another install", func(e *testEnv) {
+			require.NoError(e.t, e.st.SaveLeader(store.LeaderRecord{
+				Writer: planner.Writer{InstallID: "ba9876543210", Generation: 2, Nonce: "abcd1234", Incarnation: testNode + "/boot-1"},
+				Node:   testNode, AcquiredAt: t0,
+			}))
+		}, ""},
+		{"leader.json cannot be read", func(e *testEnv) {
+			require.NoError(e.t, os.WriteFile(filepath.Join(e.paths.Cluster, "meta", "leader.json"), []byte("{not json"), 0o600))
+		}, "warn: lease: leader.json cannot be read"},
 		{"a file in the lock", func(e *testEnv) {
 			require.NoError(e.t, os.WriteFile(filepath.Join(e.s.host.leaseLock, "stray"), nil, 0o644))
 		}, "warn: lease: the lock %s holds a file, so it is kept"},
@@ -89,8 +99,11 @@ func TestUninstallLeavesALockThatIsNotItsOwn(t *testing.T) {
 
 			require.DirExists(t, e.s.host.leaseLock)
 			require.NotContains(t, e.ask.text(), "lease: removed")
-			if tt.shown != "" {
+			switch {
+			case strings.Contains(tt.shown, "%s"):
 				e.requireShown(fmt.Sprintf(tt.shown, e.s.host.leaseLock))
+			case tt.shown != "":
+				e.requireShown(tt.shown)
 			}
 			e.requireStoreGone()
 		})

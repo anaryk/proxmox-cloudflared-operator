@@ -54,9 +54,11 @@ A script that removes everything looks like this:
    is removed. A daemon that someone started by hand cannot be stopped by systemd, and it
    holds the lock of the node: the command then stops before it has removed anything, and
    says so. On a node that stands alone, whose daemon keeps the lock of the lease when it
-   stops, the lock `/etc/pve/priv/lock/pco-leader` goes with the daemon, so that a later
-   setup does not wait for it to expire; on a node of a cluster the lock is as the daemon
-   left it.
+   stops, the lock `/etc/pve/priv/lock/pco-leader` goes with the daemon when the install
+   goes with this node and `leader.json` gives the lease to this node or to none, so that a
+   later setup does not wait for it to expire. A lock that `leader.json` gives to another
+   node or install, one that holds a file, or one whose `leader.json` cannot be read stays,
+   with a warning; on a node of a cluster the lock is as the daemon left it.
 2. **DNS records at Cloudflare** (with `--purge-cloudflare` or yes to the question): the
    records that carry the marker of this install, in every zone that a stored credential
    sees.

@@ -683,8 +683,8 @@ daemon keeps the lock, and the next start of the same boot keeps the epoch; afte
 a power loss it takes its own lock at once and draws one new epoch for the new boot, as it
 does for a lock that `leader.json` gives to no node, as after `pco setup --recover`. `pco
 uninstall` removes the lock such a node kept, so that a later setup does not wait two minutes
-for it to expire. A node of
-a cluster gives the lease back on a clean stop, so that another node takes it within seconds,
+for it to expire. A node of a cluster gives the lease back on a clean stop, so that another
+node takes it within seconds,
 and its next start takes it with a new generation; a daemon that ended without giving it back,
 as after `kill -9` or a restart by the watchdog, finds the lock of its node and boot still its
 own and keeps the epoch, and after a crash or a power loss of the node the lock expires two
