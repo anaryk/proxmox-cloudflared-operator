@@ -144,6 +144,18 @@ func TestHostAddNICRetriesAStaleDigestOnce(t *testing.T) {
 		_, err := managednet.NewHostConfigurer(r, thisNode).AddNIC(t.Context(), container, 1, ctSpec)
 		require.NoError(t, err)
 	})
+	// qm set says so in other words when the file changed between its read
+	// of the configuration and its write.
+	t.Run("checksum mismatch", func(t *testing.T) {
+		r := run(t,
+			step{cmd: ctConfig, out: config("d1", ctNet0)},
+			step{cmd: set("d1"), err: fmt.Errorf("%s: exit status 255: checksum mismatch (file change by other user?)", set("d1"))},
+			step{cmd: ctConfig, out: config("d2", ctNet0)},
+			step{cmd: set("d2")},
+		)
+		_, err := managednet.NewHostConfigurer(r, thisNode).AddNIC(t.Context(), container, 1, ctSpec)
+		require.NoError(t, err)
+	})
 	t.Run("twice", func(t *testing.T) {
 		r := run(t,
 			step{cmd: ctConfig, out: config("d1", ctNet0)},

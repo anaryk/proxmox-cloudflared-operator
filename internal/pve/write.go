@@ -19,6 +19,15 @@ import (
 // on a configuration read anew.
 var ErrStaleDigest = errors.New("the configuration changed since it was read")
 
+// SaysStaleDigest reports whether a message of Proxmox, from the API or from
+// qm set and pct set, says that the configuration changed under a write:
+// "detected modified configuration" when the digest given is not the file's,
+// "checksum mismatch" when the file changed between Proxmox's own read of it
+// and its write.
+func SaysStaleDigest(msg string) bool {
+	return containsFold(msg, "detected modified configuration") || containsFold(msg, "checksum mismatch (file change by other user")
+}
+
 // SetGuestConfig PUTs the given keys of a guest's configuration under the
 // digest; a stale digest is ErrStaleDigest. Proxmox applies a change to a
 // running guest at once where it can, and keeps it pending otherwise.
@@ -61,7 +70,7 @@ func (c *Client) writeConfig(ctx context.Context, node string, ref model.GuestRe
 	if err := c.put(ctx, endpoint, form); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusInternalServerError &&
-			containsFold(apiErr.Message, "detected modified configuration") {
+			SaysStaleDigest(apiErr.Message) {
 			return fmt.Errorf("changing the config of %s: %w: %w", ref, ErrStaleDigest, err)
 		}
 		return fmt.Errorf("changing the config of %s: %w", ref, err)

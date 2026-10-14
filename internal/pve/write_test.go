@@ -90,6 +90,15 @@ func TestAStaleDigestIsErrStaleDigest(t *testing.T) {
 	require.ErrorIs(t, err, ErrStaleDigest)
 }
 
+// A file that changed between Proxmox's read of it and its write is said in
+// other words.
+func TestAChecksumMismatchIsErrStaleDigest(t *testing.T) {
+	c, _ := newWriteServer(t, reply{http.StatusInternalServerError,
+		`{"data":null,"message":"checksum mismatch (file change by other user?)\n"}`})
+	err := c.SetGuestConfig(t.Context(), "pve1", appliance, map[string]string{"net1": "name=leg1,bridge=vmbr1"}, "old")
+	require.ErrorIs(t, err, ErrStaleDigest)
+}
+
 func TestAWriteThatIsRefusedSaysSo(t *testing.T) {
 	c, _ := newWriteServer(t, reply{http.StatusForbidden, `{"data":null,"message":"Permission check failed (/vms/9201, VM.Config.Network)"}`})
 	err := c.SetGuestConfig(t.Context(), "pve1", appliance, map[string]string{"net1": "name=leg1,bridge=vmbr1"}, "d")

@@ -153,7 +153,7 @@ func (c hostConfig) remove(ctx context.Context, g model.Guest, key, digest strin
 // pve.ErrStaleDigest.
 func (c hostConfig) write(ctx context.Context, g model.Guest, args ...string) error {
 	_, err := c.run.Run(ctx, tool(g), append([]string{"set", strconv.Itoa(g.Ref.VMID)}, args...)...)
-	if err != nil && strings.Contains(err.Error(), "detected modified configuration") {
+	if err != nil && pve.SaysStaleDigest(err.Error()) {
 		return fmt.Errorf("%w: %w", pve.ErrStaleDigest, err)
 	}
 	return err

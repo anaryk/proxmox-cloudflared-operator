@@ -392,7 +392,7 @@ func (c *Client) firewallWrite(ctx context.Context, method, node string, ref mod
 	if err := c.send(ctx, method, endpoint, form, nil); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusInternalServerError &&
-			containsFold(apiErr.Message, "detected modified configuration") {
+			SaysStaleDigest(apiErr.Message) {
 			return fmt.Errorf("changing the firewall of %s: %w: %w", ref, ErrStaleDigest, err)
 		}
 		return fmt.Errorf("changing the firewall of %s: %w", ref, err)
