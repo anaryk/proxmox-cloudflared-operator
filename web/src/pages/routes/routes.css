@@ -233,6 +233,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
+  min-height: 28px;
   padding: 2px 0;
 }
 

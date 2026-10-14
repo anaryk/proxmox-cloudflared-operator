@@ -108,6 +108,7 @@ test.describe('the other scenarios', () => {
     hold: ['/', '/routes', '/setup'],
     'tagged-empty': ['/', '/routes'],
     outage: ['/'],
+    cluster: ['/', '/nodes', '/nodes/pve2', '/nodes/pve3', '/routes/grafana.example.com?owner=lxc%2F205', '/edge/tunnels/acc1?tunnel=pco-abc123-pve2', '/settings'],
   })) {
     test.describe(scenario, () => {
       test.use({ scenario })
