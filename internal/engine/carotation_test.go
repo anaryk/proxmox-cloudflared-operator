@@ -467,6 +467,59 @@ func TestTheRolloutWaitsForAReportAfterTheRotation(t *testing.T) {
 	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
 }
 
+// A second node forgotten as compromised while a rotation runs joins it:
+// the record keeps when it began and what it did, and the CA it made is
+// never replaced by a third one, which would put the agents out of the
+// window of the previous one.
+func TestASecondCompromisedNodeJoinsTheRotationUnderWay(t *testing.T) {
+	w, old := compromisedWorld(t)
+	require.NoError(t, w.store.DeleteCredential(testCred))
+	require.NoError(t, w.store.SaveCredential(store.Credential{ID: "new1", Label: "new", Kind: "scoped", Token: store.NewSecret("a-new-token-of-twenty-chars"), AddedAt: w.clock.now().Add(time.Second)}))
+	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+	st := w.settle()
+	require.Equal(t, stepPrevious, st.Cluster.CARotation.Next, st.Problems)
+	before := w.rotationRecord(t)
+	made, _, rotatedAt, err := w.store.CA()
+	require.NoError(t, err)
+	*w.listed = []members.Member{{Name: "pve1", ID: 1, Online: true}}
+	w.acts["pve2"].silent = true
+
+	res, err := w.eng.ForgetNode(t.Context(), "pve2", true)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{stepPrevious}, res.Pending)
+	rec := w.rotationRecord(t)
+	require.Equal(t, before.StartedAt, rec.StartedAt)
+	require.Equal(t, before.Done, rec.Done)
+	require.Equal(t, before.Rotated, rec.Rotated)
+	require.Equal(t, "pve3", rec.Node)
+	require.Equal(t, []string{"pve2"}, rec.Also)
+	w.tick(time.Second)
+	again, prev, rotatedAgain, err := w.store.CA()
+	require.NoError(t, err)
+	require.Equal(t, made.CertPEM, again.CertPEM, "no third CA")
+	require.Equal(t, rotatedAt, rotatedAgain)
+	require.Equal(t, old.SHA256(), fingerprintOf(t, prev.CertPEM))
+}
+
+// A CA step of a new rotation that finds the previous CA of an earlier one
+// still taken waits for its window to end rather than drop it early.
+func TestANewRotationWaitsForThePreviousCAOfAnEarlierOne(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	made := testCA(t)
+	cur, _, _, err := w.store.CA()
+	require.NoError(t, err)
+	rec := w.rotationRecord(t)
+	require.NoError(t, w.store.SaveCA(caFilesOf(t, made), &cur, rec.StartedAt.Add(-5*time.Minute)))
+	c := &cycleRun{e: w.eng, ctx: t.Context(), now: rec.StartedAt.Add(time.Second)}
+
+	require.ErrorContains(t, c.rotateCA(rec.StartedAt), "the previous CA of an earlier rotation is taken until")
+	again, prev, _, err := w.store.CA()
+	require.NoError(t, err)
+	require.Equal(t, caFilesOf(t, made).CertPEM, again.CertPEM)
+	require.Equal(t, cur.CertPEM, prev.CertPEM)
+}
+
 // The steps that write at Cloudflare or replace the CA wait while the cycle
 // may not write as it sees: in observe-only mode, and while a hold of the
 // tunnel run, the egress filter, the gateway or an add-only cycle keeps it

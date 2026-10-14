@@ -64,6 +64,13 @@ const (
 // held, which the cycles then carry out step by step. The caller holds the
 // cycle lock.
 func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResult) (ForgetResult, error) {
+	under, found, err := e.d.Store.CARotation()
+	switch {
+	case err != nil:
+		return res, fmt.Errorf("reading the rotation of the secrets: %w", err)
+	case found && under.FinishedAt.IsZero():
+		return e.joinRotation(ctx, name, under, res)
+	}
 	rec := store.CARotation{Node: name, StartedAt: e.d.Now(), Actor: ActorOf(ctx),
 		TunnelsRotated: store.TunnelsRotated{Connectors: e.connectorIDsOf(name)}}
 	if tok, found, err := e.d.Store.PVEToken(); err != nil {
@@ -78,6 +85,38 @@ func (e *Engine) beginRotation(ctx context.Context, name string, res ForgetResul
 		Message: fmt.Sprintf("node %s was forgotten as compromised: every secret of the install is rotated, step by step", name)})
 	res.Done = append(res.Done, "the rotation of every secret of the install began; pco cluster status follows it, and a controller that takes over finishes it")
 	res.Pending = slices.Clone(rotationSteps)
+	res.NotRotated = slices.Clone(notRotated)
+	return res, nil
+}
+
+// joinRotation adds a node forgotten as compromised to the rotation under
+// way: it keeps when it began and what it did, so that the CA it made, or
+// makes, is the one new CA, and the connectors of the node are dropped as
+// the tunnels it has yet to rotate are.
+func (e *Engine) joinRotation(ctx context.Context, name string, rec store.CARotation, res ForgetResult) (ForgetResult, error) {
+	if name != rec.Node && !slices.Contains(rec.Also, name) {
+		rec.Also = append(rec.Also, name)
+	}
+	for tunnel, ids := range e.connectorIDsOf(name) {
+		if rec.Connectors == nil {
+			rec.Connectors = map[string][]string{}
+		}
+		rec.Connectors[tunnel] = slices.Compact(slices.Sorted(slices.Values(append(rec.Connectors[tunnel], ids...))))
+	}
+	if err := e.d.Store.SaveCARotation(rec); err != nil {
+		return res, fmt.Errorf("recording the rotation: %w", err)
+	}
+	e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: kindRotation, Subject: name, Node: name, Security: true, Actor: ActorOf(ctx),
+		Message: fmt.Sprintf("node %s was forgotten as compromised: it joins the rotation of every secret that began at %s for node %s",
+			name, rec.StartedAt.UTC().Format(time.RFC3339), rec.Node)})
+	res.Done = append(res.Done, fmt.Sprintf("the node joins the rotation of every secret under way since %s for node %s; pco cluster status follows it",
+		rec.StartedAt.UTC().Format(time.RFC3339), rec.Node))
+	res.Pending = []string{}
+	for _, step := range rotationSteps {
+		if !slices.Contains(rec.Done, step) {
+			res.Pending = append(res.Pending, step)
+		}
+	}
 	res.NotRotated = slices.Clone(notRotated)
 	return res, nil
 }
@@ -448,7 +487,19 @@ func (c *cycleRun) rotateCA(since time.Time) error {
 	if err != nil {
 		return fmt.Errorf("reading the CA: %w", err)
 	}
-	if prev == nil || rotatedAt.Before(since) {
+	if prev != nil && rotatedAt.Before(since) {
+		// The previous CA of an earlier rotation: replacing it would put
+		// the agents still under it out before their window ended.
+		if c.now.Before(rotatedAt.Add(caRotationWindow)) {
+			return fmt.Errorf("the previous CA of an earlier rotation is taken until %s; the CA is rotated once it is dropped",
+				rotatedAt.Add(caRotationWindow).UTC().Format(time.RFC3339))
+		}
+		if err := c.e.d.Store.SaveCA(cur, nil, rotatedAt); err != nil {
+			return fmt.Errorf("removing the previous CA of an earlier rotation: %w", err)
+		}
+		prev = nil
+	}
+	if prev == nil {
 		// The new CA is of the install the old one names: the one the
 		// agents' identities carry.
 		installID, err := ca.InstallID()

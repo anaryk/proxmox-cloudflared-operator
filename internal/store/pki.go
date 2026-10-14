@@ -325,7 +325,10 @@ func (s *Store) UseJoinToken(id string, use JoinUse) (JoinRecord, error) {
 // finishes it.
 type CARotation struct {
 	// Node is the node forgotten as compromised.
-	Node      string    `json:"node"`
+	Node string `json:"node"`
+	// Also are the nodes forgotten as compromised while it ran, which
+	// joined it.
+	Also      []string  `json:"also,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
 	Actor     string    `json:"actor,omitempty"`
 	// Done are the steps finished, in their order.
