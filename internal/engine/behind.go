@@ -6,10 +6,12 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -24,6 +26,10 @@ const (
 	// problemAgentEpochUnread is an epoch file of the local agent that
 	// cannot be read, which may hold an epoch above the store's.
 	problemAgentEpochUnread = "the epoch the agent of this node follows cannot be read (%v); nothing is written"
+	// problemAboveReported names the nodes whose agents follow an epoch
+	// above this controller's, which keep it from writing until pco
+	// promote.
+	problemAboveReported = "the agents of %s follow an epoch above this controller's; pco promote draws above it, or forget a node that should not"
 )
 
 // sameCluster holds every write of a store that was made in another
@@ -114,13 +120,17 @@ func (c *cycleRun) agentsReported() bool {
 		c.hold(c.problem(problemAgentEpochUnread, err))
 		return false
 	case found:
-		l.ReportedEpoch(agentproto.Epoch(ep))
+		c.e.noteAgentEpoch(c.e.d.Node, pki.KindHost, agentproto.Epoch(ep))
 	}
 	reports := c.reportsNow()
 	for _, name := range slices.Sorted(maps.Keys(reports)) {
-		if ep := reports[name].Status.EpochSeen; ep.Generation > 0 {
-			l.ReportedEpoch(ep)
+		n, ok := c.nodes[name]
+		if !ok || n.Node.State == store.NodeRemoved || n.Node.State == store.NodeContested {
+			// The endpoint refuses such a node now; what it reported
+			// before is not its word any more.
+			continue
 		}
+		c.e.noteAgentEpoch(name, reports[name].Status.Kind, reports[name].Status.EpochSeen)
 	}
 	if c.e.tenureWrote || l.State().Behind != "" {
 		// Behind holds the cycle next, by its own line.
@@ -216,11 +226,74 @@ func leaseSaid(st lease.State) string {
 	return leaseHeld
 }
 
-// NoteAgentEpoch hands the lease the epoch an agent reported, as its status
-// arrives, so that a report above the store's stops the writes before the
-// next cycle; the cycles hand it every report again.
-func (e *Engine) NoteAgentEpoch(ep agentproto.Epoch) {
-	if e.d.Lease != nil && ep.Generation > 0 {
-		e.d.Lease.ReportedEpoch(ep)
+// NoteAgentEpoch hands the lease the epoch the agent of node reported, as
+// its status arrives, so that a report above the store's stops the writes
+// before the next cycle; the cycles hand it every report again. node and
+// kind are those the agent endpoint authenticated.
+func (e *Engine) NoteAgentEpoch(node string, kind pki.Kind, ep agentproto.Epoch) {
+	e.noteAgentEpoch(node, kind, ep)
+}
+
+// noteAgentEpoch takes an agent's epoch into the lease when it may move it:
+// a host agent's, since the lease is the host's, of this install, of a
+// generation a draw makes and with a nonce. An epoch above the one the lease
+// holds is kept with the node that reported it, which the hold names, until
+// a promotion draws above it.
+func (e *Engine) noteAgentEpoch(node string, kind pki.Kind, ep agentproto.Epoch) {
+	l := e.d.Lease
+	if l == nil || ep.Generation == 0 || kind != pki.KindHost {
+		return
 	}
+	inst, found, err := e.d.Store.Install()
+	if err != nil || !found || ep.InstallID != inst.ID {
+		return
+	}
+	if _, err := agentproto.ParseEpoch(ep.String()); err != nil {
+		e.d.Log.Warn().Str("node", node).Str("epoch", ep.String()).Msg("an agent reported an epoch no draw makes; it is not taken")
+		return
+	}
+	l.ReportedEpoch(ep)
+	ours := l.State().Writer
+	if c, same := ep.Order(agentproto.Epoch{InstallID: ours.InstallID, Generation: ours.Generation, Nonce: ours.Nonce}); c > 0 || c == 0 && !same {
+		e.above.note(node, ep)
+	}
+}
+
+// aboveReports are, by node, the epochs agents reported above the one this
+// controller holds, until a promotion: the hold says who said so.
+type aboveReports struct {
+	mu    sync.Mutex
+	nodes map[string]agentproto.Epoch
+}
+
+func (a *aboveReports) note(node string, ep agentproto.Epoch) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.nodes == nil {
+		a.nodes = map[string]agentproto.Epoch{}
+	}
+	if had, ok := a.nodes[node]; !ok || had.Generation < ep.Generation {
+		a.nodes[node] = ep
+	}
+}
+
+func (a *aboveReports) clear() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nodes = nil
+}
+
+// line names the nodes whose agents reported an epoch above this
+// controller's; empty when none did.
+func (a *aboveReports) line() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.nodes) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, node := range slices.Sorted(maps.Keys(a.nodes)) {
+		parts = append(parts, fmt.Sprintf("%s (epoch %s)", node, a.nodes[node]))
+	}
+	return fmt.Sprintf(problemAboveReported, strings.Join(parts, ", "))
 }

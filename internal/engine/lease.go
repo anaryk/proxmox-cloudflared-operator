@@ -78,6 +78,9 @@ func (c *cycleRun) leaseAdmits() bool {
 	if !c.agentsReported() {
 		return false
 	}
+	if line := c.e.above.line(); line != "" {
+		c.problem("%s", line)
+	}
 	if st = l.State(); st.Behind != "" {
 		c.e.d.Log.Error().Str("behind", st.Behind).Msg("this controller only observes until pco promote")
 		c.holdBehind(c.problem(problemBehindHost))

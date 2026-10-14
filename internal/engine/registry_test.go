@@ -15,6 +15,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/lease"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -47,7 +49,7 @@ func (f *fakeRemote) report(node string, at time.Time, started time.Time) {
 		f.reports = map[string]NodeReport{}
 	}
 	f.reports[node] = NodeReport{ReceivedAt: at, Fresh: true, Status: agentproto.Status{
-		Node: node, Protocol: agentproto.Range{Min: 1, Max: 1}, AgentStartedAt: started, Clock: at,
+		Node: node, Kind: pki.KindHost, Protocol: agentproto.Range{Min: 1, Max: 1}, AgentStartedAt: started, Clock: at,
 	}}
 }
 
@@ -92,6 +94,17 @@ func entryOf(t *testing.T, e *env, name string) store.NodeEntry {
 	return store.NodeEntry{}
 }
 
+func nodeNames(t *testing.T, e *env) []string {
+	t.Helper()
+	nodes, err := e.store.Nodes()
+	require.NoError(t, err)
+	var out []string
+	for _, n := range nodes {
+		out = append(out, n.Name)
+	}
+	return out
+}
+
 func nodeEventsOf(e *env) []string {
 	var out []string
 	for _, ev := range e.eng.Events(time.Time{}) {
@@ -129,11 +142,15 @@ func TestAJoiningNodeThatReportsIsAdmittedWithAnIndex(t *testing.T) {
 
 // A node that joined but never reported stays joining, without an index.
 func TestAJoiningNodeThatDoesNotReportStaysJoining(t *testing.T) {
-	e, _, _ := clusterOf(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeJoining, StateSince: t0})
+	e, r, _ := clusterOf(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeJoining, StateSince: t0})
 	e.clock.advance(10 * time.Second)
+	r.report("pve3", e.clock.now(), t0) // a node the registry does not hold
 
 	e.cycle()
 
+	_, err := e.store.Nodes()
+	require.NoError(t, err)
+	require.NotContains(t, nodeNames(t, e), "pve3")
 	n := entryOf(t, e, "pve2")
 	require.Equal(t, store.NodeJoining, n.State)
 	require.Nil(t, n.Index)
@@ -457,8 +474,9 @@ func TestAnAdminWriteIsRefusedOffTheController(t *testing.T) {
 	require.Empty(t, segs)
 }
 
-// reportEpoch has node's agent report now that it follows ep.
-func (f *fakeRemote) reportEpoch(node string, at time.Time, ep agentproto.Epoch) {
+// reportEpoch has the agent of pve2 report now that it follows ep.
+func (f *fakeRemote) reportEpoch(at time.Time, ep agentproto.Epoch) {
+	const node = "pve2"
 	f.report(node, at, t0.Add(-time.Hour))
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -467,7 +485,9 @@ func (f *fakeRemote) reportEpoch(node string, at time.Time, ep agentproto.Epoch)
 	f.reports[node] = r
 }
 
-func (f *fakeRemote) forget(node string) {
+// forget drops what the agent of pve2 reported.
+func (f *fakeRemote) forget() {
+	const node = "pve2"
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.reports, node)
@@ -494,14 +514,14 @@ var aboveTheStore = agentproto.Epoch{InstallID: testInstall, Generation: 7, Nonc
 // controller starts again, until pco promote.
 func TestAReportAboveTheStoreKeepsTheControllerBehind(t *testing.T) {
 	e, r, l := leasedCluster(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeJoining, StateSince: t0})
-	r.reportEpoch("pve2", e.clock.now(), aboveTheStore)
+	r.reportEpoch(e.clock.now(), aboveTheStore)
 
 	st := e.cycle()
 	require.Equal(t, problemBehindHost, st.Hold)
 	require.Equal(t, ModeObserve, st.Mode)
 	require.Empty(t, e.writes())
 
-	r.forget("pve2")
+	r.forget()
 	e.clock.advance(2 * time.Minute)
 	st = e.cycle()
 	require.Equal(t, problemBehindHost, st.Hold, "a report that stopped does not end it")
@@ -522,7 +542,7 @@ func TestALateReportAboveTheStoreStopsTheWritesAtOnce(t *testing.T) {
 	require.Empty(t, st.Hold)
 	require.True(t, l.firstWrite)
 
-	e.eng.NoteAgentEpoch(aboveTheStore)
+	e.eng.NoteAgentEpoch("pve2", pki.KindHost, aboveTheStore)
 
 	_, err := l.Gate(t.Context())
 	require.Error(t, err)
@@ -530,7 +550,7 @@ func TestALateReportAboveTheStoreStopsTheWritesAtOnce(t *testing.T) {
 	require.Error(t, err)
 	writes := len(e.writes())
 	e.clock.advance(time.Second)
-	r.reportEpoch("pve2", e.clock.now(), aboveTheStore)
+	r.reportEpoch(e.clock.now(), aboveTheStore)
 	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080", "api.example.com -> :8081")))
 	st = e.cycle()
 	require.Contains(t, st.Hold, "another controller writes")
@@ -550,4 +570,68 @@ func TestAnUnreadableEpochOfTheLocalAgentHolds(t *testing.T) {
 
 	require.Contains(t, st.Hold, "the epoch the agent of this node follows cannot be read")
 	require.Len(t, e.writes(), writes)
+}
+
+// The hold names the node whose agent follows an epoch above this
+// controller's, and pco promote, which draws above it, ends both.
+func TestTheNodeThatReportedAnEpochAboveIsNamedUntilPromote(t *testing.T) {
+	e, r, l := leasedCluster(t, store.NodeEntry{Name: "pve2", Since: t0, State: store.NodeActive, StateSince: t0})
+	r.reportEpoch(e.clock.now(), aboveTheStore)
+
+	st := e.cycle()
+	require.Equal(t, problemBehindHost, st.Hold)
+	require.True(t, hasProblem(st, "the agents of pve2 (epoch 7.later) follow an epoch above this controller's"), st.Problems)
+
+	l.next = planner.Writer{InstallID: testInstall, Generation: 8, Nonce: "n8"}
+	l.saved = e.store.SaveWriter
+	_, err := confirmed(t, e, PromoteRequest{Confirm: true})
+	require.NoError(t, err)
+	r.reportEpoch(e.clock.now(), agentproto.Epoch{InstallID: testInstall, Generation: 8, Nonce: "n8"})
+	e.clock.advance(time.Second)
+	st = e.cycle()
+	require.False(t, hasProblem(st, "follow an epoch above"), st.Problems)
+	require.Empty(t, l.st.Behind)
+}
+
+// Only a host agent's epoch of this install, of a generation a draw makes
+// and with a nonce, from a node the registry holds neither removed nor
+// contested, may make the controller behind: a report that is none of these
+// leaves it writing.
+func TestAReportThatIsNoEpochOfThisInstallLeavesTheControllerWriting(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		state string
+		kind  pki.Kind
+		ep    agentproto.Epoch
+	}{
+		{"of another install", store.NodeActive, pki.KindHost, agentproto.Epoch{InstallID: "fff000fff000", Generation: 9, Nonce: "x"}},
+		{"of an appliance agent", store.NodeActive, pki.KindAppliance, aboveTheStore},
+		{"past the bound", store.NodeActive, pki.KindHost, agentproto.Epoch{InstallID: testInstall, Generation: agentproto.MaxGeneration + 1, Nonce: "x"}},
+		{"without a nonce", store.NodeActive, pki.KindHost, agentproto.Epoch{InstallID: testInstall, Generation: 9}},
+		{"with a nonce no draw makes", store.NodeActive, pki.KindHost, agentproto.Epoch{InstallID: testInstall, Generation: 9, Nonce: "Not.One"}},
+		{"of a removed node", store.NodeRemoved, pki.KindHost, aboveTheStore},
+		{"of a contested node", store.NodeContested, pki.KindHost, aboveTheStore},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, r, l := leasedCluster(t, store.NodeEntry{Name: "pve2", Since: t0, State: tt.state, StateSince: t0})
+			r.reportEpoch(e.clock.now(), tt.ep)
+			r.mu.Lock()
+			rep := r.reports["pve2"]
+			rep.Status.Kind = tt.kind
+			r.reports["pve2"] = rep
+			r.mu.Unlock()
+			if tt.state == store.NodeActive {
+				// As the status arrives; the endpoint refuses a removed
+				// or contested node before that, and the cycle has only
+				// a report kept from before.
+				e.eng.NoteAgentEpoch("pve2", tt.kind, tt.ep)
+			}
+
+			st := e.cycle()
+
+			require.Empty(t, l.st.Behind)
+			require.Empty(t, st.Hold)
+			require.NotEmpty(t, e.writes())
+		})
+	}
 }

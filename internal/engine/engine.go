@@ -370,6 +370,8 @@ type Engine struct {
 	// every agent, which has a lock of its own.
 	registry registryMemory
 	taken    takenEvents
+	// above are the epochs agents reported above this controller's.
+	above aboveReports
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.

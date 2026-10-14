@@ -117,6 +117,7 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	e.d.Store.StartTenure()
 	e.tenure, e.tenureAt, e.tenureWrote, e.wentBack = st.Writer, e.d.Now(), false, nil
 	res.Drawn, res.Generation, res.Nonce = true, st.Writer.Generation, st.Writer.Nonce
+	e.above.clear()
 	msg := fmt.Sprintf("promoted to generation %d; observe-only until pco apply", st.Writer.Generation)
 	e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: kindLease, Subject: e.d.Node, Message: msg, Actor: ActorOf(ctx)})
 	e.adminEvent(ctx, e.d.Node, msg)
