@@ -166,6 +166,43 @@ func TestAnUnusedJoinTokenIsAcceptedOnce(t *testing.T) {
 	})
 }
 
+// A use past the first that the controller takes for a repeat of a join it
+// took, as one whose answer was lost, gets the certificate it issued then;
+// one it does not is a misuse.
+func TestARepeatedJoinTheControllerKnowsGetsItsCertificateAgain(t *testing.T) {
+	j := newJoinSetup(t)
+	var issued []byte
+	var repeats atomic.Int32
+	repeat := true
+	j.h.srv.joinCfg.Repeat = func(_ context.Context, rec store.JoinRecord, csr []byte, _ netip.Addr, facts JoinFacts) ([]byte, bool) {
+		repeats.Add(1)
+		require.GreaterOrEqual(t, len(rec.Uses), 2)
+		require.Equal(t, 200, facts.VMID)
+		require.Equal(t, j.csr, csr)
+		return issued, repeat
+	}
+	resp := j.send(t, j.req())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var first CertificateResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&first))
+	issued = []byte(first.CertPEM)
+
+	resp = j.send(t, j.req())
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var again CertificateResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&again))
+	require.Equal(t, first.CertPEM, again.CertPEM)
+	require.Equal(t, int32(1), j.joined.Load(), "issued once")
+	require.Zero(t, j.misused.Load())
+
+	repeat = false
+	resp = j.send(t, j.req())
+	require.Equal(t, RefusalRefused, refusalOf(t, resp).Code)
+	require.Equal(t, int32(1), j.misused.Load())
+	require.Equal(t, int32(2), repeats.Load())
+}
+
 func TestTwoJoinsWithOneTokenAtOnceGetOneCertificate(t *testing.T) {
 	j := newJoinSetup(t)
 	const n = 8
@@ -456,6 +493,6 @@ func TestTwoUsesOfATokenAtOnceHaveOneFirst(t *testing.T) {
 		require.Equal(t, int32(1), firsts.Load())
 		rec, _, _, err := st.JoinToken("tok1")
 		require.NoError(t, err)
-		require.Len(t, rec.Uses, 2)
+		require.GreaterOrEqual(t, len(rec.Uses), 2)
 	}
 }

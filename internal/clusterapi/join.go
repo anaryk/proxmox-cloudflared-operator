@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
@@ -63,6 +64,11 @@ type Joins struct {
 	CASHA256  func() string
 	Tokens    JoinStore
 	Misused   func(ctx context.Context, rec store.JoinRecord)
+	// Repeat, when set, is asked of a use past the first before it is taken
+	// for a misuse: a join whose answer was lost comes again with the same
+	// container, source and key, and gets the certificate issued for it
+	// then. ok false is a misuse.
+	Repeat func(ctx context.Context, rec store.JoinRecord, csr []byte, src netip.Addr, facts JoinFacts) (certPEM []byte, ok bool)
 }
 
 // AcceptJoins switches the join on. Without it every join is refused, as a
@@ -111,12 +117,25 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		s.refuseJoin(w, r, why)
 		return
 	}
-	first, why := s.useToken(r.Context(), j, tok, store.JoinUse{At: s.now(), Source: src, VMID: req.VMID, MACs: req.MACs})
+	facts := JoinFacts{Node: req.Node, VMID: req.VMID, MACs: req.MACs, Build: req.Build, Protocol: req.Protocol}
+	rec, first, why := s.useToken(j, tok, store.JoinUse{At: s.now(), Source: src, VMID: req.VMID, MACs: req.MACs})
 	if !first {
+		if len(rec.Uses) > 1 {
+			if j.Repeat != nil {
+				certPEM, ok := j.Repeat(r.Context(), rec, req.CSR, src, facts)
+				if ok && s.checkIssued(certPEM, csr, applianceIdentity(j.InstallID, req.Node, req.VMID)) == nil {
+					s.log.Info().Str("node", req.Node).Int("vmid", req.VMID).Msg("an appliance agent asked again for the certificate of its join")
+					writeJSON(w, http.StatusOK, CertificateResponse{CertPEM: string(certPEM), CAPEM: s.caPEM()})
+					return
+				}
+			}
+			if j.Misused != nil {
+				j.Misused(r.Context(), rec)
+			}
+		}
 		s.refuseJoin(w, r, why)
 		return
 	}
-	facts := JoinFacts{Node: req.Node, VMID: req.VMID, MACs: req.MACs, Build: req.Build, Protocol: req.Protocol}
 	certPEM, err := s.c.Join(r.Context(), tok, req.CSR, src, facts)
 	if err == nil {
 		err = s.checkIssued(certPEM, csr, applianceIdentity(j.InstallID, req.Node, req.VMID))
@@ -175,24 +194,22 @@ func applianceIdentity(install, node string, vmid int) pki.Identity {
 }
 
 // useToken records a use of tok and reports whether it is the token's first,
-// stored unexpired. Uses are recorded one at a time, so of two that come at
-// once exactly one is the first.
-func (s *Server) useToken(ctx context.Context, j *Joins, tok pki.JoinToken, use store.JoinUse) (bool, string) {
+// stored unexpired, with the record of every use. Uses are recorded one at a
+// time, so of two that come at once exactly one is the first. An expired
+// token's record comes back without its uses: that is no repeat.
+func (s *Server) useToken(j *Joins, tok pki.JoinToken, use store.JoinUse) (store.JoinRecord, bool, string) {
 	s.joinMu.Lock()
 	rec, err := UseToken(j.Tokens, tok, use)
 	s.joinMu.Unlock()
 	switch {
 	case err != nil:
-		return false, "the token is not one of the install's: " + err.Error()
+		return store.JoinRecord{}, false, "the token is not one of the install's: " + err.Error()
 	case !s.now().Before(rec.Expires):
-		return false, "the token of node " + rec.Node + " expired"
+		return store.JoinRecord{}, false, "the token of node " + rec.Node + " expired"
 	case len(rec.Uses) != 1:
-		if j.Misused != nil {
-			j.Misused(ctx, rec)
-		}
-		return false, fmt.Sprintf("the token of node %s was used %d times", rec.Node, len(rec.Uses))
+		return rec, false, fmt.Sprintf("the token of node %s was used %d times", rec.Node, len(rec.Uses))
 	}
-	return true, ""
+	return rec, true, ""
 }
 
 // checkIssued refuses a certificate the controller issued that is not for
