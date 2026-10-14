@@ -567,9 +567,14 @@ func TestContextCancellationReturnsPromptly(t *testing.T) {
 func TestRequestTimeout(t *testing.T) {
 	cfg := testConfig("")
 	cfg.Timeout = 20 * time.Millisecond
-	c := startServer(t, cfg, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+	// The answer never comes before the test ends: a handler that returned as
+	// the client gave up could send an empty answer first, and the client
+	// would read that instead of its deadline.
+	held := make(chan struct{})
+	c := startServer(t, cfg, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		<-held
 	}))
+	t.Cleanup(func() { close(held) })
 
 	_, err := c.Version(context.Background())
 	require.ErrorIs(t, err, context.DeadlineExceeded)
