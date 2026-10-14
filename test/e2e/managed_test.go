@@ -396,6 +396,15 @@ func testManagedIsolation(t *testing.T, s *suite) {
 	fromBefore := s.counter(t, false, "inet", "pco_host", "from_pconet")
 	routedBefore := s.counter(t, false, "inet", "pco_host", "routed_from_pconet")
 	s.setSysctl(t, "net.ipv4.ip_forward", "1")
+	// With rp_filter on, as Proxmox VE has it, the node answers no ARP on a
+	// bridge without an IPv4 address, and nothing a guest sends it reaches
+	// its rules; with it off the guest may use the node as its router,
+	// which is what pco_host must stop.
+	s.setSysctl(t, "net.ipv4.conf.all.rp_filter", "0")
+	rpf := "net.ipv4.conf." + gateway.ManagedBridge + ".rp_filter"
+	rpfBefore := strings.TrimSpace(s.must(t, "sysctl", "-n", rpf))
+	s.must(t, "sysctl", "-qw", rpf+"=0")
+	defer func() { _, _ = s.run("sysctl", "-qw", rpf+"="+rpfBefore) }()
 	s.exec(t, m.vmid, "ip route replace "+node+"/32 dev "+ifaceM)
 	for _, port := range []string{"22", "8006"} {
 		require.False(t, s.connects(m.vmid, node, port), "%s reaches the node's %s from the managed network", m.owner(), port)
