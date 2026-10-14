@@ -11,6 +11,7 @@ import { CopyIcon } from '../../components/icons'
 import { Time } from '../../components/Time'
 import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
+import { marked } from '../../text/chars'
 import { asApiError, Failure, useAdminReason } from '../kit'
 import { nodeNameIssue } from './nodes'
 
@@ -183,8 +184,10 @@ export function HandoffDialog({ open, nodes, controller, onClose }: { open: bool
           <select {...control} value={to} onChange={(e) => setTo(e.target.value)}>
             <option value="">The next node to acquire it</option>
             {candidates.map((n) => (
+              // An option holds text only: the name is shown with its
+              // controls of direction and invisible characters marked.
               <option key={n.name} value={n.name}>
-                {n.name}
+                {marked(n.name)}
               </option>
             ))}
           </select>

@@ -104,6 +104,18 @@ describe('the nodes of the cluster scenario', () => {
     await waitFor(() => expect(writes(sent)).toEqual([{ method: 'POST', path: '/api/v1/cluster/handoff', body: { to: 'pve2' } }]))
   })
 
+  test('a node offered for the lease is named as untrusted text', async () => {
+    stubApi({})
+    const odd: State = { ...st, nodes: st.nodes.map((n) => (n.name === 'pve2' ? { ...n, name: 'pve2\u202e1evp' } : n)) }
+    const { store } = await fakeStore({ state: odd })
+    renderPage(store, <NodesPage view={{ name: 'nodes' }} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hand off the lease…' }))
+    const options = [...within(dialog()).getByRole('combobox', { name: 'Hand it to' }).querySelectorAll('option')]
+    expect(options.map((o) => o.value)).toEqual(['', 'pve2\u202e1evp'])
+    expect(options[1]?.textContent).toMatch(/^pve2.+1evp$/)
+    expect(options[1]?.textContent).not.toContain('\u202e')
+  })
+
   test('a reader sees the actions disabled, with the privilege they need', async () => {
     const { store } = await fakeStore({ state: st, session: { role: 'reader' } })
     renderPage(store, <NodesPage view={{ name: 'nodes' }} />)
