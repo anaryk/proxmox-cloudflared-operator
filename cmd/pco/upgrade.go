@@ -84,13 +84,15 @@ restart on the new cloudflared one after the other, and each has 60 s to be read
 With all, pco is upgraded first and cloudflared follows the manifest of the release pco
 came from.
 
-In an agent of a cluster, upgrade the agents first, one after the other, and the
-controller last. A connector of an agent restarts only while the heartbeat of the
-controller counts another ready replica of its tunnel; pco waits up to 5 minutes for one,
-and otherwise leaves the connector on the cloudflared before and names the line that
-restarts it later. An agent that cannot tell, because its daemon does not answer or its
-last heartbeat is missing or older than 30 s, refuses to upgrade cloudflared before it
-installs anything; --force restarts its connectors without waiting.
+In a cluster, upgrade the agents first, one after the other, and the controller last. A
+connector of an agent that follows a controller on another node restarts only while the
+heartbeat of the controller counts another ready replica of its tunnel; the tunnels it
+counts none of are named before the question. pco waits up to 5 minutes for one, and
+otherwise leaves the connector on the cloudflared before and names the line that restarts
+it later. An enrolled agent that cannot tell, because its daemon does not answer, it
+follows no controller, or its last heartbeat is missing or older than 30 s, refuses to
+upgrade cloudflared before it installs anything; --force restarts its connectors without
+waiting. The controller's own container restarts its connectors as a single appliance.
 
 The package of the version that is replaced is kept in /var/lib/pco/upgrades/previous,
 one per package, and --rollback installs it again. A rollback of pco is refused while the
@@ -461,12 +463,10 @@ func remindOfSnapshot(errOut *screen, paths store.Paths, name string) {
 // cloudflared.
 func (a *app) connectorRestart(paths store.Paths, sleep func(context.Context, time.Duration) error, out *screen,
 	replicas upgrade.AgentView) func(ctx context.Context) error {
-	e := a.upgrade
 	return func(ctx context.Context) error {
-		conns := connector.NewManager(e.systemd, filepath.Join(paths.Local, tunnelsDir), nil, zerolog.Nop())
 		return upgrade.ConnectorRestart{
-			Connectors: conns,
-			Systemd:    e.systemd,
+			Connectors: a.connectorsOf(paths),
+			Systemd:    a.upgrade.systemd,
 			Now:        a.now,
 			Sleep:      sleep,
 			Say:        func(format string, args ...any) { out.printf(format+"\n", args...) },
@@ -475,29 +475,50 @@ func (a *app) connectorRestart(paths store.Paths, sleep func(context.Context, ti
 	}
 }
 
+func (a *app) connectorsOf(paths store.Paths) *connector.Manager {
+	return connector.NewManager(a.upgrade.systemd, filepath.Join(paths.Local, tunnelsDir), nil, zerolog.Nop())
+}
+
 // replicaGate is the view of the agent a restart of the connectors asks for
-// the other ready replicas of their tunnels, in an agent of a cluster: nil
-// on a node alone, and with force. Without force, an agent that cannot tell
-// whether the other replicas are ready refuses an upgrade of cloudflared
-// before anything is installed.
+// the other ready replicas of their tunnels, in an agent that follows a
+// controller on another node: nil on a node alone, on the controller's own
+// node, whose heartbeat counts no replicas, and with force. Without force,
+// an enrolled agent that cannot tell whether the other replicas are ready
+// refuses an upgrade of cloudflared before anything is installed, and the
+// tunnels whose connectors will wait are named.
 func (a *app) replicaGate(ctx context.Context, paths store.Paths, cloudflared, force bool, errOut *screen) (upgrade.AgentView, error) {
-	if !cloudflared || !enrolledAgent(paths) {
+	if !cloudflared {
+		return nil, nil
+	}
+	view := func(ctx context.Context) (agentproto.AgentView, error) { return a.client().AgentStatus(ctx) }
+	v, err := view(ctx)
+	switch {
+	case err == nil && v.Remote:
+	case !enrolledAgent(paths):
+		return nil, nil
+	case err == nil && v.Controller != "":
+		// The controller this agent follows runs on this node.
 		return nil, nil
 	}
 	if force {
 		errOut.println("warning: --force: the connectors restart without waiting for another ready replica of their tunnel")
 		return nil, nil
 	}
-	view := func(ctx context.Context) (agentproto.AgentView, error) { return a.client().AgentStatus(ctx) }
-	if err := upgrade.CheckReplicas(ctx, view); err != nil {
+	lone, err := upgrade.CheckReplicas(ctx, view, a.connectorsOf(paths))
+	if err != nil {
 		return nil, err
+	}
+	for _, id := range lone {
+		errOut.printf("warning: the controller counts no other ready replica of tunnel %s: its connector waits up to %s "+
+			"for one, and keeps the cloudflared before if none comes\n", id, upgrade.ReplicaWait)
 	}
 	return view, nil
 }
 
 // enrolledAgent says whether this node's agent holds the client certificate
-// it dials a controller with: then its tunnels have replicas on other nodes.
-// A certificate that cannot be read counts: the node was enrolled.
+// it dials a controller with: an agent that cannot be asked whom it follows
+// may have replicas on other nodes. A certificate that cannot be read
+// counts: the node was enrolled.
 func enrolledAgent(paths store.Paths) bool {
 	_, err := agent.TLSFiles{Dir: agent.TLSDir(paths)}.Client()
 	return !errors.Is(err, agent.ErrNoCredentials)

@@ -16,6 +16,7 @@ import (
 const (
 	tunnelA = "00000000-0000-4000-8000-00000000000a"
 	tunnelB = "00000000-0000-4000-8000-00000000000b"
+	tunnelC = "00000000-0000-4000-8000-00000000000c"
 )
 
 func ready(id string, connections int) connector.Status {
@@ -150,7 +151,7 @@ func (s statusFunc) Status(_ context.Context, id string) (connector.Status, erro
 // heard is the view of an agent whose controller's heartbeat, age old,
 // counted ready replicas of the tunnels.
 func heard(age time.Duration, ready map[string]int) agentproto.AgentView {
-	return agentproto.AgentView{Node: "pve2", HeartbeatAge: age, ReadyReplicas: ready}
+	return agentproto.AgentView{Node: "pve2", Remote: true, Heard: true, HeartbeatAge: age, ReadyReplicas: ready}
 }
 
 func views(vs ...agentproto.AgentView) func(context.Context) (agentproto.AgentView, error) {
@@ -218,8 +219,10 @@ func TestAnAgentTakesNoStaleOrMissingHeartbeatForAReadyReplica(t *testing.T) {
 		view func(context.Context) (agentproto.AgentView, error)
 		why  string
 	}{
-		{"no heartbeat", views(agentproto.AgentView{Node: "pve2"}), "the agent of this node has heard no heartbeat of its controller"},
+		{"no heartbeat", views(agentproto.AgentView{Node: "pve2", Remote: true}), "the agent of this node has heard no heartbeat of its controller"},
 		{"stale", views(heard(45*time.Second, map[string]int{tunnelA: 3})), "the last heartbeat of the controller is 45s old"},
+		{"from the future", views(heard(-5*time.Second, map[string]int{tunnelA: 3})),
+			"the last heartbeat of the controller is -5s old: the clock of this node stepped back"},
 		{"no daemon", func(context.Context) (agentproto.AgentView, error) {
 			return agentproto.AgentView{}, errors.New("dial unix /run/pco/pco.sock: connect: no such file or directory")
 		}, "the daemon does not answer: dial unix /run/pco/pco.sock: connect: no such file or directory"},
@@ -234,12 +237,24 @@ func TestAnAgentTakesNoStaleOrMissingHeartbeatForAReadyReplica(t *testing.T) {
 			require.ErrorContains(t, err, "("+tt.why+")")
 			require.Empty(t, rr.sd.restarted)
 
-			require.ErrorIs(t, CheckReplicas(t.Context(), tt.view), ErrCannotTell)
-			require.EqualError(t, CheckReplicas(t.Context(), tt.view), "pco cannot tell whether another replica of each tunnel is ready: "+
+			_, err = CheckReplicas(t.Context(), tt.view, rr.conns)
+			require.ErrorIs(t, err, ErrCannotTell)
+			require.EqualError(t, err, "pco cannot tell whether another replica of each tunnel is ready: "+
 				tt.why+"; an agent restarts its connectors only beside a ready replica, and --force restarts them without")
 		})
 	}
-	require.NoError(t, CheckReplicas(t.Context(), views(heard(time.Second, nil))), "a heartbeat that counts nothing still tells")
+}
+
+// The tunnels of this node that the heartbeat counts one ready replica of
+// at most, this node's own, are named before anything is installed: their
+// connectors will wait, and may be left on the cloudflared before.
+func TestTheCheckNamesTheTunnelsWithoutAnotherReadyReplica(t *testing.T) {
+	conns := &fakeConnectors{ids: []string{tunnelA, tunnelB, tunnelC}}
+
+	lone, err := CheckReplicas(t.Context(), views(heard(time.Second, map[string]int{tunnelA: 1, tunnelB: 2})), conns)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{tunnelA, tunnelC}, lone)
 }
 
 // A connector that is not ready serves nothing a restart could take away.

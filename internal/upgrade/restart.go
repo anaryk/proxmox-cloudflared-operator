@@ -66,13 +66,29 @@ type ConnectorRestart struct {
 
 // CheckReplicas refuses when the agent cannot tell whether the other
 // replicas of its tunnels are ready: no daemon, no heartbeat, or one too
-// old. It is asked before anything is installed.
-func CheckReplicas(ctx context.Context, view AgentView) error {
+// old. It is asked before anything is installed, and returns the tunnels of
+// this node's connectors that the heartbeat counts one ready replica of at
+// most: their connectors will wait.
+func CheckReplicas(ctx context.Context, view AgentView, conns Connectors) ([]string, error) {
 	if _, why := otherReady(ctx, view, ""); why != "" {
-		return fmt.Errorf("%w: %s; an agent restarts its connectors only beside a ready replica, and --force restarts them without",
+		return nil, fmt.Errorf("%w: %s; an agent restarts its connectors only beside a ready replica, and --force restarts them without",
 			ErrCannotTell, why)
 	}
-	return nil
+	v, err := view(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := conns.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing the connectors: %w", err)
+	}
+	var lone []string
+	for _, id := range ids {
+		if v.ReadyReplicas[id] <= 1 {
+			lone = append(lone, id)
+		}
+	}
+	return lone, nil
 }
 
 // otherReady is how many replicas of the tunnel besides this node's ready
@@ -82,9 +98,11 @@ func otherReady(ctx context.Context, view AgentView, tunnelID string) (int, stri
 	switch {
 	case err != nil:
 		return 0, "the daemon does not answer: " + err.Error()
-	case v.HeartbeatAge == 0 && v.ReadyReplicas == nil:
-		// The view leaves both empty until a heartbeat came.
+	case !v.Heard:
 		return 0, "the agent of this node has heard no heartbeat of its controller"
+	case v.HeartbeatAge < 0:
+		return 0, fmt.Sprintf("the last heartbeat of the controller is %s old: the clock of this node stepped back",
+			v.HeartbeatAge.Round(time.Second))
 	case v.HeartbeatAge > heartbeatFresh:
 		return 0, fmt.Sprintf("the last heartbeat of the controller is %s old", v.HeartbeatAge.Round(time.Second))
 	}

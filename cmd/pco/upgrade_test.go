@@ -540,8 +540,9 @@ func TestAnAgentThatCannotTellRefusesToUpgradeCloudflared(t *testing.T) {
 		why   string
 	}{
 		{"no daemon", "", "the daemon does not answer: "},
-		{"no heartbeat", `{"node":"pve2","heartbeatAge":0}`, "the agent of this node has heard no heartbeat of its controller;"},
-		{"stale heartbeat", `{"node":"pve2","readyReplicas":{"t1":2},"heartbeatAge":95000000000}`, "the last heartbeat of the controller is 1m35s old;"},
+		{"no heartbeat", `{"node":"pve2","controller":"pve1","remote":true,"heard":false,"heartbeatAge":0}`, "the agent of this node has heard no heartbeat of its controller;"},
+		{"stale heartbeat", `{"node":"pve2","controller":"pve1","remote":true,"heard":true,"readyReplicas":{"t1":2},"heartbeatAge":95000000000}`, "the last heartbeat of the controller is 1m35s old;"},
+		{"no controller found", `{"node":"pve2","heard":false,"heartbeatAge":0}`, "the agent of this node has heard no heartbeat of its controller;"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			u := newUpgradeRig(t)
@@ -560,6 +561,44 @@ func TestAnAgentThatCannotTellRefusesToUpgradeCloudflared(t *testing.T) {
 			require.Empty(t, u.host.commands(), "nothing is installed")
 		})
 	}
+}
+
+// The agent beside the controller holds a client certificate too, as does a
+// node left alone after the others were forgotten; its heartbeat counts no
+// replicas, and its connectors restart as on a node alone.
+func TestTheControllersOwnNodeRestartsAsANodeAlone(t *testing.T) {
+	u := newUpgradeRig(t)
+	u.enrol(t)
+	d := startFakeDaemon(t, "v1.2.3")
+	d.agent = `{"node":"pve1","controller":"pve1 (this node)","heard":true,"heartbeatAge":2000000000}`
+	u.r.socket = d.socket
+
+	res := u.r.tty().run("y\n", "upgrade", "cloudflared")
+
+	require.NoError(t, res.err, res.errOut)
+	require.Contains(t, res.errOut, "a tunnel has no connection from this appliance")
+	require.NotContains(t, res.errOut, "replica")
+	require.Contains(t, res.out, "cloudflared 2026.10.1 is installed\n")
+}
+
+// A tunnel the heartbeat counts no other ready replica of is named before
+// the question: its connector will wait, and may keep the old cloudflared.
+func TestAnAgentNamesTheTunnelsThatWillWait(t *testing.T) {
+	u := newUpgradeRig(t)
+	u.enrol(t)
+	d := startFakeDaemon(t, "v1.2.3")
+	d.agent = `{"node":"pve2","controller":"pve1","remote":true,"heard":true,"readyReplicas":{"` + oneTunnel + `":1},"heartbeatAge":4000000000}`
+	u.r.socket = d.socket
+	u.r.env.upgrade.systemd = &oneConnector{}
+
+	res := u.r.tty().run("n\n", "upgrade", "cloudflared")
+
+	require.ErrorIs(t, res.err, errAborted)
+	line := "warning: the controller counts no other ready replica of tunnel " + oneTunnel + ": its connector waits up to 5m0s " +
+		"for one, and keeps the cloudflared before if none comes\n"
+	at := strings.Index(res.errOut, line)
+	require.GreaterOrEqual(t, at, 0, res.errOut)
+	require.Less(t, at, strings.Index(res.errOut, "[y/N]"))
 }
 
 func TestAnAgentUpgradesPcoAloneWithoutAskingForReplicas(t *testing.T) {
@@ -587,7 +626,7 @@ func TestAnAgentThatHearsItsControllerUpgradesCloudflared(t *testing.T) {
 	u := newUpgradeRig(t)
 	u.enrol(t)
 	d := startFakeDaemon(t, "v1.2.3")
-	d.agent = `{"node":"pve2","readyReplicas":{"` + oneTunnel + `":2},"heartbeatAge":4000000000}`
+	d.agent = `{"node":"pve2","controller":"pve1","remote":true,"heard":true,"readyReplicas":{"` + oneTunnel + `":2},"heartbeatAge":4000000000}`
 	u.r.socket = d.socket
 
 	res := u.r.tty().run("y\n", "upgrade", "cloudflared")

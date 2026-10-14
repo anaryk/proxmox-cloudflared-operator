@@ -426,15 +426,19 @@ rollback of pco is refused while the store holds an object the kept pco cannot r
 goes through it step by step.
 
 In a cluster, upgrade the agent containers first, one after the other, and the controller's
-container last; the controller cannot install anything in an agent. An agent's tunnels have
-replicas on other nodes, so its connectors restart on a new `cloudflared` only while the
-controller's heartbeat counts another ready replica of their tunnel, as `pco agent status` shows
-it. `pco upgrade` waits up to 5 minutes for one; a connector that finds none keeps running the
-`cloudflared` before, and the run ends with the `systemctl restart` line that moves it later. An
-agent that cannot tell, because its daemon does not answer or its last heartbeat is missing or
-older than 30 seconds, refuses to upgrade `cloudflared` before it installs anything, and
-`--force` restarts its connectors without waiting. An upgrade of pco alone restarts no
-connector and needs none of this.
+container last; the controller cannot install anything in an agent. An agent that follows a
+controller on another node has replicas of its tunnels there, so its connectors restart on a new
+`cloudflared` only while the controller's heartbeat counts another ready replica of their
+tunnel, as `pco agent status` shows it. Before the question, `pco upgrade` names each tunnel the
+heartbeat counts no other ready replica of. Its connector waits up to 5 minutes for one; if none
+comes, it keeps running the `cloudflared` before, and the run ends with the `systemctl restart`
+line that moves it later. The count is only as fresh as the controller's view: a replica that
+stopped within about the last minute may still be counted. An enrolled agent that cannot tell,
+because its daemon does not answer, it follows no controller, or its last heartbeat is missing
+or older than 30 seconds, refuses to upgrade `cloudflared` before it installs anything, and
+`--force` restarts its connectors without waiting. The container of the controller, and a node
+left alone after the others were forgotten, restart their connectors as a single appliance
+does. An upgrade of pco alone restarts no connector and needs none of this.
 
 A new `cloudflared` reaches the appliance in a release of pco. A workflow of the repository looks
 for a new release of `cloudflared` every week and opens a pull request with its entry for the
