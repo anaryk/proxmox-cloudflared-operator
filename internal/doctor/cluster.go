@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
@@ -289,7 +290,7 @@ func checkAgentFirewall(f engine.AgentRuleFacts) Finding {
 	}
 	switch {
 	case f.Err != "":
-		return warn(check, agents+" no status, and the datacenter firewall could not be read: "+f.Err,
+		return warn(check, agents+" no status, and the datacenter firewall could not be read: "+printable(f.Err),
 			"pvesh get /cluster/firewall/rules shows it; the token of pco reads it with Sys.Audit on /, which pco setup --repair gives it")
 	case f.Gap != "":
 		return fail(check, agents+" no status, and "+f.Gap, f.Fix)
@@ -299,6 +300,25 @@ func checkAgentFirewall(f engine.AgentRuleFacts) Finding {
 		why = "; pco doctor on each says why its agent sends no status"
 	}
 	return ok(check, "the datacenter firewall admits the agent channel of "+strings.Join(f.Silent, ", ")+why)
+}
+
+// printable is s with each run of control characters, which a terminal
+// would act on, made one space; text Proxmox answered with goes through it.
+func printable(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			space = true
+			continue
+		}
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // checkAgentAddress warns for an agent that listens on a link of corosync:

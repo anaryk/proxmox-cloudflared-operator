@@ -185,6 +185,10 @@ func TestTheChecksOfAClusterFindFaults(t *testing.T) {
 		}, "agent firewall", LevelWarn,
 			"the agents of pve2, pve3 send no status, and the datacenter firewall could not be read: HTTP 403: Permission check failed",
 			"pvesh get /cluster/firewall/rules shows it; the token of pco reads it with Sys.Audit on /, which pco setup --repair gives it"},
+		{"a firewall error with control characters", func(_ *engine.State, c *fakeCluster) {
+			c.facts.AgentRule = engine.AgentRuleFacts{Silent: []string{"pve3"}, Err: "HTTP 500: bad\x1b[2J\nanswer\r\x07"}
+		}, "agent firewall", LevelWarn,
+			"the agent of pve3 sends no status, and the datacenter firewall could not be read: HTTP 500: bad [2J answer", ""},
 		{"a firewall that admits a silent agent", func(_ *engine.State, c *fakeCluster) {
 			c.facts.AgentRule = engine.AgentRuleFacts{Silent: []string{"pve3"}}
 		}, "agent firewall", LevelOK,
