@@ -62,6 +62,9 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	case !found:
 		return PromoteResult{}, fmt.Errorf("%w: %s", ErrRefused, problemNotSetUp)
 	}
+	if err := e.takenOverHere(inst); err != nil {
+		return PromoteResult{}, err
+	}
 	if !req.Confirm {
 		// Nothing is changed: the reads at Cloudflare need no cycle lock.
 		return PromoteResult{Differences: e.differences(ctx, inst, e.readSentinels(ctx, inst.ID))}, nil
@@ -70,6 +73,16 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 		return PromoteResult{}, err
 	}
 	defer e.release()
+	// Read again under the lock: the install saved below is this one.
+	switch inst, found, err = e.d.Store.Install(); {
+	case err != nil:
+		return PromoteResult{}, fmt.Errorf("reading the install identity again: %w", err)
+	case !found:
+		return PromoteResult{}, fmt.Errorf("%w: %s", ErrRefused, problemNotSetUp)
+	}
+	if err := e.takenOverHere(inst); err != nil {
+		return PromoteResult{}, err
+	}
 
 	res := PromoteResult{Differences: req.Shown}
 	other, err := e.otherCluster(inst)
@@ -194,6 +207,34 @@ func (e *Engine) otherCluster(inst store.Install) (*store.ClusterIdentity, error
 		return nil, nil
 	}
 	return &here, nil
+}
+
+// takenOverHere refuses the promotion of a store restored into another
+// cluster unless pco setup took it into this one in full, on this node:
+// until then its registry and its CA are those of the lost cluster, and
+// another node that took it promotes it there.
+func (e *Engine) takenOverHere(inst store.Install) error {
+	if inst.Restored == nil {
+		return nil
+	}
+	other, err := e.otherCluster(inst)
+	if err != nil {
+		return err
+	}
+	if other == nil {
+		return nil
+	}
+	if by := inst.Restored.TakenOverBy; by != "" && by != e.d.Node {
+		return fmt.Errorf("%w: node %s took the restored store into this cluster: run pco promote there", ErrRefused, by)
+	}
+	done, why, err := e.d.Store.TakenOver(inst)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: how far the restored store was taken into this cluster cannot be read: %w", ErrRefused, err)
+	case !done:
+		return fmt.Errorf("%w: the restored store is not taken into this cluster: %s; run pco setup on this node first", ErrRefused, why)
+	}
+	return nil
 }
 
 // oldClusterStopped refuses the promotion of a store restored into another

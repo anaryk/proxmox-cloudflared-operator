@@ -100,7 +100,7 @@ func TestPromoteMakesThisClusterTheStoresWithItsName(t *testing.T) {
 	inst, _, err := e.store.Install()
 	require.NoError(t, err)
 	inst.Cluster = &store.ClusterIdentity{CASHA256: caOld, Name: "old-lab"}
-	inst.Restored = &store.Restored{BundleMadeAt: time.Unix(1700000000, 0).UTC(), TakenOverBy: testNode}
+	inst.Restored = takenOverBy(t, e, testNode)
 	require.NoError(t, e.store.SaveInstall(inst))
 	e.eng.d.Cluster = func() (store.ClusterIdentity, error) { return store.ClusterIdentity{CASHA256: caNew, Name: "lab"}, nil }
 	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
@@ -315,12 +315,63 @@ func restoredElsewhere(t *testing.T) (*env, *fakeLease) {
 	inst, _, err := e.store.Install()
 	require.NoError(t, err)
 	inst.Cluster = &store.ClusterIdentity{CASHA256: caOld, Name: "old-lab"}
-	inst.Restored = &store.Restored{BundleMadeAt: time.Unix(1700000000, 0).UTC(), TakenOverBy: testNode}
+	inst.Restored = takenOverBy(t, e, testNode)
 	require.NoError(t, e.store.SaveInstall(inst))
 	e.eng.d.Cluster = func() (store.ClusterIdentity, error) { return store.ClusterIdentity{CASHA256: caNew, Name: "lab"}, nil }
 	l.next = planner.Writer{InstallID: testInstall, Generation: 2, Nonce: "drawn"}
 	l.saved = e.store.SaveWriter
 	return e, l
+}
+
+// takenOverBy gives the store the CA node made when pco setup took the
+// restored store into this cluster, and returns the record of it.
+func takenOverBy(t *testing.T, e *env, node string) *store.Restored {
+	t.Helper()
+	ca := testCA(t)
+	seedCA(t, e, ca)
+	return &store.Restored{BundleMadeAt: time.Unix(1700000000, 0).UTC(), TakenOverBy: node, CASHA256: ca.SHA256()}
+}
+
+// A store restored into another cluster is promoted only on the node that
+// took it into this cluster, and only once that take-over is done: before,
+// the registry and the CA are still those of the lost cluster.
+func TestPromoteOfARestoredStoreNeedsItsTakeOverDone(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		restore func(t *testing.T, e *env) *store.Restored
+		want    string
+	}{
+		{"before pco setup", func(*testing.T, *env) *store.Restored { return &store.Restored{} },
+			"the restored store is not taken into this cluster: no node took it into this cluster yet; run pco setup on this node first"},
+		{"taken by another node", func(t *testing.T, e *env) *store.Restored { return takenOverBy(t, e, "pve9") },
+			"node pve9 took the restored store into this cluster: run pco promote there"},
+		{"a take-over cut short", func(t *testing.T, e *env) *store.Restored {
+			r := takenOverBy(t, e, testNode)
+			seedCA(t, e, testCA(t))
+			return r
+		}, "the restored store is not taken into this cluster: its CA is not the one node " + testNode + " made"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, l := restoredElsewhere(t)
+			inst, _, err := e.store.Install()
+			require.NoError(t, err)
+			inst.Restored = tt.restore(t, e)
+			require.NoError(t, e.store.SaveInstall(inst))
+
+			_, err = e.eng.Promote(t.Context(), PromoteRequest{Confirm: true, Cluster: "old-lab"})
+
+			require.ErrorIs(t, err, ErrRefused)
+			require.ErrorContains(t, err, tt.want)
+			require.Empty(t, l.promoted)
+			after, _, err := e.store.Install()
+			require.NoError(t, err)
+			require.Equal(t, caOld, after.Cluster.CASHA256, "nothing saved")
+			require.Equal(t, inst.Restored, after.Restored)
+			_, found, err := e.store.RestoreRotation()
+			require.NoError(t, err)
+			require.False(t, found)
+		})
+	}
 }
 
 // The promotion of a restored install asks the cycles for a new secret of

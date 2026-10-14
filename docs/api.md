@@ -404,7 +404,8 @@ differences the admin was shown; it is also refused when
 nothing differs and nothing holds the controller, unless `force`; when the store was made in
 another cluster and `cluster` is not the name of that cluster, or its fingerprint when it has
 none; when a sentinel cannot be read; for an install restored from a bundle into another
-cluster, while a connector of it is connected at Cloudflare or that cannot be read; and in the appliance, which draws an epoch with `pco
+cluster, while a connector of it is connected at Cloudflare or that cannot be read, and unless
+`pco setup` took it into this cluster in full on this node; and in the appliance, which draws an epoch with `pco
 appliance recover`. The reads at Cloudflare have 45 seconds, the whole request 55. The daemon takes it from root
 alone: `pco-web` is refused with `only root may promote a node to be the writer`. `rotatesSecrets`
 is true for an install restored from a bundle: the first cycle that may write gives every tunnel
