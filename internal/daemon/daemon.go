@@ -484,7 +484,14 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		return nil, nil, nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
 	}
 	log := cfg.Log
-	inv := inventory.New(client, inventory.Options{GateTags: []string{settings.GateTag}, Routed: routedGuests(st, log)}, deps.Now, log)
+	// The guests and the network of this node are read with pvesh while its
+	// pveproxy does not answer: no other node's can then.
+	onNode, err := pve.NewLocal(setup.NewHostRunner(), cfg.Node)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("building the reader of this node: %w", err)
+	}
+	src := inventory.OnNode(client, cfg.Node, onNode)
+	inv := inventory.New(src, inventory.Options{GateTags: []string{settings.GateTag}, Routed: routedGuests(st, log)}, deps.Now, log)
 	res := resolve.NewResolver(gateway.NewProber(deps.Prober, gw.UpLegs, deps.Gateway), resolve.Settings{
 		LocalNode:    cfg.Node,
 		TrustStatic:  settings.TrustStatic,
