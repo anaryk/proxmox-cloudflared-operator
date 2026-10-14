@@ -175,10 +175,15 @@ func testManagedNetwork(t *testing.T, s *suite) {
 
 	t.Run("qemu without network hotplug", func(t *testing.T) {
 		image := skipWithoutImage(t)
-		v := vm{vmid: noHotplugVMID, addr: "10.77.0.66", tags: gateTag + ";" + consentTag, noHotplug: true,
+		// The machine consents once it runs: a card added before its first
+		// start is in the configuration it starts with, and waits for
+		// nothing.
+		v := vm{vmid: noHotplugVMID, addr: "10.77.0.66", tags: gateTag, noHotplug: true,
 			notes: s.in(guest{notes: "cf-tunnel: e2e-s21p.ZONE -> :8080 via=managed"}).notes}
 		s.pconetGuests[v.vmid] = true
 		s.createVM(t, v, image)
+		s.must(t, "qm", "set", strconv.Itoa(v.vmid), "--tags", gateTag+";"+consentTag)
+		s.sync(t)
 		att := s.waitAttachment(t, v.owner(), engine.AttachmentPendingReboot)
 		t.Logf("%s: %s %s", v.owner(), att.State, att.Detail)
 		pending := s.must(t, "qm", "pending", strconv.Itoa(v.vmid))
