@@ -911,6 +911,9 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 		fail(r.removeSDNNote(vmid))
 		fail(r.delist(ctx, vmid, s.manifest))
 	}
+	if gone && kindOf(s.cfg["tags"]) == KindController {
+		fail(r.removeHA(ctx, vmid))
+	}
 	if kindOf(s.cfg["tags"]) == KindAgent {
 		r.ask.Info("on the controller, pco node forget %s removes the node from the install", r.node)
 	}

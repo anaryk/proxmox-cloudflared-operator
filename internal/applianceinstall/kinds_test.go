@@ -130,7 +130,8 @@ func TestAControllerOnHAIsKeptOnTheNodesChosen(t *testing.T) {
 
 	e.install(o)
 
-	require.Equal(t, []string{"add ct:100 --state started", "rules add node-affinity pco-100 --resources ct:100 --nodes pve1,pve2"}, e.node.ha)
+	require.Equal(t, []string{"add ct:100 --state started",
+		"rules add node-affinity pco-100 --resources ct:100 --nodes pve1,pve2 --comment pco appliance vm100"}, e.node.ha)
 	require.Contains(t, e.ask.text(), "fences itself when it loses quorum")
 	require.Equal(t, map[string]any{"id": "local-zfs", "ha": true}, e.bootstrap(0)["storage"])
 }
@@ -157,4 +158,29 @@ func TestUninstallingAnAgentTakesOnlyItsOwnAddressOutOfTheControllersIPSet(t *te
 
 	require.Equal(t, []map[string]string{{"cidr": "192.0.2.77", "comment": "pco appliance vm300"}}, fw.entries[agentsIPSet])
 	require.Contains(t, e.ask.text(), "pco node forget pve1")
+}
+
+// The uninstall of an HA controller removes the rule the install made; a
+// rule of that name without pco's mark is the admin's and stays.
+func TestUninstallingAnHAControllerRemovesItsRule(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		comment string
+		left    int
+	}{
+		{"pco's", "pco appliance vm100", 0},
+		{"the admin's", "the admin's", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			o := e.options()
+			o.Kind, o.Storage, o.HA, o.HANodes = KindController, "local-zfs", true, []string{"pve1", "pve2"}
+			e.install(o)
+			e.node.haRules[0]["comment"] = tt.comment
+
+			require.NoError(t, e.in.Uninstall(t.Context(), 100, UninstallOptions{Yes: true, KeepCloudflare: true, KeepTemplate: true}), e.ask.text())
+
+			require.Len(t, e.node.haRules, tt.left)
+		})
+	}
 }

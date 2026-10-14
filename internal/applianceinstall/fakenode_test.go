@@ -164,7 +164,8 @@ type fakeNode struct {
 	sharedStorage bool
 	replication   []map[string]any
 	ha            []string
-	converted     []int // the containers pco appliance convert ran in
+	haRules       []map[string]any // the HA rules of Proxmox VE 9
+	converted     []int            // the containers pco appliance convert ran in
 
 	pcoVersion string // of the template's pco
 	secrets    int
@@ -492,6 +493,12 @@ func (f *fakeNode) dispatch(ctx context.Context, line, name string, args []strin
 		return f.pvesm(args)
 	case "ha-manager":
 		f.ha = append(f.ha, strings.Join(args, " "))
+		if len(args) > 3 && args[0] == "rules" && args[1] == "add" {
+			f.haRules = append(f.haRules, map[string]any{"rule": args[3], "comment": flag(args, "--comment")})
+		}
+		if len(args) > 2 && args[0] == "rules" && args[1] == "remove" {
+			f.haRules = slices.DeleteFunc(f.haRules, func(r map[string]any) bool { return r["rule"] == args[2] })
+		}
 		return "", nil
 	case "systemctl":
 		if line == "systemctl is-active pve-firewall" {
@@ -556,6 +563,10 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 		return asJSON(map[string]any{"storage": strings.TrimPrefix(path, "/storage/"), "shared": b01(f.sharedStorage)}), nil
 	case verb == "get" && path == "/cluster/replication":
 		return asJSON(f.replication), nil
+	case verb == "get" && path == "/cluster/ha/rules":
+		return asJSON(f.haRules), nil
+	case verb == "get" && path == "/cluster/ha/groups":
+		return "", errors.New("no such resource '/cluster/ha/groups'")
 	}
 	switch {
 	case verb == "get" && path == "/nodes/"+f.name+"/firewall/options":
