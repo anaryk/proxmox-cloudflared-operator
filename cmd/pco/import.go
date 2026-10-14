@@ -32,10 +32,12 @@ func (a *app) importCmdWith(e bundleEnv) *cobra.Command {
 			"without being shown; it is never taken from an argument. A wrong passphrase and a file that\n" +
 			"was changed cannot be told apart.\n\n" +
 			"The install is stored in observe-only mode whatever it was: it publishes nothing until pco\n" +
-			"apply. What the controller learns between its runs, the engine memory, is in no bundle: it is\n" +
-			"learnt again in the observe-only window, before anything is removed. A bundle of an earlier\n" +
-			"shape carries no pool of service addresses; the pool then starts above the addresses in use,\n" +
-			"and an address that had been released may be given out again.\n\n" +
+			"apply, and the day in which the agent endpoint takes a certificate the store has no enrolment\n" +
+			"for begins with the restore, whenever the exported install began to observe. What the\n" +
+			"controller learns between its runs, the engine memory, is in no bundle: it is learnt again\n" +
+			"in the observe-only window, before anything is removed. A bundle of an earlier shape carries\n" +
+			"no pool of service addresses; the pool then starts above the addresses in use, and an\n" +
+			"address that had been released may be given out again.\n\n" +
 			"leader.json comes back as it was, so the controller writes nothing until pco promote\n" +
 			"draws an epoch above the one of the install that was lost. The install remembers the cluster\n" +
 			"it was made in: restored in another, the daemon writes nothing until pco promote makes that\n" +

@@ -211,7 +211,7 @@ func TestTheTypesTheStrictDecodeDoesNotLookIntoAreKnown(t *testing.T) {
 		reflect.TypeFor[store.CARotation](), reflect.TypeFor[store.Network](), reflect.TypeFor[store.ServiceAddr](),
 		reflect.TypeFor[store.NodeServiceAddr](), reflect.TypeFor[store.Lease](), reflect.TypeFor[store.Consent](),
 		reflect.TypeFor[store.Attachment](), reflect.TypeFor[planner.Claim](), reflect.TypeFor[map[string]reconcile.Tombstone](),
-		reflect.TypeFor[store.Placement](), reflect.TypeFor[store.Move](),
+		reflect.TypeFor[store.Placement](), reflect.TypeFor[store.Move](), reflect.TypeFor[store.ObserveSince](),
 	)
 
 	require.Equal(t, []string{

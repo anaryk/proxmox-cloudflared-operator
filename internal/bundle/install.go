@@ -131,6 +131,15 @@ func collectPKI(_ context.Context, st *store.Store, c *Contents) error {
 			return err
 		}
 	}
+	observe, found, err := st.ObserveSince()
+	if err != nil {
+		return fmt.Errorf("reading the start of observe-only mode: %w", err)
+	}
+	if found {
+		if c.Observe, err = json.Marshal(observe); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -398,6 +407,15 @@ func readPKI(c Contents, r *restoration) error {
 			return fmt.Errorf("leader.json of the bundle names install %s, and the bundle is of install %s", leader.InstallID, c.InstallID)
 		}
 		r.leader = &leader
+	}
+	if len(c.Observe) > 0 {
+		// Read to refuse a damaged bundle, and not restored: the restored
+		// install observes from the restore on, and so begins the window
+		// of the certificates of serials it does not know.
+		var observe store.ObserveSince
+		if err := decodeStrict(c.Observe, &observe); err != nil {
+			return fmt.Errorf("the start of observe-only mode of the bundle: %w", err)
+		}
 	}
 	return nil
 }

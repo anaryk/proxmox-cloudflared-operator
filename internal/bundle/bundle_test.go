@@ -46,6 +46,7 @@ func full() Contents {
 		},
 		CARotatedAt:      t0.Add(-time.Hour),
 		CARotation:       json.RawMessage(`{"node":"pve3","startedAt":"2026-10-06T10:00:00Z","done":["credentials"]}`),
+		Observe:          json.RawMessage(`{"since":"2026-10-06T09:00:00Z"}`),
 		Cluster:          json.RawMessage(`{"caSHA256":"aaaa","name":"lab"}`),
 		Credentials:      []json.RawMessage{json.RawMessage(`{"id":"main","token":"cf-secret-token"}`)},
 		Leader:           json.RawMessage(`{"installId":"0123456789ab","generation":4,"nonce":"abcd"}`),
@@ -80,6 +81,7 @@ func requireSameContents(t *testing.T, want, got Contents) {
 		"leader":      {want.Leader, got.Leader},
 		"cluster":     {want.Cluster, got.Cluster},
 		"CA rotation": {want.CARotation, got.CARotation},
+		"observe":     {want.Observe, got.Observe},
 		"tombstones":  {want.Tombstones, got.Tombstones},
 	} {
 		if len(pair[0]) == 0 {

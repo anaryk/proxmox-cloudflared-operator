@@ -364,6 +364,36 @@ func TestRestoreSetsObserveOnlyWhateverTheBundleSays(t *testing.T) {
 	require.True(t, got.ObserveOnly, "it publishes nothing until pco apply")
 }
 
+// The start of observe-only mode the controller recorded goes into the
+// bundle, but a restore starts the window anew: the restored install is in
+// observe-only mode from the restore on, and the agents' certificates of
+// serials it does not know are taken for a day from then, not from when the
+// exported install began observing.
+func TestTheStartOfObserveOnlyModeIsCarriedButNotRestored(t *testing.T) {
+	from := installed(t)
+	require.NoError(t, from.SaveObserveSince(store.ObserveSince{Since: t0.Add(-3 * 24 * time.Hour)}))
+
+	c := carried(t, collect(t, from, false))
+	require.JSONEq(t, `{"since":"2026-10-03T12:00:00Z"}`, string(c.Observe))
+
+	to := openStore(t)
+	require.NoError(t, Restore(t.Context(), to, c))
+	_, found, err := to.ObserveSince()
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
+// A bundle whose record of observe-only mode holds what the store has no
+// field for is refused, as any other object of it.
+func TestABundleWithABadStartOfObserveOnlyModeIsRefused(t *testing.T) {
+	c := carried(t, collect(t, installed(t), false))
+	c.Observe = json.RawMessage(`{"since":"2026-09-28T12:00:00Z","by":"x"}`)
+
+	err := Restore(t.Context(), openStore(t), c)
+
+	require.ErrorContains(t, err, "the start of observe-only mode of the bundle")
+}
+
 func TestAStoreThatHoldsAnInstallIsNotRestoredInto(t *testing.T) {
 	c := carried(t, collect(t, installed(t), true))
 	to := openStore(t)

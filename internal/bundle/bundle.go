@@ -114,6 +114,9 @@ type Contents struct {
 	// CARotation is the progress of the rotation of every secret a forgotten
 	// node held, when one is under way or was made.
 	CARotation json.RawMessage
+	// Observe is when the controller's observe-only mode began, as it
+	// recorded it; a restore does not take it over.
+	Observe json.RawMessage
 	// Credentials are the Cloudflare credentials, with their tokens, and are
 	// there only when the export asked for them.
 	Credentials []json.RawMessage
@@ -199,6 +202,7 @@ type document struct {
 	PreviousCA       *caDocument       `json:"previousCA,omitempty"`
 	CARotatedAt      time.Time         `json:"caRotatedAt,omitzero"`
 	CARotation       json.RawMessage   `json:"caRotation,omitempty"`
+	Observe          json.RawMessage   `json:"observe,omitempty"`
 	Credentials      []json.RawMessage `json:"credentials,omitempty"`
 	Leader           json.RawMessage   `json:"leader,omitempty"`
 	Networks         []json.RawMessage `json:"networks,omitempty"`
@@ -241,7 +245,7 @@ func (c Contents) document() document {
 		InstallID: c.InstallID, InstalledAt: c.InstalledAt, Cluster: c.Cluster, Settings: c.Settings,
 		ManualRoutes: c.ManualRoutes, Approvals: c.Approvals, Segments: c.Segments, NodeSegments: c.NodeSegments,
 		Nodes: c.Nodes, CA: caOut(c.CA), PreviousCA: caOut(c.PreviousCA), CARotatedAt: c.CARotatedAt,
-		CARotation: c.CARotation, Credentials: c.Credentials, Leader: c.Leader, Networks: c.Networks,
+		CARotation: c.CARotation, Observe: c.Observe, Credentials: c.Credentials, Leader: c.Leader, Networks: c.Networks,
 		ServiceAddrs: c.ServiceAddrs, NodeServiceAddrs: c.NodeServiceAddrs, ServicePoolNext: c.ServicePoolNext,
 		Leases: c.Leases, Consents: c.Consents, Attachments: c.Attachments, Claims: c.Claims,
 		Tombstones: c.Tombstones, Placements: c.Placements, Moves: c.Moves, MadeAt: c.MadeAt, Build: c.Build,
@@ -253,7 +257,7 @@ func (d document) contents() Contents {
 		InstallID: d.InstallID, InstalledAt: d.InstalledAt, Cluster: d.Cluster, Settings: d.Settings,
 		ManualRoutes: d.ManualRoutes, Approvals: d.Approvals, Segments: d.Segments, NodeSegments: d.NodeSegments,
 		Nodes: d.Nodes, CA: caIn(d.CA), PreviousCA: caIn(d.PreviousCA), CARotatedAt: d.CARotatedAt,
-		CARotation: d.CARotation, Credentials: d.Credentials, Leader: d.Leader, Networks: d.Networks,
+		CARotation: d.CARotation, Observe: d.Observe, Credentials: d.Credentials, Leader: d.Leader, Networks: d.Networks,
 		ServiceAddrs: d.ServiceAddrs, NodeServiceAddrs: d.NodeServiceAddrs, ServicePoolNext: d.ServicePoolNext,
 		Leases: d.Leases, Consents: d.Consents, Attachments: d.Attachments, Claims: d.Claims,
 		Tombstones: d.Tombstones, Placements: d.Placements, Moves: d.Moves, MadeAt: d.MadeAt, Build: d.Build,

@@ -26,12 +26,13 @@ func (a *app) exportCmdWith(e bundleEnv) *cobra.Command {
 			"settings, manual routes, approvals and acknowledged segments, the registry of nodes, the CA\n" +
 			"with its key, and the previous CA while a rotation runs, leader.json, and every other object\n" +
 			"the controller writes: the networks and service addresses, the leases, consents and\n" +
-			"attachments of the managed network, the claims, tombstones, placements and moves. With\n" +
-			"--credentials the Cloudflare tokens are in it too. pco import restores the install from it on\n" +
-			"another node or in another cluster, which is what a restore after a lost cluster or\n" +
-			"controller, and the conversion of a node, need. Run tokens, bindings and the caches are left\n" +
-			"out, and so is the engine memory, what the controller learns between its runs: the daemon\n" +
-			"builds them again, the memory in the observe-only window after a restore.\n\n" +
+			"attachments of the managed network, the claims, tombstones, placements and moves, and since\n" +
+			"when the controller observes only. With --credentials the Cloudflare tokens are in it too.\n" +
+			"pco import restores the install from it on another node or in another cluster, which is\n" +
+			"what a restore after a lost cluster or controller, and the conversion of a node, need. Run\n" +
+			"tokens, bindings and the caches are left out, and so is the engine memory, what the\n" +
+			"controller learns between its runs: the daemon builds them again, the memory in the\n" +
+			"observe-only window after a restore.\n\n" +
 			"It runs as root on the node and reads the store directly, while the daemon runs: nothing has to\n" +
 			"be stopped. What it reads is the store at one moment; when the CA changed before the file was\n" +
 			"written, as it does during a rotation, it refuses and is run again. On a host the store is\n" +
