@@ -392,6 +392,14 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 		if err := e.stillInCluster(name); err != nil {
 			return ForgetResult{}, err
 		}
+		s, err := e.d.Store.Settings()
+		if err != nil {
+			return ForgetResult{}, fmt.Errorf("reading the settings: %w", err)
+		}
+		if s.ObserveOnly {
+			return ForgetResult{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare, where every secret of the install "+
+				"is rotated; run pco apply first, then pco node forget %s --compromised", ErrRefused, name)
+		}
 	}
 	res := ForgetResult{Node: name, Compromised: compromised, Done: []string{}}
 	before := n

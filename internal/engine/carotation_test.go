@@ -16,6 +16,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -138,9 +139,8 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 	require.NoError(t, err)
 	require.True(t, found)
 	require.NoError(t, os.Remove(leaderFile))
-	st = w.tick(time.Second)
-	require.Equal(t, stepCA, st.Cluster.CARotation.Next, st.Problems)
-	require.True(t, hasProblem(st, "rotating the CA failed"), st.Problems)
+	started := w.rotationRecord(t).StartedAt
+	require.ErrorContains(t, (&cycleRun{e: w.eng, ctx: t.Context(), now: w.clock.now()}).rotateCA(started), "leader.json is missing")
 	made, prev, _, err := w.store.CA()
 	require.NoError(t, err)
 	require.NotNil(t, prev, "the new CA is kept")
@@ -410,6 +410,45 @@ func TestARotationWhoseRecordAndCADisagreeStops(t *testing.T) {
 	require.False(t, hasProblem(st, "disagree"), st.Problems)
 	require.False(t, st.Cluster.CARotation.FinishedAt.IsZero())
 	require.Len(t, drift(), 2)
+}
+
+// The steps that write at Cloudflare or replace the CA wait while the cycle
+// may not write as it sees: in observe-only mode, and while a hold of the
+// tunnel run, the egress filter, the gateway or an add-only cycle keeps it
+// from writing.
+func TestTheRotationWritesNothingWhileTheCycleIsHeld(t *testing.T) {
+	w, _ := compromisedWorld(t)
+	tunnel := w.eng.State().Tunnels[0].TunnelState
+	cur, _, _, err := w.store.CA()
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		name string
+		c    *cycleRun
+		why  string
+	}{
+		{"observe-only", &cycleRun{e: w.eng, checked: true, settings: store.Settings{ObserveOnly: true}}, "observe-only"},
+		{"held", &cycleRun{e: w.eng, checked: true, cfHold: true}, "changes nothing at Cloudflare"},
+		{"egress", &cycleRun{e: w.eng, checked: true, egressHeld: heldEgress}, heldEgress},
+		{"gateway", &cycleRun{e: w.eng, checked: true, gatewayHeld: heldGateway}, heldGateway},
+		{"add-only", &cycleRun{e: w.eng, checked: true, addOnly: "nothing is withdrawn"}, "nothing is withdrawn"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.c.ctx, tt.c.now, tt.c.tunnels = t.Context(), w.clock.now(), []reconcile.TunnelState{tunnel}
+			n := len(w.cf.Calls())
+			for _, step := range []string{stepTunnels, stepCA} {
+				rec := store.CARotation{Node: "pve3", StartedAt: t0}
+				done, why := tt.c.rotationStepDone(&rec, step)
+				require.False(t, done, step)
+				require.Contains(t, why, tt.why, step)
+				require.Empty(t, rec.Rotated)
+			}
+			require.Empty(t, w.cf.Calls()[n:], "nothing is asked of Cloudflare")
+			again, prev, _, err := w.store.CA()
+			require.NoError(t, err)
+			require.Nil(t, prev)
+			require.Equal(t, cur.CertPEM, again.CertPEM, "the CA is kept")
+		})
+	}
 }
 
 // A node forgotten while a rotation runs on a store the previous build

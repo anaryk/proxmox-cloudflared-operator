@@ -51,6 +51,7 @@ const (
 	problemRotationTunnels = "node %s was forgotten as compromised: rotating the secret of %s failed: %v; it is tried again in the next cycle"
 	problemRotationRollout = "node %s was forgotten as compromised: waiting for the connectors of %s to run with the new secret before the CA is rotated"
 	problemRotationCA      = "node %s was forgotten as compromised: rotating the CA failed: %v; it is tried again in the next cycle"
+	problemRotationHeld    = "node %s was forgotten as compromised: the rotation of %s waits for a cycle that writes: %s"
 	problemRotationRefused = "the certificate of node %s is not under the install's new CA: its agent is refused until the node issues its certificate again, " +
 		"which it does when it reads leader.json at its next start"
 	problemRotationDrift = "node %s was forgotten as compromised, but the record of the rotation and the install's CA disagree: %s; " +
@@ -253,6 +254,9 @@ func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bo
 		}
 		return false, fmt.Sprintf(problemRotationProxmox, rec.Node)
 	case stepTunnels:
+		if why := c.rotationHeld(); why != "" {
+			return false, fmt.Sprintf(problemRotationHeld, rec.Node, "the tunnels", why)
+		}
 		return c.rotateTunnels(rec)
 	case stepRollout:
 		if waiting := c.notRolledOut(rec.Rotated); len(waiting) > 0 {
@@ -260,6 +264,9 @@ func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bo
 		}
 		return true, ""
 	case stepCA:
+		if why := c.rotationHeld(); why != "" {
+			return false, fmt.Sprintf(problemRotationHeld, rec.Node, "the CA", why)
+		}
 		if err := c.rotateCA(rec.StartedAt); err != nil {
 			return false, fmt.Sprintf(problemRotationCA, rec.Node, err)
 		}
@@ -268,6 +275,26 @@ func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bo
 		return c.dropPreviousCA()
 	}
 	return true, ""
+}
+
+// rotationHeld says why this cycle may not rotate a secret at Cloudflare or
+// the CA, as it may not write what it sees: observe-only mode, a hold of the
+// cycle, the egress filter or the gateway that could not be set, or a cycle
+// that only adds. Empty when it may.
+func (c *cycleRun) rotationHeld() string {
+	switch {
+	case c.settings.ObserveOnly:
+		return "pco is in observe-only mode; pco apply ends it"
+	case c.cfHold:
+		return "the cycle changes nothing at Cloudflare"
+	case c.egressHeld != "":
+		return c.egressHeld
+	case c.gatewayHeld != "":
+		return c.gatewayHeld
+	case c.addOnly != "":
+		return c.addOnly
+	}
+	return ""
 }
 
 // credentialsReplaced says that every credential stored was added since

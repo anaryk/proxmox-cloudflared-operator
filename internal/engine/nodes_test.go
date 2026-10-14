@@ -490,3 +490,24 @@ func TestAForgottenNodeThatStillReportsStaysRemoved(t *testing.T) {
 		}
 	}
 }
+
+// Forgetting a node as compromised rotates at Cloudflare, which observe-only
+// mode must not: it is refused, with nothing changed, until pco apply.
+func TestForgetAsCompromisedIsRefusedInObserveOnlyMode(t *testing.T) {
+	w := threeNodes(t)
+	closed := 0
+	w.closeNode = func(string) { closed++ }
+	w.settle()
+	*w.listed = []members.Member{{Name: "pve1", ID: 1, Online: true}, {Name: "pve2", ID: 2, Online: true}}
+	w.settings(func(s *store.Settings) { s.ObserveOnly = true })
+
+	_, err := w.eng.ForgetNode(t.Context(), "pve3", true)
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "pco apply")
+	require.Equal(t, store.NodeActive, entryOf(t, w.env, "pve3").State, "nothing changed")
+	require.Zero(t, closed)
+	_, found, err := w.store.CARotation()
+	require.NoError(t, err)
+	require.False(t, found)
+}
