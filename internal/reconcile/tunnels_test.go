@@ -281,7 +281,7 @@ func TestJudgeConfig(t *testing.T) {
 		{"our sentinel", rulesOf(ours, app), ours, WriterProceed, planner.Writer{}},
 		{"sentinel of another install", []planner.IngressRule{app, otherInstall, catchAll}, ours, WriterForeign, planner.Writer{InstallID: "xyz", Generation: 9, Nonce: "n9"}},
 		{"a sentinel that does not read", []planner.IngressRule{app, {Hostname: "g5.pco-abc.invalid", Service: "http_status:404"}, catchAll}, ours, WriterForeign, planner.Writer{}},
-		{"a sentinel in capitals", []planner.IngressRule{app, {Hostname: "G5.N5.PCO-ABC.INVALID", Service: "http_status:404"}, catchAll}, ours, WriterForeign, planner.Writer{}},
+		{"a sentinel in capitals", []planner.IngressRule{app, {Hostname: "g5.n5.Pco-Abc.INVALID", Service: "http_status:404"}, catchAll}, ours, WriterForeign, planner.Writer{}},
 		{"stale, then foreign", []planner.IngressRule{app, sentinelOf(newer), sentinelOf(twin), catchAll}, newer, WriterForeign, twin},
 		{"foreign, then stale", []planner.IngressRule{app, sentinelOf(twin), sentinelOf(newer), catchAll}, newer, WriterForeign, twin},
 		{"older, then stale", []planner.IngressRule{app, sentinelOf(writerAt(3, "n3")), sentinelOf(newer), catchAll}, newer, WriterStale, newer},
@@ -419,7 +419,7 @@ func TestTunnelExternalEditOverwritten(t *testing.T) {
 func TestTunnelOtherInstallOrUnreadSentinelStops(t *testing.T) {
 	for name, sentinel := range map[string]string{
 		"another install":        "g9.n9.pco-xyz.invalid",
-		"a sentinel in capitals": "G5.N5.PCO-ABC.INVALID",
+		"a sentinel in capitals": "g5.n5.Pco-Abc.INVALID",
 		"a broken sentinel":      "g5.pco-abc.invalid",
 		"a name of the domain":   "anything.invalid",
 	} {
