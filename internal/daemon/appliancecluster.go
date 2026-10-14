@@ -312,8 +312,14 @@ func (c *applianceCluster) endpoints() []string {
 // sources are the addresses the endpoint takes a connection from: of every
 // registered appliance agent that is not removed, the addresses of its
 // container while it runs on the node it was enrolled for and is no HA
-// resource; and to join, those of the containers in pool pco on a node an
-// unused join token is for, but this one.
+// resource; and to join, those of the containers in pool pco, but this one,
+// on a node with a join token that is unused, or used for a node the
+// registry does not hold yet.
+//
+// A join records the use of its token before it registers the node, and the
+// two are read here one after the other. Were a used token closed at once, a
+// join between the two reads would leave its container in neither list, and
+// the allowlist would drop its connections until the next refresh.
 func (c *applianceCluster) sources(ctx context.Context) (clusterapi.Sources, error) {
 	nodes, err := c.st.Nodes()
 	if err != nil {
@@ -343,10 +349,14 @@ func (c *applianceCluster) sources(ctx context.Context) (clusterapi.Sources, err
 	if err != nil {
 		return src, nil
 	}
+	registered := map[string]bool{}
+	for _, n := range nodes {
+		registered[n.Name] = n.State != store.NodeRemoved
+	}
 	now := c.now()
 	open := map[string]bool{}
 	for _, t := range tokens {
-		if len(t.Uses) == 0 && now.Before(t.Expires) {
+		if now.Before(t.Expires) && (len(t.Uses) == 0 || !registered[t.Node]) {
 			open[t.Node] = true
 		}
 	}

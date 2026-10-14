@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -114,4 +116,62 @@ func TestAnUnprovenControllerServesNoAgent(t *testing.T) {
 	c.tick(t.Context())
 	require.Nil(t, c.listening)
 	require.True(t, stopped)
+}
+
+// joinMidway is a Proxmox whose first listing of the guests runs a whole
+// join, as one that lands while the endpoint reads who may connect.
+type joinMidway struct {
+	*fakeJoinPVE
+	join func()
+}
+
+func (p *joinMidway) Resources(ctx context.Context) ([]pve.Resource, error) {
+	if join := p.join; join != nil {
+		p.join = nil
+		join()
+	}
+	return p.fakeJoinPVE.Resources(ctx)
+}
+
+func clusterOf(jt *joinTest, px joinProxmox) *applianceCluster {
+	jt.j.px = px
+	return &applianceCluster{st: jt.st, joins: jt.j, install: joinInstall, vmid: 9250, node: "pve1", now: func() time.Time { return jt.now }, log: zerolog.Nop()}
+}
+
+// The container that joins may connect before its join, and as the node it
+// joined as after it, no longer to join.
+func TestTheAgentEndpointTakesAJoiningContainerThroughItsJoin(t *testing.T) {
+	jt := newJoinTest(t)
+	c := clusterOf(jt, jt.px)
+
+	src, err := c.sources(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []netip.Addr{agentAddr}, src.Join)
+	require.Empty(t, src.Nodes)
+
+	_, err = jt.join(agentAddr)
+	require.NoError(t, err)
+	src, err = c.sources(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, src.Join, "a used token is closed once its node is registered")
+	require.Equal(t, []netip.Addr{agentAddr}, src.Nodes["pve2"])
+}
+
+// A join that lands between the reads of the registry and of the join
+// tokens leaves its container in one of the two lists, never in neither,
+// where the allowlist would close its connections before any answer.
+func TestAJoinWhileTheSourcesAreReadLeavesTheContainerReachable(t *testing.T) {
+	jt := newJoinTest(t)
+	px := &joinMidway{fakeJoinPVE: jt.px}
+	px.join = func() {
+		_, err := jt.join(agentAddr)
+		require.NoError(t, err)
+	}
+	c := clusterOf(jt, px)
+
+	src, err := c.sources(t.Context())
+	require.NoError(t, err)
+	require.Nil(t, px.join, "the join ran while the sources were read")
+	held := slices.Contains(src.Join, agentAddr) || slices.Contains(src.Nodes["pve2"], agentAddr)
+	require.True(t, held, "the container that joined is in neither list: %+v", src)
 }
