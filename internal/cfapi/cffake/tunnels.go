@@ -285,7 +285,7 @@ func (f *Fake) DeleteTunnel(ctx context.Context, accountID, tunnelID string) err
 		return err
 	}
 	if len(t.connectors) > 0 {
-		return &cfapi.Error{Status: http.StatusBadRequest, Message: "Cannot delete a tunnel that has active connections"}
+		return &cfapi.Error{Status: http.StatusBadRequest, Codes: []int{1400}, Message: "Cannot delete a tunnel that has active connections"}
 	}
 	t.deleted, t.deletedAt = true, f.now()
 	return nil

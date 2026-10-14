@@ -21,6 +21,10 @@ const (
 	codeIdenticalRecord = 81058
 )
 
+// codeActiveConnections is the code of a tunnel Cloudflare does not delete
+// while it counts a connection of it.
+const codeActiveConnections = 1400
+
 // errUnexpected marks an answer that cannot be trusted as an answer from the
 // API: not an envelope, or one without the fields every envelope has.
 var errUnexpected = errors.New("unexpected response")
@@ -118,6 +122,14 @@ func IsNotFound(err error) bool {
 func IsRateLimited(err error) bool {
 	var apiErr *Error
 	return errors.As(err, &apiErr) && apiErr.Status == http.StatusTooManyRequests
+}
+
+// HasConnections reports whether err says a tunnel cannot be deleted while
+// it has connections: a connector still runs, or Cloudflare has not counted
+// the end of its connections yet.
+func HasConnections(err error) bool {
+	var apiErr *Error
+	return errors.As(err, &apiErr) && slices.Contains(apiErr.Codes, codeActiveConnections)
 }
 
 // IsConflict reports whether err says what was to be created already exists.

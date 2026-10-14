@@ -33,3 +33,23 @@ func TestIsUnanswered(t *testing.T) {
 		})
 	}
 }
+
+func TestHasConnections(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"no error", nil, false},
+		{"a tunnel that still has connections", &Error{Status: http.StatusBadRequest, Codes: []int{1400}}, true},
+		{"wrapped", fmt.Errorf("deleting tunnel t1: %w", &Error{Status: http.StatusBadRequest, Codes: []int{1400}}), true},
+		{"another bad request", &Error{Status: http.StatusBadRequest, Codes: []int{1001}}, false},
+		{"a missing tunnel", &Error{Status: http.StatusNotFound, Codes: []int{7003}}, false},
+		{"an error of the caller", errors.New("boom"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, HasConnections(tt.err))
+		})
+	}
+}
