@@ -195,9 +195,11 @@ type Agent struct {
 	wasActive map[string]bool // tunnels whose connector ran at the last pass
 	ownReady  map[string]bool // tunnels whose connector was ready at the last pass
 	gwInUse   bool            // the gateway was last given a leg or a service
-	filtered  filteredMemory
-	rep       view       // what the last pass found, for Status and View
-	repMu     sync.Mutex // guards rep
+	// gwServices are the service addresses the gateway was last given.
+	gwServices []netip.Addr
+	filtered   filteredMemory
+	rep        view       // what the last pass found, for Status and View
+	repMu      sync.Mutex // guards rep
 
 	heardMu sync.Mutex
 	heardAt time.Time // the last snapshot or heartbeat of a controller

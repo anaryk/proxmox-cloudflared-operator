@@ -239,8 +239,9 @@ func (a *Agent) unsuspected() []egress.Target {
 }
 
 // syncGateway gives the gateway the legs of the snapshot, every service
-// address the set holds with the ports it holds it at, and the neighbours
-// proven behind them. A snapshot that gives no networks leaves the gateway
+// address the set holds with the ports it holds it at, the neighbours proven
+// behind them and the leases of the snapshot, and the sticky entries of the
+// cards of the guests of this node. A snapshot that gives no networks leaves the gateway
 // as it is.
 func (p *pass) syncGateway(set []egress.Target) {
 	if p.a.d.Gateway == nil || !p.networks {
@@ -260,7 +261,7 @@ func (p *pass) syncGateway(set []egress.Target) {
 		services = append(services, gateway.Service{Leg: m.leg, Service: service, Addr: m.addr, Ports: slices.Compact(slices.Sorted(slices.Values(ps)))})
 	}
 	slices.SortFunc(services, func(a, b gateway.Service) int { return cmp.Or(cmp.Compare(a.Leg, b.Leg), a.Addr.Compare(b.Addr)) })
-	pins := p.gatewayPins(services)
+	pins := p.withLeases(p.gatewayPins(services))
 	if len(p.cache.Legs) == 0 && len(services) == 0 && !p.a.gwInUse {
 		return
 	}
@@ -270,6 +271,7 @@ func (p *pass) syncGateway(set []egress.Target) {
 		return
 	}
 	p.a.gwInUse = len(p.cache.Legs) > 0 || len(services) > 0
+	p.a.gwServices = serviceAddrs(services)
 	for _, st := range states {
 		switch {
 		case !st.Up:
