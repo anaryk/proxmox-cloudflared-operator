@@ -10,6 +10,8 @@ const (
 		"until then the run tokens the lost install held still work"
 	problemRestoreRotationFailed = "the install was restored from a bundle: giving tunnel %s in account %s a new secret failed: %v; " +
 		"it is tried again in the next cycle"
+	problemRestoreUnsaved = "the install was restored from a bundle: the record of the new secrets of its tunnels cannot be saved: %v; " +
+		"nothing more is rotated until it is"
 	restoreRotationDone = "the install was restored from a bundle: every tunnel has a new secret, " +
 		"and the run tokens of the lost install no longer work"
 )
@@ -27,6 +29,16 @@ func (c *cycleRun) restoreRotation() {
 		return
 	}
 	rec, found, err := c.e.d.Store.RestoreRotation()
+	if kept := c.e.restoreUnsaved; kept != nil {
+		// A secret was given and its record not saved: the record is
+		// saved before anything more is done, else the secret would be
+		// given again in every cycle.
+		if err := c.e.d.Store.SaveRestoreRotation(*kept); err != nil {
+			c.problem(problemRestoreUnsaved, err)
+			return
+		}
+		rec, found, err, c.e.restoreUnsaved = *kept, true, nil, nil
+	}
 	switch {
 	case err != nil:
 		c.problem("reading the rotation of the restored install: %v", err)
@@ -38,7 +50,14 @@ func (c *cycleRun) restoreRotation() {
 		c.problem(problemRestoreRotation, why)
 		return
 	}
-	save := func() error { return c.e.d.Store.SaveRestoreRotation(rec) }
+	save := func() error {
+		err := c.e.d.Store.SaveRestoreRotation(rec)
+		if err != nil {
+			kept := rec
+			c.e.restoreUnsaved = &kept
+		}
+		return err
+	}
 	for _, t := range c.tunnels {
 		if !t.Exists || t.ID == "" || rotatedThrough(rec.TunnelsRotated, t.ID) {
 			continue

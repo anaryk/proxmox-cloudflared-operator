@@ -1,11 +1,15 @@
 package engine
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -48,6 +52,48 @@ func TestARestoredInstallGivesEveryTunnelANewSecret(t *testing.T) {
 
 	w.tick(time.Minute)
 	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+sharedID), "once")
+}
+
+// rotatedThenStuck makes the store unwritable as soon as Cloudflare took a
+// new secret: the record of the rotation cannot be saved after it.
+type rotatedThenStuck struct {
+	cfapi.API
+	stick func()
+}
+
+func (r rotatedThenStuck) RotateTunnelSecret(ctx context.Context, account, tunnel string, secret []byte) error {
+	err := r.API.RotateTunnelSecret(ctx, account, tunnel, secret)
+	if err == nil {
+		r.stick()
+	}
+	return err
+}
+
+// A secret Cloudflare took is never given again because its record could
+// not be saved: the rotation keeps it, holds while the store takes no write,
+// and saves it first once it does.
+func TestARotationWhoseRecordCannotBeSavedIsNotGivenAgain(t *testing.T) {
+	w := threeNodes(t)
+	meta := filepath.Join(w.paths.Cluster, "meta")
+	w.useAPI(testToken, rotatedThenStuck{API: w.cf, stick: func() { require.NoError(t, os.Chmod(meta, 0o500)) }})
+	t.Cleanup(func() { _ = os.Chmod(meta, 0o700) })
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+
+	for range 3 {
+		w.tick(time.Minute)
+	}
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id))
+
+	require.NoError(t, os.Chmod(meta, 0o700))
+	for range 3 {
+		w.tick(time.Minute)
+	}
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id), "given once")
+	_, found, err := w.store.RestoreRotation()
+	require.NoError(t, err)
+	require.False(t, found, "done")
 }
 
 // In observe-only mode the rotation waits for pco apply, and says so.

@@ -130,7 +130,7 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 		if err := e.d.Store.SaveRestoreRotation(store.RestoreRotation{Since: e.d.Now()}); err != nil {
 			return res, fmt.Errorf("asking for new secrets of the tunnels: %w", err)
 		}
-		res.RotatesSecrets = true
+		res.RotatesSecrets, e.restoreUnsaved = true, nil
 	}
 	if other != nil || inst.Restored != nil {
 		// A store restored from a bundle is this cluster's from now on: the

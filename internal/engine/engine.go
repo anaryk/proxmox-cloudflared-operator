@@ -413,6 +413,10 @@ type Engine struct {
 	taken    takenEvents
 	// above are the epochs agents reported above this controller's.
 	above aboveReports
+	// restoreUnsaved is the progress of the rotation of a restored install
+	// that could not be saved, a secret Cloudflare took among it, guarded
+	// by the cycle lock: it is saved before anything more is rotated.
+	restoreUnsaved *store.RestoreRotation
 	// place is what the placement of routes keeps between cycles, guarded
 	// by the cycle lock.
 	place placementMemory
