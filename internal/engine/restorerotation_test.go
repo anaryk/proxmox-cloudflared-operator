@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,109 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
+
+// testRestore names the restore whose rotation the tests ask for.
+const testRestore = "2026-09-30T00:00:00Z/2026-10-01T12:00:00Z"
+
+// askRotation is what the promotion of a restored install leaves: the
+// record of the rotation, of this install and restore, and the install
+// naming the restore whose rotation is pending.
+func (w *world) askRotation(t *testing.T, tunnels []store.RestoreTunnel) {
+	t.Helper()
+	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{
+		Since: w.clock.now(), InstallID: testInstall, Restore: testRestore, Tunnels: tunnels,
+	}))
+	inst, _, err := w.store.Install()
+	require.NoError(t, err)
+	inst.RestoreRotation = testRestore
+	require.NoError(t, w.store.SaveInstall(inst))
+}
+
+// A record of the rotation that is not the one the install names, of
+// another install or another restore, rotates nothing, crosses nothing off
+// and is not removed: the install's own rotation is the one that counts.
+func TestARecordOfAnotherRestoreIsRefused(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		rec  func(r *store.RestoreRotation)
+	}{
+		{"of another install", func(r *store.RestoreRotation) { r.InstallID = "ffffffffffff" }},
+		{"of another restore", func(r *store.RestoreRotation) { r.Restore = "an earlier one" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := threeNodes(t)
+			w.settle()
+			id := w.tunnelID(t, tunnelName)
+			w.askRotation(t, nil)
+			rec, _, err := w.store.RestoreRotation()
+			require.NoError(t, err)
+			tt.rec(&rec)
+			rec.Rotated, rec.TakenUp, rec.Cleaned = []string{id}, []string{id}, []string{id}
+			require.NoError(t, w.store.SaveRestoreRotation(rec))
+
+			var st State
+			for range 3 {
+				st = w.tick(time.Minute)
+			}
+
+			require.NotContains(t, w.cf.Calls(), "RotateTunnelSecret acc1 "+id)
+			require.True(t, hasProblem(st, "is not the one install "+testInstall+" asked for"), st.Problems)
+			kept, found, err := w.store.RestoreRotation()
+			require.NoError(t, err)
+			require.True(t, found, "left as it is")
+			require.Equal(t, rec, kept)
+		})
+	}
+}
+
+// An install that names a pending rotation whose record is gone has it
+// asked for again: the tunnels get new secrets rather than none.
+func TestALostRecordOfARotationIsAskedForAgain(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	w.askRotation(t, nil)
+	require.NoError(t, w.store.DeleteRestoreRotation())
+
+	for range 3 {
+		w.tick(time.Minute)
+	}
+
+	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id))
+	inst, _, err := w.store.Install()
+	require.NoError(t, err)
+	require.Empty(t, inst.RestoreRotation, "done")
+}
+
+// A listed tunnel that a cycle does not find is crossed off only once
+// Cloudflare says it is gone; a lookup that fails keeps it, and the record.
+func TestAListedTunnelIsCrossedOffOnlyWhenCloudflareSaysItIsGone(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	gone := "00000000-0000-4000-8000-0000000000ff"
+	w.askRotation(t, []store.RestoreTunnel{{ID: id, AccountID: testAccount}, {ID: gone, AccountID: testAccount}})
+	w.cf.FailNext("tunnel.read", 1000, errors.New("cloudflare api: HTTP 500: internal"))
+
+	w.tick(time.Minute)
+	w.tick(time.Minute)
+
+	_, found, err := w.store.RestoreRotation()
+	require.NoError(t, err)
+	require.True(t, found, "kept while nothing can be read")
+}
+
+// A rotation ends only with at least one tunnel listed: a list that came
+// out empty proves nothing rotated.
+func TestARotationWithNoTunnelListedDoesNotEnd(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.askRotation(t, nil)
+	rec, _, err := w.store.RestoreRotation()
+	require.NoError(t, err)
+
+	require.NotEmpty(t, restoreLeft(rec), "nothing listed is not done")
+}
 
 // rotationEventsOf are the messages of the events of the rotations.
 func rotationEventsOf(e *env) []string {
@@ -34,7 +138,7 @@ func TestARestoredInstallGivesEveryTunnelANewSecret(t *testing.T) {
 	w, pinned2 := pinnedDB(t)
 	sharedID, pinnedID := w.tunnelID(t, tunnelName), w.tunnelID(t, pinned2)
 	w.listAt(t, tunnelName, "old-connector", "pve2-"+sharedID, "pve3-"+sharedID)
-	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+	w.askRotation(t, nil)
 
 	var st State
 	for range 3 {
@@ -81,7 +185,7 @@ func TestARotationWhoseRecordCannotBeSavedIsNotGivenAgain(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(meta, 0o700) })
 	w.settle()
 	id := w.tunnelID(t, tunnelName)
-	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+	w.askRotation(t, nil)
 
 	for range 3 {
 		w.tick(time.Minute)
@@ -113,7 +217,7 @@ func TestARotationWaitsForTheConnectorsToRunTheNewToken(t *testing.T) {
 			}
 		}
 	}
-	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+	w.askRotation(t, nil)
 
 	var st State
 	for range 3 {
@@ -172,13 +276,13 @@ func TestTheRestoreRotationListsItsTunnelsAndGoesOnAfterATakeOver(t *testing.T) 
 			}
 		}
 	}
-	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+	w.askRotation(t, nil)
 
 	w.tick(time.Minute)
 	rec, found, err := w.store.RestoreRotation()
 	require.NoError(t, err)
 	require.True(t, found)
-	require.ElementsMatch(t, []string{sharedID, pinnedID}, rec.Tunnels)
+	require.ElementsMatch(t, []store.RestoreTunnel{{ID: sharedID, AccountID: testAccount}, {ID: pinnedID, AccountID: testAccount}}, rec.Tunnels)
 	require.ElementsMatch(t, []string{sharedID, pinnedID}, rec.Rotated)
 
 	w.restart(t)
@@ -201,7 +305,7 @@ func TestARestoreRotationEndsOnlyWithEveryListedTunnelDone(t *testing.T) {
 	w.settle()
 	id := w.tunnelID(t, tunnelName)
 	gone := "00000000-0000-4000-8000-0000000000ff"
-	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now(), Tunnels: []string{id, gone}}))
+	w.askRotation(t, []store.RestoreTunnel{{ID: id, AccountID: testAccount}, {ID: gone, AccountID: testAccount}})
 
 	for range 3 {
 		w.tick(time.Minute)
@@ -219,7 +323,7 @@ func TestTheRotationOfARestoredInstallWaitsForApply(t *testing.T) {
 	w.settle()
 	id := w.tunnelID(t, tunnelName)
 	w.settings(func(s *store.Settings) { s.ObserveOnly = true })
-	require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now()}))
+	w.askRotation(t, nil)
 
 	st := w.tick(time.Minute)
 

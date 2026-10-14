@@ -400,15 +400,24 @@ func (s *Store) DeleteCARotation() error { return s.cluster.Delete(kindMeta, idC
 // up and cleaned.
 type RestoreRotation struct {
 	Since time.Time `json:"since"`
-	// Tunnels are the ids of every tunnel of the install the cycles found
-	// since the rotation began: it is done only once each was rotated,
-	// taken up and cleaned, or found gone in a cycle that read every
-	// account.
-	Tunnels []string `json:"tunnels,omitempty"`
+	// InstallID and Restore name the install and the restore the record is
+	// of: the cycles act only on the one the install names as pending.
+	InstallID string `json:"installId"`
+	Restore   string `json:"restore"`
+	// Tunnels are the tunnels of the install the cycles found since the
+	// rotation began: it is done only once each was rotated, taken up and
+	// cleaned, or Cloudflare said it is gone.
+	Tunnels []RestoreTunnel `json:"tunnels,omitempty"`
 	TunnelsRotated
 	// Cleaned are the tunnels rotated whose connections were all ended once
 	// every connector that remains ran with the new secret.
 	Cleaned []string `json:"cleaned,omitempty"`
+}
+
+// RestoreTunnel is a tunnel the rotation of a restored install lists.
+type RestoreTunnel struct {
+	ID        string `json:"id"`
+	AccountID string `json:"accountId"`
 }
 
 // RestoreRotation returns the rotation of a restored install under way.
@@ -418,8 +427,11 @@ func (s *Store) RestoreRotation() (RestoreRotation, bool, error) {
 
 // SaveRestoreRotation stores the progress of that rotation.
 func (s *Store) SaveRestoreRotation(r RestoreRotation) error {
-	if r.Since.IsZero() {
+	switch {
+	case r.Since.IsZero():
 		return errors.New("the rotation of a restored install has no time it was asked at")
+	case r.InstallID == "" || r.Restore == "":
+		return errors.New("the rotation of a restored install names no install or no restore")
 	}
 	return s.cluster.put(kindMeta, idRestoreRot, r, true)
 }

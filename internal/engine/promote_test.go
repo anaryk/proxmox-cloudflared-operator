@@ -389,6 +389,11 @@ func TestPromoteOfARestoredInstallAsksForNewSecrets(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, e.clock.now(), rot.Since)
+	require.Equal(t, testInstall, rot.InstallID)
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	require.NotEmpty(t, rot.Restore)
+	require.Equal(t, rot.Restore, inst.RestoreRotation, "the install names the rotation it asked for")
 
 	t.Run("not for a store that was not restored", func(t *testing.T) {
 		e, _ := behindHost(t)

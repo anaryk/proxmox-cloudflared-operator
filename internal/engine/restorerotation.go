@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
+	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -14,6 +17,8 @@ const (
 		"it is tried again in the next cycle"
 	problemRestoreUnsaved = "the install was restored from a bundle: the record of the new secrets of its tunnels cannot be saved: %v; " +
 		"nothing more is rotated until it is"
+	problemRestoreForeign = "a record of the rotation of restore %s of install %s is not the one install %s asked for (%s); " +
+		"it is left as it is and rotates nothing: remove meta/restore-rotation.json once you know it is stale"
 	restoreRotationDone = "the install was restored from a bundle: every tunnel has a new secret, " +
 		"and the run tokens of the lost install no longer work"
 )
@@ -21,12 +26,22 @@ const (
 // readRestoreRotation reads the rotation a promotion of a restored install
 // asked for, before anything of the cycle is written. A record that cannot
 // be read may list a tunnel whose old secret the lost install still holds:
-// the cycle holds rather than take it for none.
+// the cycle holds rather than take it for none. Only the record of the
+// restore the install names is acted on: one of another install or restore
+// is left as it is, and a record the install names that is gone is asked
+// for again, so that every tunnel is rotated rather than none.
 func (c *cycleRun) readRestoreRotation() {
+	want := c.install.RestoreRotation
 	rec, found, err := c.e.d.Store.RestoreRotation()
-	if err != nil {
+	switch {
+	case err != nil:
 		c.hold(c.storeProblem("reading the rotation of the restored install", err))
 		return
+	case found && (rec.InstallID != c.install.ID || rec.Restore != want):
+		c.problem(problemRestoreForeign, cmp.Or(rec.Restore, "without a name"), cmp.Or(rec.InstallID, "none"), c.install.ID, cmp.Or(want, "none"))
+		return
+	case !found && want != "":
+		rec, found, c.restoreAgain = store.RestoreRotation{Since: c.now, InstallID: c.install.ID, Restore: want}, true, true
 	}
 	c.restoreRec, c.restoreFound = rec, found
 }
@@ -74,7 +89,7 @@ func (c *cycleRun) restoreRotation() {
 		}
 		return err
 	}
-	if c.listTunnels(&rec) {
+	if c.listTunnels(&rec) || c.restoreAgain {
 		if err := save(); err != nil {
 			c.problem(problemRestoreUnsaved, err)
 			return
@@ -119,47 +134,87 @@ func (c *cycleRun) restoreRotation() {
 		}
 	}
 	if left := restoreLeft(rec); len(left) > 0 {
-		c.problem(problemRestoreRotation, fmt.Sprintf("%d tunnels it lists are not done yet", len(left)))
+		c.problem(problemRestoreRotation, "not every tunnel it lists is done: "+strings.Join(left, ", "))
 		return
 	}
+	// The record goes first: an install that still names the rotation
+	// then asks for it again, which rotates once more rather than never.
 	if err := c.e.d.Store.DeleteRestoreRotation(); err != nil {
 		c.problem("ending the rotation of the restored install: %v", err)
 		return
 	}
+	inst := c.install
+	inst.RestoreRotation = ""
+	if err := c.e.d.Store.SaveInstall(inst); err != nil {
+		c.problem("ending the rotation of the restored install: %v", err)
+		return
+	}
+	c.install = inst
 	c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindRotation, Subject: "restore", Security: true, Message: restoreRotationDone})
 }
 
 // listTunnels adds to the record every tunnel of the install this cycle
-// found, and crosses off one it lists that this cycle, which read every
-// account, did not find: deleted, it has no secret left. It says whether
-// the record changed.
+// found. One it lists that this cycle did not find is crossed off only once
+// Cloudflare, asked with a credential that reaches its account, says it is
+// gone: deleted, it has no secret left. Anything else keeps it. It says
+// whether the record changed.
 func (c *cycleRun) listTunnels(rec *store.RestoreRotation) bool {
 	seen := map[string]bool{}
+	reach := map[string]string{} // account -> a credential that reaches it
 	changed := false
 	for _, t := range c.tunnels {
 		if !t.Exists || t.ID == "" {
 			continue
 		}
 		seen[t.ID] = true
-		if !slices.Contains(rec.Tunnels, t.ID) {
-			rec.Tunnels = append(rec.Tunnels, t.ID)
+		if t.CredentialID != "" {
+			reach[t.AccountID] = t.CredentialID
+		}
+		if !slices.ContainsFunc(rec.Tunnels, func(r store.RestoreTunnel) bool { return r.ID == t.ID }) {
+			rec.Tunnels = append(rec.Tunnels, store.RestoreTunnel{ID: t.ID, AccountID: t.AccountID})
 			changed = true
 		}
 	}
-	kept := slices.DeleteFunc(slices.Clone(rec.Tunnels), func(id string) bool { return !seen[id] })
+	kept := slices.DeleteFunc(slices.Clone(rec.Tunnels), func(r store.RestoreTunnel) bool {
+		return !seen[r.ID] && c.tunnelGone(r, reach[r.AccountID])
+	})
 	if len(kept) != len(rec.Tunnels) {
 		rec.Tunnels, changed = kept, true
 	}
 	return changed
 }
 
+// tunnelGone says that Cloudflare answered, to a credential that reaches
+// the account, that a tunnel the record lists does not exist.
+func (c *cycleRun) tunnelGone(r store.RestoreTunnel, credentialID string) bool {
+	api := c.e.clients[credentialID]
+	if api == nil {
+		c.problem(problemRestoreRotation, fmt.Sprintf("tunnel %s in account %s is listed and was not found, and no credential "+
+			"that reaches the account tells whether it is gone", r.ID, r.AccountID))
+		return false
+	}
+	_, err := api.TunnelConfig(c.ctx, r.AccountID, r.ID)
+	if cfapi.IsNotFound(err) {
+		return true
+	}
+	if err != nil {
+		c.problem(problemRestoreRotation, fmt.Sprintf("tunnel %s in account %s is listed and was not found, and Cloudflare "+
+			"cannot tell whether it is gone: %v", r.ID, r.AccountID, err))
+	}
+	return false
+}
+
 // restoreLeft are the tunnels the record lists that are not rotated, taken
-// up and cleaned yet.
+// up and cleaned yet; a record that lists none is not done either, as an
+// empty list proves nothing rotated.
 func restoreLeft(rec store.RestoreRotation) []string {
+	if len(rec.Tunnels) == 0 {
+		return []string{"no tunnel is listed yet"}
+	}
 	var left []string
-	for _, id := range rec.Tunnels {
-		if !rotatedThrough(rec.TunnelsRotated, id) || !slices.Contains(rec.Cleaned, id) {
-			left = append(left, id)
+	for _, r := range rec.Tunnels {
+		if !rotatedThrough(rec.TunnelsRotated, r.ID) || !slices.Contains(rec.Cleaned, r.ID) {
+			left = append(left, r.ID)
 		}
 	}
 	return left

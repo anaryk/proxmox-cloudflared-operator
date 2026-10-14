@@ -33,6 +33,10 @@ type Install struct {
 	// Restored is set by pco import and cleared by the promotion that
 	// follows it; nil for an install that was not restored from a bundle.
 	Restored *Restored `json:"restored,omitempty"`
+	// RestoreRotation names the restore whose promotion asked every tunnel
+	// to be given a new secret, until that is done; only the record of the
+	// rotation of this restore is acted on.
+	RestoreRotation string `json:"restoreRotation,omitempty"`
 }
 
 // Restored says that an install came back from a bundle and has not been

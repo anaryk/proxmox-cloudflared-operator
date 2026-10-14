@@ -90,8 +90,11 @@ type cycleRun struct {
 	holdWhy   string
 	// restoreRec is the rotation of a restored install, read before
 	// anything of the cycle is written; restoreFound says there is one.
-	restoreRec    store.RestoreRotation
-	restoreFound  bool
+	restoreRec   store.RestoreRotation
+	restoreFound bool
+	// restoreAgain says that the record the install names was gone and is
+	// asked for again.
+	restoreAgain  bool
 	checked       bool
 	recheck       recheck
 	tunnelVerdict reconcile.WriterVerdict

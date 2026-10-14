@@ -125,9 +125,13 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 		claimedFrom = inst.Restored.ClaimedFrom
 		// Copies of the run tokens may be left on the disks of the install
 		// that was lost: every tunnel gets a new secret once pco may write.
-		// Asked for before the restore ends, so that a promotion cut short
-		// and done again asks once more rather than never.
-		if err := e.d.Store.SaveRestoreRotation(store.RestoreRotation{Since: e.d.Now()}); err != nil {
+		// The record is saved first, the install that names it, and ends
+		// the restore, after: a record no install names is never acted on,
+		// and a promotion cut short in between is made again.
+		restore := inst.Restored.BundleMadeAt.UTC().Format(time.RFC3339) + "/" + e.d.Now().UTC().Format(time.RFC3339Nano)
+		inst.RestoreRotation = restore
+		rec := store.RestoreRotation{Since: e.d.Now(), InstallID: inst.ID, Restore: restore}
+		if err := e.d.Store.SaveRestoreRotation(rec); err != nil {
 			return res, fmt.Errorf("asking for new secrets of the tunnels: %w", err)
 		}
 		res.RotatesSecrets, e.restoreUnsaved = true, nil
