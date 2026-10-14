@@ -55,6 +55,9 @@ func (k *Keeper) mayAcquire(ctx context.Context) (stored store.LeaderRecord, fou
 	if err != nil {
 		return stored, false, fmt.Sprintf("reading leader.json: %v", err)
 	}
+	k.mu.Lock()
+	k.seen, k.seenFound = stored, found
+	k.mu.Unlock()
 	return stored, found, mayTry(stored, found, k.cfg.Node, k.cfg.Guard(), k.cfg.Clocks.Now())
 }
 

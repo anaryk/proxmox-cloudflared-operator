@@ -57,12 +57,14 @@ the fingerprint the browser shows with the one the installer printed, or with th
 [Appliance](appliance.md#the-web-interface).
 
 On a cluster the interface is served by the controller, the node that holds the lease. pco web
-on any other node sends the browser to the controller's address, `https://<address>:8643/`, with
-the path and the query kept. Sign in there as on any node: the session of Proxmox VE is bound to
-the host name you opened, so the browser does not hand it on, and an API token works under any
-name. While no controller answers, a node serves its own page. The calls of a page are never sent
-on: a page left open on a node that lost the lease gets `not_controller` from its actions
+on any other node sends a page you open to the controller's address, `https://<address>:8643/`,
+with the path and the query kept. Sign in there as on any node: the session of Proxmox VE is
+bound to the host name you opened, so the browser does not hand it on, and an API token works
+under any name. While no controller is known, a node serves its own page. The calls of a page
+are never sent on: a page left open on a node that lost the lease gets `not_controller` from
+its actions, with the controller's address
 ([API](api.md#on-a-node-that-is-not-the-controller)), and reloading it goes to the controller.
+[Security](security.md#on-a-node-that-is-not-the-controller) says what that redirect discloses.
 
 The page is built for Chrome and Edge 120, Firefox 115 and Safari 17, and later versions.
 

@@ -265,14 +265,21 @@ func TestANodeThatDoesNotHoldTheLeaseWritesNothing(t *testing.T) {
 		e.enforce()
 		rec, _, _, err := e.store.Leader()
 		require.NoError(t, err)
-		rec.Node = "pve2"
+		rec.Node, rec.AcquiredAt = "pve2", t0.Add(-time.Hour)
 		require.NoError(t, e.store.SaveLeader(rec))
-		l.set(func(st *lease.State) { *st = lease.State{Waiting: "the lock is held; leader.json names node \"pve2\""} })
+		l.set(func(st *lease.State) {
+			*st = lease.State{Waiting: "the lock is held; leader.json names node \"pve2\"", Record: rec}
+		})
 
 		st := e.cycle()
 
 		require.Equal(t, "this node does not hold the lease; node pve2 is the controller", st.Hold)
 		require.Empty(t, e.writes())
+		require.NotNil(t, st.Lease)
+		require.Equal(t, "pve2", st.Lease.Holder, "the state names the holder")
+		require.Equal(t, rec.AcquiredAt, st.Lease.AcquiredAt)
+		require.False(t, st.Lease.Address.IsValid(), "pve2 is not registered here")
+		require.False(t, st.Lease.Valid)
 	})
 	t.Run("nobody yet", func(t *testing.T) {
 		e, l := onHost(t)

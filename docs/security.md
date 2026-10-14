@@ -846,6 +846,21 @@ only and run no inline script or style, `require-trusted-types-for 'script'`, an
 comes from a guest, from Cloudflare or from the daemon shown as text, never as HTML, with control
 and bidirectional characters made visible.
 
+### On a node that is not the controller
+
+On a cluster, a node that does not hold the lease answers a page asked for with `GET` or `HEAD`
+with a redirect to the controller's web interface before any sign-in, so whoever reaches port
+8643 of a node learns the controller's agent address from the `Location` of that answer,
+signed in or not. That is accepted: the address is one of the cluster's own nodes, on the
+network the nodes already name each other by in `/etc/hosts` and in the members file of
+Proxmox VE, and the firewall rule for port 8643 decides who reaches the page at all. Nothing
+else is disclosed: not the node's name, the lease or the state, which the page shows only after
+a sign-in. The address comes from the registry of the install, as the daemon reads it with
+`leader.json`, never from a request, and a browser is sent only to an address of another node,
+never to a loopback, unspecified, multicast or zoned one. The calls of the page are not
+redirected, and an action asked on such a node is refused by the daemon with the controller's
+address in the answer, after the sign-in and the checks every call gets.
+
 ### Requests
 
 The page talks to `/api/...` only, and every answer carries `Content-Security-Policy`,

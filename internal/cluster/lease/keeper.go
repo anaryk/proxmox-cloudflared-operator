@@ -56,8 +56,12 @@ type Keeper struct {
 	stepped    bool
 
 	// The tenure. rec is leader.json as this tenure wrote or found it.
-	holder     bool
-	rec        store.LeaderRecord
+	holder bool
+	rec    store.LeaderRecord
+	// seen is leader.json as the last attempt to acquire read it, so that a
+	// node that does not hold the lease can name the holder.
+	seen       store.LeaderRecord
+	seenFound  bool
 	firstWrite bool
 	behind     string
 	alarm      string
@@ -261,6 +265,12 @@ func (k *Keeper) State() State {
 	k.look()
 	s := State{Holder: k.holder, Waiting: k.waiting}
 	if !k.holder {
+		// A record that names this node is an old tenure of its own, as
+		// after a reboot or a lost lease: a node that does not hold the
+		// lease never names itself as the holder.
+		if k.seenFound && k.seen.Node != k.cfg.Node {
+			s.Record = k.seen
+		}
 		return s
 	}
 	mono := k.mono()

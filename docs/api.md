@@ -97,7 +97,7 @@ A client acts on the code:
 | `method_not_allowed` | 405 | The route takes another method. |
 | `refused` | 409 | The daemon refuses, and says why: a revision or an offer that is not the current one, a guest that changed since it was shown, a credential that still manages something. Read again, and decide again. |
 | `holder_changed` | 409 | A diagnosis named the route it expected to hold the hostname, and another holds it now. |
-| `not_controller` | 409 | On a cluster, this node does not hold the lease, and the call is the controller's: the message names the node to run it on, and its address. See [On a node that is not the controller](#on-a-node-that-is-not-the-controller). |
+| `not_controller` | 409 | On a cluster, this node does not hold the lease, and the call is the controller's: the message names the node to run it on, and its address, which the header `Pco-Controller` carries too. See [On a node that is not the controller](#on-a-node-that-is-not-the-controller). |
 | `no_controller` | 503 | On a cluster, this node does not hold the lease and no controller answers: the message names the node that held the lease last, and since when. |
 | `too_large` | 413 | The body is larger than 1 MiB. |
 | `unsupported_media_type` | 415 | A `POST` or `PUT` without `Content-Type: application/json`. |
@@ -169,14 +169,16 @@ only node that writes. The daemon on every other node answers what its own proce
 the request is read:
 
 - `409 not_controller`, `this node is not the controller; run it on <node> (<address>)`, while
-  the controller answers. The `pco` commands print it; the same command on the node it names
-  does the work.
+  the controller answers. The answer carries the header `Pco-Controller: <address>`, which pco
+  web passes on to the page. The `pco` commands print the message; the same command on the node
+  it names does the work.
 - `503 no_controller`, `no controller is reachable (lease held by <node> since <time>)`, while
   none does, or `no controller is reachable (no node holds the lease)` while the lease is free.
 
-Nothing is passed on between nodes: a call that changes something is made on the controller,
-by root there or through its web interface, which [sends the browser there](web-ui.md#opening-it).
-A node on its own is its controller.
+The address is the holder's agent address, as the registry of the install has it; the node reads
+it with `leader.json`, which names the holder. Nothing is passed on between nodes: a call that
+changes something is made on the controller, by root there or through its web interface, which
+[sends the browser there](web-ui.md#opening-it). A node on its own is its controller.
 
 ### Version and state
 

@@ -154,6 +154,9 @@ type Config struct {
 type State struct {
 	Holder bool
 	Writer planner.Writer
+	// Record is leader.json: the tenure's own while Holder, otherwise as
+	// the last attempt to acquire read it, so that a node that does not hold
+	// the lease can name the holder; empty before any read.
 	Record store.LeaderRecord
 	// LastRefresh is the wall time of the start of the last good refresh.
 	LastRefresh time.Time

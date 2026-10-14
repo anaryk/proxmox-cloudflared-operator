@@ -11,6 +11,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
+// controllerHeader carries the controller's address with a refusal, so that
+// a page can offer the way there.
+const controllerHeader = "Pco-Controller"
+
 // Role is what the daemon says about its node: whether it is the controller
 // of the install, the one node that writes, and where the controller is when
 // it is another node. Without a role set, the node is the controller, as a
@@ -78,34 +82,51 @@ func (s *Server) atController(c *gin.Context) {
 	if role == nil || role.Controller() || answeredLocally(c.Request.Method, c.FullPath()) {
 		return
 	}
-	s.fail(c, notController(role))
+	err, addr := notController(role)
+	if addr != "" {
+		c.Header(controllerHeader, addr)
+	}
+	s.fail(c, err)
 }
 
-// notController is the refusal of a non-controller.
-func notController(role Role) *httpError {
+// notController is the refusal of a non-controller, with the controller's
+// address when one answers.
+func notController(role Role) (*httpError, string) {
 	node, addr, since, ok := role.ControllerAddr()
 	switch {
 	case ok:
 		return &httpError{http.StatusConflict, codeNotController,
-			fmt.Sprintf("this node is not the controller; run it on %s (%s)", node, addr), false}
+			fmt.Sprintf("this node is not the controller; run it on %s (%s)", node, addr), false}, addr
 	case node != "":
 		return &httpError{http.StatusServiceUnavailable, codeNoController,
-			fmt.Sprintf("no controller is reachable (lease held by %s since %s)", node, since.UTC().Format(time.RFC3339)), false}
+			fmt.Sprintf("no controller is reachable (lease held by %s since %s)", node, since.UTC().Format(time.RFC3339)), false}, ""
 	}
-	return &httpError{http.StatusServiceUnavailable, codeNoController, "no controller is reachable (no node holds the lease)", false}
+	return &httpError{http.StatusServiceUnavailable, codeNoController, "no controller is reachable (no node holds the lease)", false}, ""
 }
 
-// LeaseRole is the role as the state of the engine shows it: the node is the
-// controller while the state has no lease, as in the appliance, or the lease
-// names it as the holder. The holder answers while the lease is reported
-// valid and its agent's address is known.
-func LeaseRole(state func() engine.State) Role { return leaseRole{state} }
+// LeaseRole is the role as the state of the engine shows it: the node is
+// the controller while the lease names it as the holder, and, while the
+// state shows no lease at all, only when it stands alone, as the appliance
+// does and a host before its first cycle may; a member of a cluster without
+// a known lease is not the controller. Another holder is answered for while
+// it is named and its agent address is known: whether it answers now is not
+// something the state alone can tell, and a role made from the agent's
+// heartbeat knows better.
+func LeaseRole(state func() engine.State, standalone func() bool) Role {
+	return leaseRole{state, standalone}
+}
 
-type leaseRole struct{ state func() engine.State }
+type leaseRole struct {
+	state      func() engine.State
+	standalone func() bool
+}
 
 func (r leaseRole) Controller() bool {
 	st := r.state()
-	return st.Lease == nil || st.Lease.Holder == st.Node
+	if st.Lease == nil {
+		return r.standalone()
+	}
+	return st.Lease.Holder == st.Node
 }
 
 func (r leaseRole) ControllerAddr() (node, addr string, since time.Time, ok bool) {
@@ -116,5 +137,5 @@ func (r leaseRole) ControllerAddr() (node, addr string, since time.Time, ok bool
 	if lease.Address.IsValid() {
 		addr = lease.Address.String()
 	}
-	return lease.Holder, addr, lease.AcquiredAt, lease.Holder != "" && addr != "" && lease.Valid
+	return lease.Holder, addr, lease.AcquiredAt, lease.Holder != "" && addr != ""
 }

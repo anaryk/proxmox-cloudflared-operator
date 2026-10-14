@@ -32,7 +32,7 @@ var (
 	noHolder  = fakeRole{}
 )
 
-// localRoutes are the routes a node answers whether or not it is the
+// localReads are the routes a node answers whether or not it is the
 // controller: they describe the daemon's own process and its node.
 var localReads = []string{
 	"GET /v1/version",
@@ -81,13 +81,14 @@ func TestANonControllerPointsTheRestAtTheController(t *testing.T) {
 		status int
 		code   string
 		msg    string
+		hint   string
 	}{
 		{"a controller is known", otherNode, http.StatusConflict, "not_controller",
-			"this node is not the controller; run it on node2 (10.9.0.2)"},
+			"this node is not the controller; run it on node2 (10.9.0.2)", "10.9.0.2"},
 		{"the holder does not answer", noAnswer, http.StatusServiceUnavailable, "no_controller",
-			"no controller is reachable (lease held by node2 since 2026-10-05T12:00:00Z)"},
+			"no controller is reachable (lease held by node2 since 2026-10-05T12:00:00Z)", ""},
 		{"no node holds the lease", noHolder, http.StatusServiceUnavailable, "no_controller",
-			"no controller is reachable (no node holds the lease)"},
+			"no controller is reachable (no node holds the lease)", ""},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,6 +109,7 @@ func TestANonControllerPointsTheRestAtTheController(t *testing.T) {
 				a := parseError(t, rec)
 				require.Equal(t, tt.code, a.Code, "%s %s", req.method, req.target)
 				require.Equal(t, tt.msg, a.Message, "%s %s", req.method, req.target)
+				require.Equal(t, tt.hint, rec.Header().Get(controllerHeader), "the hint for the page, %s %s", req.method, req.target)
 				require.Empty(t, rec.Header().Get("Connection"), "the connection stays open")
 			}
 			require.Empty(t, f.called(), "the engine was asked nothing")
@@ -122,6 +124,7 @@ func TestANonControllerAnswersWhatItsOwnProcessKnows(t *testing.T) {
 	for _, target := range []string{"/v1/version", "/v1/state", "/v1/events", "/v1/traffic", "/v1/doctor"} {
 		rec := do(s, http.MethodGet, target, "")
 		require.Equal(t, http.StatusOK, rec.Code, "%s: %s", target, rec.Body.String())
+		require.Empty(t, rec.Header().Get(controllerHeader), "%s: no hint on an answer", target)
 	}
 }
 
@@ -173,6 +176,7 @@ func TestThePeerCheckAndTheRouterStillComeFirst(t *testing.T) {
 	s.SetRole(otherNode)
 	rec := send(s, requestFrom(4242, http.MethodPost, "/v1/apply", `{}`))
 	require.Equal(t, http.StatusForbidden, rec.Code, "a peer that is not allowed learns nothing of the controller")
+	require.Empty(t, rec.Header().Get(controllerHeader))
 	rec = do(s, http.MethodGet, "/v1/nothing", "")
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	require.Equal(t, codeNoRoute, errorCode(t, rec))
@@ -186,20 +190,21 @@ func TestTheLeaseRole(t *testing.T) {
 	cases := []struct {
 		name       string
 		state      engine.State
+		standalone bool
 		controller bool
 		node, addr string
 		ok         bool
 	}{
-		{"no lease", engine.State{Node: "node1"}, true, "", "", false},
-		{"this node holds it", engine.State{Node: "node1", Lease: &engine.LeaseView{Holder: "node1", Valid: true}}, true, "node1", "", false},
-		{"another node holds it and answers", engine.State{Node: "node1", Lease: &engine.LeaseView{Holder: "node2", Address: addr, AcquiredAt: since, Valid: true}}, false, "node2", "10.9.0.2", true},
-		{"another node holds it and is silent", engine.State{Node: "node1", Lease: &engine.LeaseView{Holder: "node2", Address: addr, AcquiredAt: since}}, false, "node2", "10.9.0.2", false},
-		{"the holder has no address yet", engine.State{Node: "node1", Lease: &engine.LeaseView{Holder: "node2", AcquiredAt: since, Valid: true}}, false, "node2", "", false},
-		{"nobody holds it", engine.State{Node: "node1", Lease: &engine.LeaseView{}}, false, "", "", false},
+		{"no lease on a node that stands alone", engine.State{Node: "node1"}, true, true, "", "", false},
+		{"no lease on a cluster member", engine.State{Node: "node1"}, false, false, "", "", false},
+		{"this node holds it", engine.State{Node: "node1", Lease: &engine.LeaseView{Holder: "node1", Valid: true}}, false, true, "node1", "", false},
+		{"another node holds it", engine.State{Node: "node1", Lease: &engine.LeaseView{Holder: "node2", Address: addr, AcquiredAt: since}}, false, false, "node2", "10.9.0.2", true},
+		{"the holder has no address yet", engine.State{Node: "node1", Lease: &engine.LeaseView{Holder: "node2", AcquiredAt: since}}, false, false, "node2", "", false},
+		{"nobody holds it", engine.State{Node: "node1", Lease: &engine.LeaseView{}}, true, false, "", "", false},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			r := LeaseRole(func() engine.State { return tt.state })
+			r := LeaseRole(func() engine.State { return tt.state }, func() bool { return tt.standalone })
 			require.Equal(t, tt.controller, r.Controller())
 			node, addr, since, ok := r.ControllerAddr()
 			require.Equal(t, tt.node, node)

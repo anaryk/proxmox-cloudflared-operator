@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -48,6 +49,9 @@ const (
 
 	baseURL     = "http://pco"
 	actorHeader = "Pco-Actor"
+	// controllerHeader is the address of the controller the daemon names
+	// with a refusal on a node that is not it, passed on to the page.
+	controllerHeader = "Pco-Controller"
 )
 
 // Gateway forwards the calls of Table to the daemon's socket and serves the
@@ -78,6 +82,12 @@ type Gateway struct {
 	timeoutOf    func(Rule) time.Duration
 	// judged is called when a stream has taken the result of a check.
 	judged func()
+
+	// The read of the state for the role of the node: one at a time, and
+	// not more often than roleRefreshEvery.
+	roleMu      sync.Mutex
+	roleReading bool
+	roleAskedAt time.Time
 }
 
 // New returns the gateway to the daemon that listens on socket, for the
@@ -291,7 +301,10 @@ type reply struct {
 	status int
 	ctype  string
 	etag   string
-	body   []byte
+	// controller is the address of the controller a refusal names, for the
+	// page to offer the way there.
+	controller string
+	body       []byte
 }
 
 // errUnreachable and errNoAnswer are calls that got no answer: nothing
@@ -357,7 +370,10 @@ func (g *Gateway) call(ctx context.Context, up upstream) (reply, error) {
 		g.log.Info().Str("method", up.method).Str("path", up.path).Int("status", res.StatusCode).
 			Dur("duration", g.now().Sub(start)).Msg("the daemon refused a call")
 	}
-	return reply{status: res.StatusCode, ctype: res.Header.Get("Content-Type"), etag: res.Header.Get("ETag"), body: data}, nil
+	return reply{
+		status: res.StatusCode, ctype: res.Header.Get("Content-Type"), etag: res.Header.Get("ETag"),
+		controller: res.Header.Get(controllerHeader), body: data,
+	}, nil
 }
 
 // errHidden is a guest or a hostname a reader may not see: it answers as
@@ -401,6 +417,9 @@ func (g *Gateway) write(c *gin.Context, res reply, gz []byte) {
 	h := c.Writer.Header()
 	if res.etag != "" {
 		h.Set("ETag", res.etag)
+	}
+	if res.controller != "" {
+		h.Set(controllerHeader, res.controller)
 	}
 	ctype := cmp.Or(res.ctype, "application/json; charset=utf-8")
 	if res.status == http.StatusNotModified || res.status == http.StatusNoContent {

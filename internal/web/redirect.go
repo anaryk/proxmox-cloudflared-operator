@@ -3,6 +3,7 @@ package web
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -12,37 +13,45 @@ import (
 // listens, the same port on every node.
 const controllerPort = "8643"
 
-// RedirectToController answers every page with 307 to https://<addr>:8643<path>
-// while the daemon says this node is not the controller and one is known.
-// The calls of the page under /api are left alone: the daemon answers them
-// for its own node, and the session of a browser is bound to the host name
-// it signed in under, so a call sent elsewhere would carry nothing. Without
-// a known controller nothing is redirected, and the page is served here.
+// RedirectToController answers a page asked for with GET or HEAD with 303
+// to https://<addr>:8643<path> while the daemon says this node is not the
+// controller and one is known. Only an address of another node is used
+// (Redirectable). The calls of the page under /api are left alone: the
+// daemon answers them for its own node, and the session of a browser is
+// bound to the host name it signed in under, so a call sent elsewhere would
+// carry nothing; a request with another method is served here, where the
+// API refuses what it cannot answer. Without a known controller nothing is
+// redirected, and the page is served here.
 func RedirectToController(role func() (controller bool, addr string, ok bool)) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-		if role == nil || path == "/api" || strings.HasPrefix(path, "/api/") || !strings.HasPrefix(path, "/") {
+		if role == nil || (c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead) {
+			return
+		}
+		path := c.Request.URL.EscapedPath()
+		if path == "/api" || strings.HasPrefix(path, "/api/") || !strings.HasPrefix(path, "/") {
 			return
 		}
 		controller, addr, ok := role()
-		if controller || !ok || addr == "" {
+		if controller || !ok {
 			return
 		}
-		target := "https://" + withPort(addr) + path
+		ip, err := netip.ParseAddr(addr)
+		if err != nil || !Redirectable(ip) {
+			return
+		}
+		target := "https://" + net.JoinHostPort(ip.String(), controllerPort) + path
 		if q := c.Request.URL.RawQuery; q != "" {
 			target += "?" + q
 		}
 		c.Header("Cache-Control", cacheNever)
-		c.Redirect(http.StatusTemporaryRedirect, target)
+		c.Redirect(http.StatusSeeOther, target)
 		c.Abort()
 	}
 }
 
-// withPort is addr with the port of the web interface, brackets around an
-// IPv6 address; an addr that names a port already is kept.
-func withPort(addr string) string {
-	if _, _, err := net.SplitHostPort(addr); err == nil {
-		return addr
-	}
-	return net.JoinHostPort(addr, controllerPort)
+// Redirectable reports whether addr is one a browser may be sent to: an
+// address of another node, never a loopback, unspecified, multicast or zoned
+// one.
+func Redirectable(addr netip.Addr) bool {
+	return addr.IsValid() && addr.Zone() == "" && !addr.IsLoopback() && !addr.IsUnspecified() && !addr.IsMulticast()
 }

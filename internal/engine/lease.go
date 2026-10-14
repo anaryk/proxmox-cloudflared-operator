@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -52,7 +53,7 @@ func (c *cycleRun) leaseAdmits() bool {
 	}
 	defer func() {
 		st := l.State()
-		c.st.Lease = leaseView(st, c.now)
+		c.st.Lease = leaseView(st, c.now, c.agentAddress)
 		c.leaseEvent(st)
 	}()
 	if !c.quorumKnown() {
@@ -145,19 +146,28 @@ func (c *cycleRun) holdBehind(line string) {
 	c.hold(line)
 }
 
-// leaseView is what the state shows of the lease.
-func leaseView(st lease.State, now time.Time) *LeaseView {
+// leaseView is what the state shows of the lease; addrOf gives the agent
+// address a node is registered with. A node that does not hold the lease
+// names the holder as leader.json was last read, with its generation and
+// address, so that whoever asks this node can be sent there; what it cannot
+// judge, the validity and the nonce, it leaves out.
+func leaseView(st lease.State, now time.Time, addrOf func(node string) netip.Addr) *LeaseView {
+	if !st.Holder {
+		v := &LeaseView{Fenced: st.Waiting}
+		if rec := st.Record; rec.Node != "" && rec.ReleasedAt.IsZero() {
+			v.Holder, v.Generation, v.AcquiredAt, v.Address = rec.Node, rec.Generation, rec.AcquiredAt, addrOf(rec.Node)
+		}
+		return v
+	}
 	v := &LeaseView{
 		Holder:     st.Record.Node,
+		Address:    addrOf(st.Record.Node),
 		Generation: st.Writer.Generation,
 		Nonce:      st.Writer.Nonce,
 		AcquiredAt: st.Record.AcquiredAt,
 		Valid:      st.Valid,
 		Fenced:     st.Fenced,
 		Behind:     st.Behind,
-	}
-	if !st.Holder {
-		v = &LeaseView{Fenced: st.Waiting}
 	}
 	if !st.LastRefresh.IsZero() {
 		v.RefreshAge = max(now.Sub(st.LastRefresh), 0)
@@ -166,6 +176,21 @@ func leaseView(st lease.State, now time.Time) *LeaseView {
 		v.Handoff = h.To
 	}
 	return v
+}
+
+// agentAddress is the agent address a node is registered with in the
+// store; none when it has no entry or the registry cannot be read.
+func (c *cycleRun) agentAddress(node string) netip.Addr {
+	nodes, err := c.e.d.Store.Nodes()
+	if err != nil {
+		return netip.Addr{}
+	}
+	for _, n := range nodes {
+		if n.Name == node {
+			return n.AgentAddress
+		}
+	}
+	return netip.Addr{}
 }
 
 // writer is the callback of both reconcilers: the identity read at the start

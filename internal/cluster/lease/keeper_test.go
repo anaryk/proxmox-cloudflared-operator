@@ -63,6 +63,34 @@ func TestANodeThatHearsALiveControllerNeverTakesOver(t *testing.T) {
 	require.LessOrEqual(t, l.runUntil(time.Minute, pve2.holds), AcquireEvery+removalWait)
 }
 
+func TestANodeThatDoesNotHoldTheLeaseNamesItsHolder(t *testing.T) {
+	l := newLab(t, "pve1", "pve2")
+	pve1, pve2 := l.m("pve1"), l.m("pve2")
+	l.runUntil(time.Minute, func() bool { return pve1.holds() || pve2.holds() })
+	holder, other := pve1, pve2
+	if pve2.holds() {
+		holder, other = pve2, pve1
+	}
+	l.run(AcquireEvery + 2*time.Second)
+
+	st := other.k.State()
+	require.False(t, st.Holder)
+	require.Equal(t, holder.name, st.Record.Node, "the other node names the holder from leader.json")
+	require.Equal(t, holder.k.State().Record.Writer, st.Record.Writer)
+	require.False(t, st.Record.AcquiredAt.IsZero())
+	require.False(t, st.Valid, "only the holder's lease is valid")
+
+	// leader.json may still name this node from a tenure before a reboot
+	// or a lost lease: a node that does not hold the lease never names
+	// itself as the holder.
+	other.k.mu.Lock()
+	other.k.seen = store.LeaderRecord{Node: other.name, AcquiredAt: st.Record.AcquiredAt}
+	other.k.mu.Unlock()
+	st = other.k.State()
+	require.False(t, st.Holder)
+	require.Empty(t, st.Record.Node)
+}
+
 func TestTheHolderFencesSixtySecondsAfterItsLastGoodRefresh(t *testing.T) {
 	l := newLab(t, "pve1")
 	pve1 := l.m("pve1")
