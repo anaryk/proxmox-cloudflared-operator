@@ -71,7 +71,7 @@ func (e *Engine) TakeAgentEvents(node string, st agentproto.Status, epoch agentp
 		}
 		had.cursor = w.Cursor
 		events = append(events, Event{
-			At: w.At, Level: agentLevel(w.Level), Kind: clip(w.Kind), Subject: clip(w.Subject),
+			At: w.At, Level: agentLevel(w.Level), Kind: agentKind(clip(w.Kind)), Subject: clip(w.Subject),
 			Message: clip(w.Message), Tunnel: clip(w.Tunnel), Node: node,
 		})
 	}

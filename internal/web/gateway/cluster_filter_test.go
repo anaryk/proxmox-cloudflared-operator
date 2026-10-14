@@ -110,6 +110,7 @@ func TestAReaderGetsNoEventOfTheAuditTrail(t *testing.T) {
 			Message: "qemu/101: active", Node: "pve1", Actor: "alice@pve (ticket)", Account: "acc1"},
 		{Seq: 8, Level: "warn", Kind: "managed", Subject: "qemu/101", Guest: "qemu/101",
 			Message: "foreign card net1 (bc:24:11:5e:7a:01) of qemu/101 seen on veth140i1 and fwln140i0", Node: "pve2"},
+		{Seq: 9, Level: "warn", Kind: "agent:block", Subject: "10.0.0.11", Guest: "qemu/101", Message: "an agent's word", Node: "pve2"},
 	}
 	got := FilterEvents(evs, sees(101), map[string]bool{"www.example.com": true})
 	var seqs []uint64

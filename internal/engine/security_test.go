@@ -94,8 +94,10 @@ func TestTheEventsOfAnotherNodeAreNotWrittenByTheController(t *testing.T) {
 // The trail is written as the events come, until the engine stops.
 func TestTheAuditTrailIsWrittenAsEventsCome(t *testing.T) {
 	written := make(chan string, 4)
-	a := newAuditTrail(testNode, func(_ string, e store.SecurityEvent) error {
-		written <- e.Message
+	a := newAuditTrail(testNode, func(_ string, events []store.SecurityEvent) error {
+		for _, e := range events {
+			written <- e.Message
+		}
 		return nil
 	}, zerolog.Nop())
 	ctx, cancel := context.WithCancel(t.Context())
@@ -112,34 +114,95 @@ func TestTheAuditTrailIsWrittenAsEventsCome(t *testing.T) {
 }
 
 // A write that fails keeps the events, in their order, for the next try;
-// the queue keeps the newest as many as the file does.
+// the queue keeps the newest as many as the file does, and once a write
+// works again says how many it dropped. A flush is one write.
 func TestTheAuditTrailKeepsWhatItCouldNotWrite(t *testing.T) {
 	var written []string
+	writes, lost := 0, 0
 	broken := true
-	a := newAuditTrail(testNode, func(_ string, e store.SecurityEvent) error {
+	a := newAuditTrail(testNode, func(_ string, events []store.SecurityEvent) error {
+		writes++
 		if broken {
 			return errors.New("no quorum")
 		}
-		written = append(written, e.Message)
+		for _, e := range events {
+			written = append(written, e.Message)
+		}
 		return nil
 	}, zerolog.Nop())
+	a.lost = func(n int) { lost += n }
 
 	a.add([]Event{{At: t0, Kind: kindAdmin, Message: "one"}, {At: t0, Kind: kindRoute, Message: "not of the trail"}})
 	a.add([]Event{{At: t0, Kind: kindLease, Message: "two"}})
 	a.flush()
 	require.Empty(t, written)
 
-	broken = false
+	broken, writes = false, 0
 	a.flush()
 	require.Equal(t, []string{"one", "two"}, written)
+	require.Equal(t, 1, writes, "one write for the whole queue")
+	require.Zero(t, lost)
 
 	broken, written = true, nil
 	for i := range store.MaxSecurityEvents + 10 {
 		a.add([]Event{{At: t0, Kind: kindAdmin, Message: fmt.Sprint(i)}})
 	}
 	a.flush()
+	a.add([]Event{{At: t0, Kind: kindAdmin, Message: "one more"}})
+	require.Zero(t, lost, "said once the trail is written again")
 	broken = false
 	a.flush()
 	require.Len(t, written, store.MaxSecurityEvents)
-	require.Equal(t, "10", written[0], "the oldest are dropped")
+	require.Equal(t, "11", written[0], "the oldest are dropped")
+	require.Equal(t, 11, lost)
+	a.flush()
+	require.Equal(t, 11, lost, "said once")
+}
+
+// The engine says in the trail itself that events of it were lost.
+func TestLostAuditEventsAreSaidInTheTrail(t *testing.T) {
+	e := newEnv(t)
+
+	e.eng.audit.lost(7)
+	e.eng.audit.flush()
+
+	got, err := e.store.SecurityEvents()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, kindAudit, got[0].Kind)
+	require.Equal(t, levelWarn, got[0].Level)
+	require.Contains(t, got[0].Message, "7 audit events were lost")
+}
+
+// An agent cannot pass its events off as the controller's: one of a kind of
+// the audit trail or of the controller's findings is kept as agent:<kind>.
+func TestAnAgentsEventOfAReservedKindIsKeptAsItsOwn(t *testing.T) {
+	e := newEnv(t)
+	var raws []json.RawMessage
+	for i, kind := range []string{kindAdmin, KindSecurity, kindBlock, "egress"} {
+		raw, err := json.Marshal(map[string]any{"cursor": i + 1, "at": t0, "level": "info", "kind": kind, "subject": "x", "message": "m" + kind})
+		require.NoError(t, err)
+		raws = append(raws, raw)
+	}
+	st := agentproto.Status{Node: "pve2", AgentStartedAt: t0, Events: raws, EventCursor: 4}
+
+	e.eng.TakeAgentEvents("pve2", st, agentproto.Epoch{InstallID: testInstall, Generation: 1, Nonce: "n1"})
+
+	var kinds []string
+	for _, ev := range e.eng.Events(time.Time{}) {
+		if ev.Node == "pve2" {
+			kinds = append(kinds, ev.Kind)
+			require.False(t, ev.Security)
+		}
+	}
+	require.Equal(t, []string{"agent:admin", "agent:security", "agent:block", "egress"}, kinds)
+}
+
+// The trail has no numbers to read on from.
+func TestTheTrailIsNotReadFromAPosition(t *testing.T) {
+	e := newEnv(t)
+
+	_, err := e.eng.QueryEvents(EventQuery{Kind: []string{KindSecurity}, After: 3})
+
+	require.ErrorIs(t, err, ErrInvalid)
 }

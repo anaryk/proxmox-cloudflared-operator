@@ -317,10 +317,11 @@ func keepEvent(ev engine.Event, visible auth.Visible, hosts map[string]bool) boo
 var adminKinds = map[string]bool{"enrol": true, "attestation": true, "placement": true, "block": true}
 
 // readerKeeps says whether a reader gets an event: never one of the audit
-// trail, whatever its kind, nor one of adminKinds; the others by what they
-// are about.
+// trail, whatever its kind, nor one of adminKinds, nor one an agent sent
+// under such a kind, which the controller keeps as agent:<kind>; the others
+// by what they are about.
 func readerKeeps(ev engine.Event, visible auth.Visible, hosts map[string]bool) bool {
-	return !ev.Security && !adminKinds[ev.Kind] && keepEvent(ev, visible, hosts)
+	return !ev.Security && !adminKinds[ev.Kind] && !strings.HasPrefix(ev.Kind, "agent:") && keepEvent(ev, visible, hosts)
 }
 
 // readerEvent is what a reader gets of an event, and whether it gets it: a

@@ -384,8 +384,19 @@ happened to the lease (`lease`). The node that made one writes it to its journal
 `security=true`, and to its own file `security-events/<node>.json` in the cluster root, which
 keeps the last 500. `pco events --kind security` merges the files of every node by time; it
 answers on any node of a cluster, also while no node holds the lease, and shows the node that
-acted and the admin who asked. Events an agent of another node sent the controller are that
-node's to record, never the controller's.
+acted and the admin who asked. It reads the files whole, by time: it takes `--since` but has
+no position to read on from, as the other events have in the stream of the web interface. A file
+that cannot be read is left out, and the daemon's log names it; every event is taken as of the
+node whose file holds it.
+
+The audit trail is what the controller and the daemon of each node did. An agent writes none: the
+events an agent of another node sends the controller are in `pco events` with their node, but
+never in the trail, and one that comes under a kind of the trail or of the controller's own
+findings (`admin`, `lease`, `security`, `audit`, `enrol`, `rotation`, `block`, `attestation`,
+`placement`) is kept as `agent:<kind>`, which the web interface shows no reader. While the
+cluster root cannot be written, a node keeps the newest 500 events of its trail waiting; once it
+can again, an `audit` event says how many were lost, and so does the log when the daemon stops
+with events not written.
 
 | Kind | Level | Reports | What to do |
 |---|---|---|---|
@@ -413,6 +424,7 @@ node's to record, never the controller's.
 | `placement` | `info` | In a cluster, a route moved between the shared tunnel and a tunnel pinned to a node: a move begins (`<owner> moves from <tunnel> to <tunnel>: <why>`), is given up because a new controller took over before the records were switched or the route belongs where it was again, ends once the old rules are gone, or a hostname is placed elsewhere (`<hostname> is placed pinned to <node>, was shared`). A tunnel pinned to a node is deleted once it served no route for ten minutes, or its node was removed. The subject is the owner, the hostname or the tunnel. | `pco status --json` shows the placement of each route under `routes[].placement`. |
 | `enrol` | `info` | The agent endpoint took the certificate of a node: the registry follows the certificate a host node issued itself and wrote into its enrolment, or, in the observe-only window after a promotion, records one the store held none for. The event is of the audit trail, also kept in `/etc/pve/pco/security-events`. The subject is the node. | `pco events`. |
 | `lease` | `info`, `warn` when it is lost or fenced, `error` when the controller is behind | What happened to the lease of the host: `acquired at generation <n>`, `fenced at generation <n>: <why>`, `resumed at generation <n>`, `this node no longer holds the lease: <why>`, `behind at generation <n>: <why>; nothing is written until pco promote`, `promoted to generation <n>; observe-only until pco apply`, and `released as the daemon stopped`, or on a node that stands alone `kept as the daemon stopped: this node stands alone, and its next start keeps the epoch`. The subject is the node. | See [the lease](#the-lease). |
+| `audit` | `warn` | Events of the audit trail of this node were lost: `<n> audit events were lost: the cluster root could not be written while more than 500 waited`. | Check the cluster filesystem (`pvecm status`); the journal of the node still has every event. |
 
 ## Doctor checks
 

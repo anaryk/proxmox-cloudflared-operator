@@ -465,7 +465,8 @@ func New(d Deps) (*Engine, error) {
 		tried:        make(map[string]checkTry),
 	}
 	e.events.boot, e.events.sent = e.boot, e.notify.events
-	e.audit = newAuditTrail(d.Node, d.Store.AppendSecurityEvent, d.Log)
+	e.audit = newAuditTrail(d.Node, d.Store.AppendSecurityEvents, d.Log)
+	e.audit.lost = e.noteAuditLost
 	e.events.audit = e.audit.add
 	e.interval.Store(int64(defaultPollInterval))
 	e.unchecked.Store(true)
