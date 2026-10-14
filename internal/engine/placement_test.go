@@ -312,6 +312,64 @@ func TestAStoredAddressIsHeldOnlyWhileItsGuestMayStillRun(t *testing.T) {
 	})
 }
 
+// What the state shows of a replica is its own word, within what it may
+// say: port (attested) only from a host agent, as an appliance reads no
+// forwarding table; and a shared route's level is the lowest over its
+// replicas, a pinned route's that of its node.
+func TestAReplicaIsShownAtItsOwnLevelAndARouteAtTheLowest(t *testing.T) {
+	replica := func(st State, host, node string) ReplicaView {
+		for _, v := range route(st, host).Replicas {
+			if v.Node == node {
+				return v
+			}
+		}
+		t.Fatalf("no replica %s of %s", node, host)
+		return ReplicaView{}
+	}
+	t.Run("attested only from a host agent", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		attested := func(st *agentproto.Status) {
+			for i := range st.Targets {
+				st.Targets[i].Attested = true
+			}
+		}
+		w.acts["pve2"].edit = attested
+		w.acts["pve3"].edit = attested
+		w.acts["pve3"].kind = pki.KindAppliance
+		st := w.tick(time.Second)
+		require.True(t, replica(st, "www.example.com", "pve2").Attested)
+		require.False(t, replica(st, "www.example.com", "pve3").Attested, "an appliance agent proves no port")
+	})
+	t.Run("the lowest level over the replicas", func(t *testing.T) {
+		w := threeNodes(t)
+		w.settle()
+		w.acts["pve3"].edit = func(st *agentproto.Status) {
+			for i := range st.Targets {
+				if st.Targets[i].Key == "www.example.com" {
+					st.Targets[i].Level = "observed"
+				}
+			}
+		}
+		w.tick(time.Second)
+		st := w.tick(time.Second)
+		require.Equal(t, "observed", route(st, "www.example.com").Level, "pve3 proves it at observed only")
+		require.Equal(t, "port", replica(st, "www.example.com", "pve1").Level)
+		require.Equal(t, "port", route(st, "db.example.com").Level)
+	})
+	t.Run("a pinned route at its node's level", func(t *testing.T) {
+		w, _ := pinnedDB(t)
+		w.acts["pve3"].edit = func(st *agentproto.Status) {
+			for i := range st.Targets {
+				st.Targets[i].Level = "observed"
+			}
+		}
+		w.tick(time.Second)
+		st := w.tick(time.Second)
+		require.Equal(t, "port", route(st, "db.example.com").Level, "pve3 is no replica of db's tunnel")
+	})
+}
+
 // An agent that restarts every 50 seconds for ten minutes: its first
 // restart is forgiven, the second pins the routes, they stay pinned for as
 // long as it flaps, and no route moves twice.

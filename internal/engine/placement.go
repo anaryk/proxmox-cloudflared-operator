@@ -504,6 +504,7 @@ func (c *cycleRun) servedTarget(rt model.Route, record placed, replicas []string
 	if len(nodes) == 0 {
 		failing = append(failing, "no replica")
 	}
+	t.Level = c.lowestLevel(rt, nodes, t.Level)
 	dialed, ok := t.Dialed()
 	published := ok && c.sendsTo(rt, record, egress.Target{Addr: dialed, Port: rt.Target.Port})
 	mem := &c.e.place
@@ -539,6 +540,30 @@ func (c *cycleRun) servedTarget(rt model.Route, record placed, replicas []string
 		t.Reason = cmp.Or(t.Reason, fmt.Sprintf("not reached on %s", strings.Join(failing, ", ")))
 	}
 	return t
+}
+
+// lowestLevel is the level a route is shown at: the lowest any node of its
+// tunnel proved its target at, among those that reported it, starting from
+// the resolving node's. A node that has not said leaves the level as it is.
+func (c *cycleRun) lowestLevel(rt model.Route, nodes []string, level string) string {
+	lowest := level
+	for _, n := range nodes {
+		var l string
+		if n == c.e.d.Node {
+			if res, ok := c.results[rt.Hostname]; ok {
+				l = string(res.Level)
+			}
+		} else if tr, ok := c.reportOn(n, rt, c.resolverOf(rt) == n); ok {
+			l = tr.Level
+		}
+		if l == "" {
+			continue
+		}
+		if lowest == "" || !resolve.Level(l).AtLeast(resolve.Level(lowest)) {
+			lowest = l
+		}
+	}
+	return lowest
 }
 
 // holdsStored says whether the stored address of a route no node resolves
@@ -655,8 +680,11 @@ func (c *cycleRun) replicaViews(rt model.Route, record placed, replicas []string
 			res := c.results[rt.Hostname]
 			_, inSet := c.verifiedTarget(rt)
 			v.Level, v.OK, v.Reason, v.InSet = string(res.Level), res.Target.Reachable && inSet, res.Target.Reason, inSet
-		} else if tr, ok := c.fleet.node(n).targets[rt.Hostname]; ok {
-			v.Level, v.Attested, v.OK, v.Reason, v.InSet = tr.Level, tr.Attested, tr.OK, tr.Reason, tr.InEgressSet
+		} else if f := c.fleet.node(n); f.targets[rt.Hostname].Key != "" {
+			// Only a host agent reads a forwarding table: an appliance
+			// agent's word of an attested port is not shown as one.
+			tr := f.targets[rt.Hostname]
+			v.Level, v.Attested, v.OK, v.Reason, v.InSet = tr.Level, tr.Attested && f.host, tr.OK, tr.Reason, tr.InEgressSet
 		} else {
 			v.Reason = "no report"
 		}
