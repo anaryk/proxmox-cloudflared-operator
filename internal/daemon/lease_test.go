@@ -70,6 +70,19 @@ func TestTheDaemonOfAClusterNodeGivesTheLeaseBack(t *testing.T) {
 	require.False(t, rec.ReleasedAt.IsZero())
 }
 
+// Whether the node stands alone is read at the stop, not at the start: a
+// node that joined a cluster meanwhile gives the lease back.
+func TestADaemonWhoseNodeJoinedAClusterGivesTheLeaseBack(t *testing.T) {
+	w := newWorld(t)
+	r := w.start()
+	r.await(func(st engine.State) bool { return st.Lease != nil && st.Lease.Valid })
+	w.inCluster(t)
+
+	require.NoError(t, r.stop())
+
+	require.NoDirExists(t, w.lockDir, "given back as the daemon stopped")
+}
+
 // A daemon that ended without giving the lease back, as after kill -9, finds
 // the lock of its node and boot still its own and keeps the epoch.
 func TestADaemonThatDiedKeepsTheEpochInTheSameBoot(t *testing.T) {

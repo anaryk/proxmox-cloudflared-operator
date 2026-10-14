@@ -197,12 +197,17 @@ func (h *hostLease) Cluster() (store.ClusterIdentity, error) {
 	return store.ClusterIdentity{CASHA256: fp, Name: m.Cluster}, nil
 }
 
-// standalone says whether this node stands alone: the last read of the
-// members file names no cluster, and the registry no node but this one.
+// standalone says whether this node stands alone: a read of the members
+// file made now names no cluster, and the registry no node but this one. It
+// is read at every decision: a node that joined a cluster since follows the
+// rules of a cluster at once. A read that does not answer counts as a
+// cluster.
 func (h *hostLease) standalone(st *store.Store, node string) func() bool {
 	return func() bool {
+		asked := h.d.Clocks.Now()
+		h.readQuorum()
 		m, at := h.quorum.Last()
-		if at.IsZero() || !m.Standalone {
+		if at.IsZero() || at.Before(asked) || !m.Standalone {
 			return false
 		}
 		nodes, err := st.Nodes()
