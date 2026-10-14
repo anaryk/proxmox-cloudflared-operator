@@ -361,6 +361,32 @@ func TestAConflictBlockSurvivesATakeover(t *testing.T) {
 	require.Empty(t, s.Blocks)
 }
 
+// A block the admin ends is gone from the store before it is gone from the
+// memory of the controller: one that takes over does not find it again.
+func TestABlockTheAdminEndsIsGoneFromTheStore(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	w.acts["pve3"].edit = dbConflict
+	w.tick(time.Second)
+	w.acts["pve3"].edit = nil
+	blocks, err := w.store.Blocks()
+	require.NoError(t, err)
+	require.Contains(t, blocks, dbAddr)
+
+	require.NoError(t, w.eng.Unblock(t.Context(), dbAddr))
+	blocks, err = w.store.Blocks()
+	require.NoError(t, err)
+	require.Empty(t, blocks)
+
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	st := w.tick(time.Second)
+	require.Empty(t, w.eng.place.blocks)
+	require.Empty(t, st.Cluster.Blocks)
+	s, _ := w.r.lastOf("pve2")
+	require.Empty(t, s.Blocks)
+}
+
 // A block ends only on a fresh attestation of the guest's card by its
 // node: ten quiet minutes alone end nothing.
 func TestABlockEndsOnlyOnceTheHostingNodeAttestsAgain(t *testing.T) {

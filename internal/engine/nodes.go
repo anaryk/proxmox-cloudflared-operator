@@ -605,6 +605,11 @@ func (e *Engine) Unblock(ctx context.Context, addr netip.Addr) error {
 	if !ok {
 		return fmt.Errorf("%w: %s is not blocked", ErrNotFound, addr)
 	}
+	// The store first: a block ended in memory alone would be found
+	// again by the controller that takes over.
+	if err := e.d.Store.DeleteBlock(addr); err != nil {
+		return fmt.Errorf("ending the block of %s: %w", addr, err)
+	}
 	delete(e.place.blocks, addr)
 	e.events.add(Event{At: e.d.Now(), Level: levelWarn, Kind: kindBlock, Subject: addr.String(), Guest: b.guest.String(), Node: b.node, Security: true,
 		Message: fmt.Sprintf("the block of %s is ended by the admin; its MAC %s was last seen on %s of %s", addr, b.mac, b.port, b.node), Actor: ActorOf(ctx)})
