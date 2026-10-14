@@ -116,6 +116,7 @@ func TestEveryRouteIsSharedOnceEveryReplicaReachesIt(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, placements, 3)
 	require.Equal(t, "pve2", placements["db.example.com"].ResolvingNode)
+	require.Equal(t, []string{w.tunnelID(t, tunnelName)}, w.targetOf(t, "pve3", "db.example.com").Tunnels, "the boot gate knows it is a shared target")
 }
 
 // An agent that stops: once its node has no status for long, every route

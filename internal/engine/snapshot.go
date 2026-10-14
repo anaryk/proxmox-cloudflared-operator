@@ -119,6 +119,7 @@ func (c *cycleRun) targetsFor(node string) []agentproto.Target {
 	for i := range out {
 		t := &out[i]
 		rt := t.Route
+		t.Tunnels = c.tunnelIDsOf(rt)
 		resolver := c.resolverOf(rt)
 		t.Resolve = resolver == node
 		if t.Guest == nil {
@@ -140,6 +141,32 @@ func (c *cycleRun) targetsFor(node string) []agentproto.Target {
 					break
 				}
 			}
+		}
+	}
+	return out
+}
+
+// tunnelIDsOf are the ids of the tunnels whose rules send a connector to
+// the target of a route, as the placement has them: the boot gate of an
+// agent starts its shared connector once a target of the shared tunnel
+// verified.
+func (c *cycleRun) tunnelIDsOf(rt model.Route) []string {
+	decided := c.e.place.decided
+	if c.placing != nil {
+		decided = c.placing.decided
+	}
+	zone, ok := c.zoneOf(rt.Hostname)
+	d, placedAt := decided[rt.Owner()]
+	out := []string{}
+	if !ok || !placedAt {
+		return out
+	}
+	for _, p := range []*placed{&d.record, d.also} {
+		if p == nil {
+			continue
+		}
+		if id := c.e.seenIn(tunnelRef{zone.AccountID, c.tunnelOf(*p)}); id != "" && !slices.Contains(out, id) {
+			out = append(out, id)
 		}
 	}
 	return out

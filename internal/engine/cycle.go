@@ -530,6 +530,7 @@ func (c *cycleRun) build() {
 		maps.Copy(in.Targets, p.targets)
 	}
 	c.plan = planner.Build(in)
+	c.checkRuleCount()
 	c.st.Routes = c.routeViews()
 }
 

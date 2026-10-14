@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
@@ -16,6 +17,31 @@ import (
 // pinnedEmptyFor is how long a tunnel pinned to a node serves no route and
 // no record points at it before it is deleted.
 const pinnedEmptyFor = 10 * time.Minute
+
+// maxIngressRules is the most rules of hostnames pco keeps a tunnel
+// under. Cloudflare documents no limit; a tunnel above it is named, as the
+// blocks of an account go into every tunnel of it, and a cluster with many
+// pinned tunnels multiplies them.
+const maxIngressRules = 1000
+
+const problemTooManyRules = "tunnel %s in account %s has %d ingress rules, more than the %d pco keeps a tunnel under; " +
+	"Cloudflare may refuse its configuration"
+
+// checkRuleCount names every planned tunnel with more rules of hostnames
+// than maxIngressRules.
+func (c *cycleRun) checkRuleCount() {
+	for _, p := range c.plan.Tunnels {
+		n := 0
+		for _, r := range p.Rules {
+			if r.Hostname != "" && !strings.HasSuffix(r.Hostname, ".invalid") {
+				n++
+			}
+		}
+		if n > maxIngressRules {
+			c.problem(problemTooManyRules, p.Name, p.AccountID, n, maxIngressRules)
+		}
+	}
+}
 
 // remoteTunnels are the tunnels whose connectors the agent of node runs,
 // each with its run token: the shared tunnel of every account while the
