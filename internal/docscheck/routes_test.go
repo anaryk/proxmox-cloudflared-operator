@@ -201,6 +201,18 @@ var noAction = []call{
 	{http.MethodPost, "/managed/approve"},
 	{http.MethodPost, "/managed/revoke"},
 	{http.MethodPost, "/managed/enable"},
+	{http.MethodGet, "/cluster"},
+	{http.MethodPost, "/cluster/handoff"},
+	{http.MethodPost, "/cluster/join-tokens"},
+	{http.MethodPost, "/cluster/finish-upgrade"},
+	{http.MethodPost, "/cluster/unblock"},
+	{http.MethodGet, "/nodes"},
+	{http.MethodPost, "/nodes/:name/admit"},
+	{http.MethodPost, "/nodes/:name/drain"},
+	{http.MethodPost, "/nodes/:name/undrain"},
+	{http.MethodPost, "/nodes/:name/forget"},
+	{http.MethodPut, "/nodes/:name"},
+	{http.MethodGet, "/local/agent"},
 }
 
 func TestEveryAdminCallHasItsActionInTheWebPage(t *testing.T) {

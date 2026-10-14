@@ -82,6 +82,18 @@ var tableRows = map[string]tableRow{
 	"POST /managed/approve":              {body: `{"owner":"lxc/204","identity":"mac:204","acceptFirewallImpact":true}`},
 	"POST /managed/revoke":               {body: `{"owner":"lxc/201"}`},
 	"POST /managed/enable":               {body: `{}`},
+	"GET /cluster":                       {},
+	"POST /cluster/handoff":              {body: `{"to":"pve2"}`},
+	"POST /cluster/join-tokens":          {body: `{"node":"app1"}`},
+	"POST /cluster/finish-upgrade":       {body: `{}`},
+	"POST /cluster/unblock":              {body: `{"address":"10.0.0.7"}`},
+	"GET /nodes":                         {},
+	"POST /nodes/:name/admit":            {path: "/nodes/app1/admit", body: `{"fingerprint":"9f86d081"}`},
+	"POST /nodes/:name/drain":            {path: "/nodes/pve2/drain", body: `{"force":false}`},
+	"POST /nodes/:name/undrain":          {path: "/nodes/pve2/undrain", body: `{}`},
+	"POST /nodes/:name/forget":           {path: "/nodes/pve3/forget", body: `{"compromised":false}`},
+	"PUT /nodes/:name":                   {path: "/nodes/pve2", body: `{"controllerEligible":false}`},
+	"GET /local/agent":                   {},
 }
 
 var (
@@ -255,7 +267,7 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 			require.Zero(t, r.Body, key)
 		}
 	}
-	require.Len(t, Table, len(readers)+22)
+	require.Len(t, Table, len(readers)+34)
 }
 
 func TestReadersAreRefusedEveryAdminRule(t *testing.T) {

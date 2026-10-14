@@ -3,6 +3,7 @@ package engine
 import (
 	"crypto/rand"
 	"encoding/pem"
+	"errors"
 	"net/netip"
 	"slices"
 	"strings"
@@ -124,10 +125,16 @@ func TestForgetAsCompromisedIsRefusedWhileTheNodeIsStillInTheCluster(t *testing.
 	w.closeNode = func(string) { closed++ }
 	w.settle()
 	w.corosync = func() (members.Corosync, error) {
+		return members.Corosync{}, errors.New("corosync.conf cannot be read")
+	}
+	_, err := w.eng.ForgetNode(t.Context(), "pve3", true)
+	require.ErrorIs(t, err, ErrRefused, "what cannot be told is refused")
+	require.ErrorContains(t, err, "corosync.conf cannot be read")
+
+	w.corosync = func() (members.Corosync, error) {
 		return members.Corosync{Nodes: []string{"pve1", "pve2", "pve3"}}, nil
 	}
-
-	_, err := w.eng.ForgetNode(t.Context(), "pve3", true)
+	_, err = w.eng.ForgetNode(t.Context(), "pve3", true)
 	require.ErrorIs(t, err, ErrRefused)
 	require.ErrorContains(t, err, "run pvecm delnode pve3 first: a node still in the cluster would receive every new secret")
 	require.Equal(t, store.NodeActive, entryOf(t, w.env, "pve3").State, "nothing changed")
@@ -258,6 +265,7 @@ func TestAdmitMatchesTheFingerprintOfTheEnrolledCertificate(t *testing.T) {
 		{"seven digits", "9f86d08", ErrInvalid, "at least 8 hex digits"},
 		{"not hex", "9f86d08g", ErrInvalid, "in hex"},
 		{"a wrong one", "9f86d082", ErrRefused, "is not that of the certificate enrolled for node app1"},
+		{"longer than a fingerprint", sum + "0", ErrRefused, "is not that of the certificate enrolled for node app1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := e.eng.AdmitNode(t.Context(), "app1", tt.fp, false)
@@ -285,6 +293,27 @@ func TestAdmitMatchesTheFingerprintOfTheEnrolledCertificate(t *testing.T) {
 
 	_, err = e.eng.AdmitNode(t.Context(), "nope", "", false)
 	require.ErrorIs(t, err, ErrNotFound)
+
+	// An enrolled value that is no SHA-256 vouches for nothing.
+	n := entryOf(t, e, "app1")
+	n.CertSHA256 = "9f86d081"
+	require.NoError(t, e.store.SaveNode(n))
+	_, err = e.eng.AdmitNode(t.Context(), "app1", "9f86d081", false)
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "has no fingerprint pco can check")
+}
+
+// fingerprintMatches takes a prefix of the enrolled SHA-256 only, of at
+// least eight digits and never more than the whole.
+func TestFingerprintMatches(t *testing.T) {
+	const sum = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	require.True(t, fingerprintMatches(sum, "9f86d081"))
+	require.True(t, fingerprintMatches(sum, sum))
+	require.False(t, fingerprintMatches(sum, "9f86d08"))
+	require.False(t, fingerprintMatches(sum, sum+"0"))
+	require.False(t, fingerprintMatches(sum, "9f86d082"))
+	require.False(t, fingerprintMatches(sum[:60], "9f86d081"), "an enrolled value that is no SHA-256")
+	require.False(t, fingerprintMatches("", ""))
 }
 
 // A node that stays joining because more routes would move than the setting

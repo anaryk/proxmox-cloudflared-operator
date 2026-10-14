@@ -3,8 +3,11 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -27,6 +30,16 @@ func certUnder(t *testing.T, ca pki.CA, node string) string {
 	cert, err := ca.IssueClient(csr, id, t0, rand.Reader)
 	require.NoError(t, err)
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+}
+
+// fingerprintOf is the SHA-256 of a certificate in PEM.
+func fingerprintOf(t *testing.T, certPEM string) string {
+	t.Helper()
+	b, _ := pem.Decode([]byte(certPEM))
+	require.NotNil(t, b)
+	cert, err := x509.ParseCertificate(b.Bytes)
+	require.NoError(t, err)
+	return pki.Fingerprint(cert)
 }
 
 // seedCA stores ca as the install's CA.
@@ -83,22 +96,65 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 	require.True(t, hasProblem(st, fmt.Sprintf(problemRotationProxmox, "pve3")), st.Problems)
 	require.Equal(t, []string{stepCredentials}, st.Cluster.CARotation.Done)
 
-	// The tunnels are rotated once the Proxmox secret is new; the CA waits
-	// for every connector to run with the new secrets.
+	// The tunnels are rotated once the Proxmox secret is new, and only by a
+	// cycle that got through to Cloudflare whole: a held one may not know
+	// every tunnel.
 	require.NoError(t, w.store.SavePVEToken(store.PVEToken{TokenID: "pco@pve!pco", Secret: store.NewSecret("new-secret")}))
+	whole := w.inv.snapshot()
+	held := whole
+	held.Complete = false
+	w.inv.set(held)
+	st = w.tick(time.Second)
+	require.NotContains(t, w.cf.Calls(), "RotateTunnelSecret acc1 "+id, "a held cycle rotates nothing")
+	require.Equal(t, []string{stepCredentials}, st.Cluster.CARotation.Done, "and moves no step on")
+	w.inv.set(whole)
+
+	// The CA waits for every node that runs a connector to run it ready
+	// with the new secret: a replica that reports none, or one not ready,
+	// holds it.
+	w.acts["pve2"].edit = func(s *agentproto.Status) { s.Connectors = nil }
+	st = w.tick(time.Second)
+	require.Contains(t, w.cf.Calls(), "RotateTunnelSecret acc1 "+id)
+	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels}, st.Cluster.CARotation.Done)
+	require.Equal(t, stepRollout, st.Cluster.CARotation.Next)
+	require.True(t, hasProblem(st, "waiting for the connectors of pco-abc123 to run with the new secret"), st.Problems)
 	w.acts["pve2"].edit = func(s *agentproto.Status) {
 		for i := range s.Connectors {
 			s.Connectors[i].Ready = false
 		}
 	}
 	st = w.tick(time.Second)
-	require.Contains(t, w.cf.Calls(), "RotateTunnelSecret acc1 "+id)
-	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels}, st.Cluster.CARotation.Done)
 	require.Equal(t, stepRollout, st.Cluster.CARotation.Next)
 	require.True(t, hasProblem(st, "waiting for the connectors of pco-abc123 to run with the new secret"), st.Problems)
 	_, prev, _, err := w.store.CA()
 	require.NoError(t, err)
 	require.Nil(t, prev, "the CA is not rotated yet")
+
+	// A CA step that could not name the new CA in leader.json keeps the CA
+	// it made: the next cycle names it, and makes no third one.
+	w.acts["pve2"].edit = nil
+	leaderFile := filepath.Join(w.paths.Cluster, "meta", "leader.json")
+	leader, _, found, err := w.store.Leader()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.NoError(t, os.Remove(leaderFile))
+	st = w.tick(time.Second)
+	require.Equal(t, stepCA, st.Cluster.CARotation.Next, st.Problems)
+	require.True(t, hasProblem(st, "rotating the CA failed"), st.Problems)
+	made, prev, _, err := w.store.CA()
+	require.NoError(t, err)
+	require.NotNil(t, prev, "the new CA is kept")
+	require.NoError(t, w.store.SaveLeader(leader))
+	st = w.tick(time.Second)
+	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels, stepRollout, stepCA}, st.Cluster.CARotation.Done, st.Problems)
+	again, prev, _, err := w.store.CA()
+	require.NoError(t, err)
+	require.Equal(t, made.CertPEM, again.CertPEM, "no third CA")
+	require.Equal(t, old.SHA256(), fingerprintOf(t, prev.CertPEM), "the old CA is the previous one")
+	// Done by this controller: the record says so for the next one.
+	rec, _, err := w.store.CARotation()
+	require.NoError(t, err)
+	require.Contains(t, rec.Done, stepCA)
 
 	require.Equal(t, []string{
 		"node pve3 was forgotten as compromised: every secret of the install is rotated, step by step",
@@ -106,12 +162,13 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 		"node pve3 was forgotten as compromised: the Proxmox token has a new secret",
 		"the secret of tunnel pco-abc123 in account acc1 is rotated: every run token of it stops working",
 		"node pve3 was forgotten as compromised: every tunnel of the install has a new secret",
+		"node pve3 was forgotten as compromised: every connector runs with the new secrets",
+		"node pve3 was forgotten as compromised: the CA of the install is rotated: the previous one is taken for 10m0s more",
 	}, rotationEvents(w.env))
 
 	// Another controller takes over in the middle and goes on from the record.
 	w.eng = w.newEngine()
 	w.watchHere(t)
-	w.acts["pve2"].edit = nil
 	st = w.settle()
 	require.Equal(t, []string{stepCredentials, stepProxmox, stepTunnels, stepRollout, stepCA}, st.Cluster.CARotation.Done, st.Problems)
 	cur, prev, rotatedAt, err := w.store.CA()
@@ -121,7 +178,7 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 	next, err := pki.ParseCA([]byte(cur.CertPEM), []byte(cur.KeyPEM.Reveal()))
 	require.NoError(t, err)
 	require.NotEqual(t, old.SHA256(), next.SHA256())
-	leader, _, found, err := w.store.Leader()
+	leader, _, found, err = w.store.Leader()
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, next.SHA256(), leader.CASHA256, "leader.json names the new CA")
@@ -140,8 +197,6 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 	require.Equal(t, []string{"pve2"}, st.Cluster.CARotation.Refused)
 	require.True(t, hasProblem(st, fmt.Sprintf(problemRotationRefused, "pve2")), st.Problems)
 	require.Equal(t, []string{
-		"node pve3 was forgotten as compromised: every connector runs with the new secrets",
-		"node pve3 was forgotten as compromised: the CA of the install is rotated: the previous one is taken for 10m0s more",
 		"node pve3 was forgotten as compromised: the rotation of every secret is finished: only certificates under the new CA are taken",
 	}, rotationEvents(w.env))
 
@@ -149,6 +204,31 @@ func TestTheRotationOfACompromisedNodeRunsStepByStepAndOutlivesTheController(t *
 	require.NoError(t, w.store.SaveEnrolment("pve2", store.Enrolment{CertPEM: certUnder(t, next, "pve2")}))
 	st = w.tick(time.Second)
 	require.Empty(t, st.Cluster.CARotation.Refused)
+}
+
+// The tunnels step is done only by a cycle that read every account through
+// to the end: one that held, or did not get to Cloudflare as the writer, or
+// left an account unread, may have missed a tunnel.
+func TestTheTunnelsStepNeedsACycleThatGotThroughWhole(t *testing.T) {
+	w := threeNodes(t)
+	w.settle()
+	for _, tt := range []struct {
+		name string
+		c    *cycleRun
+		why  string
+	}{
+		{"held", &cycleRun{e: w.eng, cfHold: true, checked: true}, "not every tunnel is known"},
+		{"not checked", &cycleRun{e: w.eng, checked: false}, "not every tunnel is known"},
+		{"an account unread", &cycleRun{e: w.eng, checked: true, unreported: []TunnelView{{}}}, "1 tunnels are in accounts the tunnel run could not read"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := store.CARotation{Node: "pve3", StartedAt: t0}
+			done, why := tt.c.rotateTunnels(&rec)
+			require.False(t, done)
+			require.Contains(t, why, tt.why)
+			require.Empty(t, rec.Rotated)
+		})
+	}
 }
 
 // A node forgotten while a rotation runs on a store the previous build

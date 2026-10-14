@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
@@ -221,3 +222,53 @@ func (n *noStateEngine) ApproveManaged(context.Context, string, string, bool) (s
 func (n *noStateEngine) RevokeManaged(context.Context, string) error { return n.refuse() }
 
 func (n *noStateEngine) EnableManaged(context.Context) error { return n.refuse() }
+
+func (n *noStateEngine) ClusterStatus() engine.ClusterStatus {
+	return engine.ClusterStatus{Nodes: []engine.NodeView{}}
+}
+
+func (n *noStateEngine) Nodes() []engine.NodeView { return []engine.NodeView{} }
+
+func (n *noStateEngine) Handoff(context.Context, string) (engine.HandoffResult, error) {
+	return engine.HandoffResult{}, n.refuse()
+}
+
+func (n *noStateEngine) NewJoinToken(context.Context, string) (engine.JoinTokenView, error) {
+	return engine.JoinTokenView{}, n.refuse()
+}
+
+func (n *noStateEngine) FinishUpgrade(context.Context) (engine.FinishUpgradeResult, error) {
+	return engine.FinishUpgradeResult{}, n.refuse()
+}
+
+func (n *noStateEngine) Unblock(context.Context, netip.Addr) error { return n.refuse() }
+
+func (n *noStateEngine) UninstallCluster(context.Context, bool) (engine.UninstallResult, error) {
+	return engine.UninstallResult{}, n.refuse()
+}
+
+func (n *noStateEngine) AdmitNode(context.Context, string, string, bool) (engine.NodeView, error) {
+	return engine.NodeView{}, n.refuse()
+}
+
+func (n *noStateEngine) DrainNode(context.Context, string, bool) (engine.NodeView, error) {
+	return engine.NodeView{}, n.refuse()
+}
+
+func (n *noStateEngine) UndrainNode(context.Context, string) (engine.NodeView, error) {
+	return engine.NodeView{}, n.refuse()
+}
+
+func (n *noStateEngine) ForgetNode(context.Context, string, bool) (engine.ForgetResult, error) {
+	return engine.ForgetResult{}, n.refuse()
+}
+
+func (n *noStateEngine) SetNode(context.Context, string, engine.NodePatch) (engine.NodeView, error) {
+	return engine.NodeView{}, n.refuse()
+}
+
+func (n *noStateEngine) AgentView() (agentproto.AgentView, error) {
+	return agentproto.AgentView{}, n.refuse()
+}
+
+func (n *noStateEngine) ResetAgentEpoch(context.Context) error { return n.refuse() }

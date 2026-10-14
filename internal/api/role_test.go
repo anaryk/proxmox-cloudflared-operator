@@ -33,7 +33,8 @@ var (
 )
 
 // localReads are the routes a node answers whether or not it is the
-// controller: they describe the daemon's own process and its node.
+// controller: they describe the daemon's own process and its node, and
+// act on its own agent.
 var localReads = []string{
 	"GET /v1/version",
 	"GET /v1/state",
@@ -42,6 +43,8 @@ var localReads = []string{
 	"GET /v1/traffic",
 	"GET /v1/traffic/route",
 	"GET /v1/doctor",
+	"GET /v1/local/agent",
+	"POST /v1/local/agent/reset-epoch",
 }
 
 func TestEveryRouteIsEitherLocalOrTheControllers(t *testing.T) {

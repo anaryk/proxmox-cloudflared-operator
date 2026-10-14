@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -105,6 +106,25 @@ type Engine interface {
 	// Promote shows what differs between the store and the agents, and
 	// confirmed draws a new epoch that makes this node the writer.
 	Promote(ctx context.Context, req engine.PromoteRequest) (engine.PromoteResult, error)
+	// The cluster: its status and its nodes as the last cycle found them,
+	// what the admin does to the lease, the upgrade, a block and the whole
+	// install, and what the admin does to one node.
+	ClusterStatus() engine.ClusterStatus
+	Nodes() []engine.NodeView
+	Handoff(ctx context.Context, to string) (engine.HandoffResult, error)
+	NewJoinToken(ctx context.Context, node string) (engine.JoinTokenView, error)
+	FinishUpgrade(ctx context.Context) (engine.FinishUpgradeResult, error)
+	Unblock(ctx context.Context, addr netip.Addr) error
+	UninstallCluster(ctx context.Context, force bool) (engine.UninstallResult, error)
+	AdmitNode(ctx context.Context, name, fingerprint string, renew bool) (engine.NodeView, error)
+	DrainNode(ctx context.Context, name string, force bool) (engine.NodeView, error)
+	UndrainNode(ctx context.Context, name string) (engine.NodeView, error)
+	ForgetNode(ctx context.Context, name string, compromised bool) (engine.ForgetResult, error)
+	SetNode(ctx context.Context, name string, p engine.NodePatch) (engine.NodeView, error)
+	// The agent of this node: what pco agent status shows, and the reset of
+	// the epoch it remembers.
+	AgentView() (agentproto.AgentView, error)
+	ResetAgentEpoch(ctx context.Context) error
 }
 
 // Server answers API requests for an engine.

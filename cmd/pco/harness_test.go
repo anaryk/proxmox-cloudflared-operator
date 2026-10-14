@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
@@ -92,6 +93,11 @@ type fakeEngine struct {
 	candidates []engine.CandidateNetwork
 	probe      engine.ProbeResult
 	networkErr error
+
+	// The cluster: what the agent of the node shows of itself, and what an
+	// action on the cluster or a node fails with.
+	agent      agentproto.AgentView
+	clusterErr error
 
 	calls []string
 }
@@ -460,6 +466,151 @@ func (f *fakeEngine) EnableManaged(context.Context) error {
 }
 
 func (f *fakeEngine) Traffic() engine.TrafficView { return engine.TrafficView{} }
+
+// The cluster: answered from the fields of the fake, and recorded.
+func (f *fakeEngine) ClusterStatus() engine.ClusterStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := engine.ClusterStatus{Lease: f.state.Lease, Nodes: f.state.Nodes}
+	if out.Nodes == nil {
+		out.Nodes = []engine.NodeView{}
+	}
+	if f.state.Cluster != nil {
+		out.Cluster = *f.state.Cluster
+	}
+	return out
+}
+
+func (f *fakeEngine) Nodes() []engine.NodeView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.state.Nodes == nil {
+		return []engine.NodeView{}
+	}
+	return f.state.Nodes
+}
+
+func (f *fakeEngine) Handoff(_ context.Context, to string) (engine.HandoffResult, error) {
+	f.record("handoff " + to)
+	if f.clusterErr != nil {
+		return engine.HandoffResult{}, f.clusterErr
+	}
+	return engine.HandoffResult{From: "pve1", To: to, Until: t0.Add(30 * time.Second)}, nil
+}
+
+func (f *fakeEngine) NewJoinToken(_ context.Context, node string) (engine.JoinTokenView, error) {
+	f.record("join-token " + node)
+	if f.clusterErr != nil {
+		return engine.JoinTokenView{}, f.clusterErr
+	}
+	return engine.JoinTokenView{ID: "tok1", Node: node, Expires: t0.Add(15 * time.Minute), Token: "pco1.c2VjcmV0LXRva2Vu"}, nil
+}
+
+func (f *fakeEngine) FinishUpgrade(context.Context) (engine.FinishUpgradeResult, error) {
+	f.record("finish-upgrade")
+	if f.clusterErr != nil {
+		return engine.FinishUpgradeResult{}, f.clusterErr
+	}
+	return engine.FinishUpgradeResult{From: "0.9.0", Schema: 1, Backup: "/var/lib/pco/backup/1-20261001T120000Z"}, nil
+}
+
+func (f *fakeEngine) Unblock(_ context.Context, addr netip.Addr) error {
+	f.record("unblock " + addr.String())
+	return f.clusterErr
+}
+
+func (f *fakeEngine) UninstallCluster(_ context.Context, force bool) (engine.UninstallResult, error) {
+	f.record("uninstall-cluster force=" + boolText(force))
+	if f.clusterErr != nil {
+		return engine.UninstallResult{}, f.clusterErr
+	}
+	return engine.UninstallResult{Clean: []string{}, Left: []string{"pve2: pco uninstall --yes --keep-cloudflare removes what pco keeps on the node"}}, nil
+}
+
+func (f *fakeEngine) nodeNamed(name string) engine.NodeView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, n := range f.state.Nodes {
+		if n.Name == name {
+			return n
+		}
+	}
+	return engine.NodeView{Name: name, State: "active", Kind: "host"}
+}
+
+func (f *fakeEngine) AdmitNode(_ context.Context, name, fingerprint string, renew bool) (engine.NodeView, error) {
+	f.record("admit " + name + " fingerprint=" + fingerprint + " renew=" + boolText(renew))
+	if f.clusterErr != nil {
+		return engine.NodeView{}, f.clusterErr
+	}
+	return f.nodeNamed(name), nil
+}
+
+func (f *fakeEngine) DrainNode(_ context.Context, name string, force bool) (engine.NodeView, error) {
+	f.record("drain " + name + " force=" + boolText(force))
+	if f.clusterErr != nil {
+		return engine.NodeView{}, f.clusterErr
+	}
+	v := f.nodeNamed(name)
+	v.State, v.Drained = "draining", "admin"
+	return v, nil
+}
+
+func (f *fakeEngine) UndrainNode(_ context.Context, name string) (engine.NodeView, error) {
+	f.record("undrain " + name)
+	if f.clusterErr != nil {
+		return engine.NodeView{}, f.clusterErr
+	}
+	v := f.nodeNamed(name)
+	v.State, v.Drained = "active", ""
+	return v, nil
+}
+
+func (f *fakeEngine) ForgetNode(_ context.Context, name string, compromised bool) (engine.ForgetResult, error) {
+	f.record("forget " + name + " compromised=" + boolText(compromised))
+	if f.clusterErr != nil {
+		return engine.ForgetResult{}, f.clusterErr
+	}
+	res := engine.ForgetResult{Node: name, Compromised: compromised, Done: []string{
+		"the entry of the node is removed: its agent is refused from its next request",
+		"its connections to this controller are closed",
+		"its pinned tunnels are deleted in the next cycle",
+	}}
+	if compromised {
+		res.Done = append(res.Done, "the rotation of every secret of the install began; pco cluster status follows it, and a controller that takes over finishes it")
+		res.Pending = []string{"credentials", "proxmox", "tunnels", "rollout", "ca", "previous"}
+		res.NotRotated = []string{"the corosync authkey (/etc/corosync/authkey): a node that keeps it can join the cluster again; pvecm updatecerts after a new key"}
+	} else {
+		res.Done = append(res.Done, "the secret of tunnel pco-abc123 in account 0123456789abcdef0123456789abcdef is rotated: the run token the node holds stops working, and the remaining replicas restart with the new one")
+	}
+	return res, nil
+}
+
+func (f *fakeEngine) SetNode(_ context.Context, name string, p engine.NodePatch) (engine.NodeView, error) {
+	eligible := "unset"
+	if p.ControllerEligible != nil {
+		eligible = boolText(*p.ControllerEligible)
+	}
+	f.record("set " + name + " controllerEligible=" + eligible)
+	if f.clusterErr != nil {
+		return engine.NodeView{}, f.clusterErr
+	}
+	return f.nodeNamed(name), nil
+}
+
+func (f *fakeEngine) AgentView() (agentproto.AgentView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.clusterErr != nil {
+		return agentproto.AgentView{}, f.clusterErr
+	}
+	return f.agent, nil
+}
+
+func (f *fakeEngine) ResetAgentEpoch(context.Context) error {
+	f.record("reset-epoch")
+	return f.clusterErr
+}
 
 func (f *fakeEngine) RouteSeries(string) (engine.RouteSeries, error) {
 	return engine.RouteSeries{}, engine.ErrNotFound

@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"fmt"
 	"maps"
 	"net/netip"
 	"slices"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/registry"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -143,7 +145,29 @@ func (c *cycleRun) clusterView() *ClusterView {
 	}
 	v.Blocks = c.blockViews()
 	v.CARotation = c.rotationView()
+	v.Upgrade = c.upgradeView()
+	if read := c.e.d.Corosync; read != nil {
+		if cs, err := read(); err == nil {
+			v.QuorumDevice = cs.QuorumDevice
+			v.Overrides = quorumOverrides(cs)
+		}
+	}
 	return v
+}
+
+// quorumOverrides names the quorum overrides of corosync.conf.
+func quorumOverrides(cs members.Corosync) []string {
+	var out []string
+	if cs.TwoNode {
+		out = append(out, "two_node")
+	}
+	if cs.ExpectedVotes > 0 {
+		out = append(out, fmt.Sprintf("expected_votes %d", cs.ExpectedVotes))
+	}
+	if cs.WaitForAll != nil && !*cs.WaitForAll {
+		out = append(out, "wait_for_all 0")
+	}
+	return out
 }
 
 // coverageOfView is coverage as the state shows it.

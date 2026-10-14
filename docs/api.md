@@ -157,6 +157,20 @@ has the rest.
 | `POST /v1/managed/approve` | the consent | `pco managed approve` | admin |
 | `POST /v1/managed/revoke` | 200 | `pco managed revoke` | admin |
 | `POST /v1/managed/enable` | 200 | `pco network managed enable` | admin |
+| `GET /v1/cluster` | the lease, the cluster and its nodes | `pco cluster status` | admin |
+| `POST /v1/cluster/handoff` | the hand-off: from which node, to which, and until when the others hold back | `pco cluster handoff` | admin |
+| `POST /v1/cluster/join-tokens` | the join token, 201 | `pco cluster join-token` | admin |
+| `POST /v1/cluster/finish-upgrade` | the release it came from, the schema now and where the backup went | `pco cluster finish-upgrade` | admin |
+| `POST /v1/cluster/unblock` | 200 | `pco cluster unblock` | admin |
+| `POST /v1/cluster/uninstall` | the nodes left and the line to run on each | `pco uninstall --cluster` | not passed on |
+| `GET /v1/nodes` | the nodes of the registry | `pco node list` | admin |
+| `POST /v1/nodes/:name/admit` | the node | `pco node admit` | admin |
+| `POST /v1/nodes/:name/drain` | the node | `pco node drain` | admin |
+| `POST /v1/nodes/:name/undrain` | the node | `pco node undrain` | admin |
+| `POST /v1/nodes/:name/forget` | what was done, what is left and what pco cannot rotate | `pco node forget` | admin |
+| `PUT /v1/nodes/:name` | the node | `pco node set` | admin |
+| `GET /v1/local/agent` | the agent of this node, as it sees itself | `pco agent status` | admin |
+| `POST /v1/local/agent/reset-epoch` | 200 | `pco agent reset-epoch` | not passed on |
 
 A route that changes something and has nothing to say answers `{}`.
 
@@ -165,8 +179,8 @@ A route that changes something and has nothing to say answers `{}`.
 On a cluster one node, the holder of the lease, is the controller: it runs the cycle and is the
 only node that writes. The daemon on every other node answers what its own process knows:
 `GET /v1/version`, `GET /v1/state`, `GET /v1/events`, `GET /v1/stream`, `GET /v1/traffic`,
-`GET /v1/traffic/route` and `GET /v1/doctor`. Every other route is refused before the body of
-the request is read:
+`GET /v1/traffic/route` and `GET /v1/doctor`, and what acts on its own agent, under `/v1/local`.
+Every other route is refused before the body of the request is read:
 
 - `409 not_controller`, `this node is not the controller; run it on <node> (<address>)`, while
   the controller answers. The answer carries the header `Pco-Controller: <address>`, which pco
@@ -678,6 +692,50 @@ answers `{}`; it is what `pco network managed enable` calls while the daemon run
 `POST /v1/daemon/restart` answers `202`, and the daemon stops once the running cycle is done, for
 systemd to start it again. The connectors keep running.
 
+### The cluster and its nodes
+
+`GET /v1/cluster` answers `{"lease", "cluster", "nodes"}`: the lease as the state shows it, the
+cluster (`controller`, `generation`, `members`, `quorate`, `quorumDevice`, `overrides`,
+`coverage`, `upgrade`, `caRotation`, `blocks`) and the nodes of the registry, each with its
+state and since when, its kind, index and agent address, what its agent last reported (`build`,
+`protocol`, `statusAge`, `watchRunning`, `covered`, `replicaReady`, the targets `verified`,
+`failing` and `belowMinimum`, `clockSkew`), the routes `pinned` to it, when its certificate
+ends, and the uses of its join token (`joinUses`, `contested`). `GET /v1/nodes` answers the
+nodes alone. On a node alone the list is empty.
+
+`POST /v1/cluster/handoff {"to"}` has the controller release the lease after its running cycle,
+for the node named, which alone may take it for 30 seconds, or for whichever node comes first
+when none is named; the answer is `{"from", "to", "until"}`. `POST /v1/cluster/join-tokens
+{"node"}` answers `{"id", "node", "expires", "token"}`: the token is the one copy there is, and
+the daemon keeps its hash alone. `POST /v1/cluster/finish-upgrade {}` ends an upgrade from an
+earlier release once every registered node that is not removed runs a build that reads this
+release's store, a node that is down counted; it copies the store below `/var/lib/pco/backup`
+first and answers `{"from", "schema", "backup"}`. `POST /v1/cluster/unblock {"address"}` ends the
+block of an address every node blocks. `POST /v1/cluster/uninstall {"force"}`, root's alone,
+removes every other node from the install for `pco uninstall --cluster`, and answers `{"clean",
+"left"}`, the line to run on each node left.
+
+`POST /v1/nodes/:name/admit {"fingerprint", "renew"}` admits a node that joins: an appliance
+agent by at least eight hex digits of the SHA-256 of its certificate, which must match the one
+enrolled, and a node that stays joining because more routes would move than
+`cluster.admissionMaxMoves` allows. `POST /v1/nodes/:name/drain {"force"}` takes a node out of
+the shared tunnel's replicas, the last one only with `force`; `POST /v1/nodes/:name/undrain {}`
+ends an admin's drain, not one Proxmox's maintenance mode made. `POST /v1/nodes/:name/forget
+{"compromised"}` removes a node that is gone, closes its connections and rotates the shared
+tunnel's secret (`cluster.rotateOnForget`); with `compromised`, refused while the node is still
+in the Proxmox cluster, every secret of the install is rotated step by step afterwards, and the
+answer `{"node", "compromised", "done", "pending", "notRotated"}` says what was done, what is
+left and what the node's disk holds that pco cannot rotate. `PUT /v1/nodes/:name
+{"controllerEligible"}` sets whether the node may hold the lease. Each answers with the node,
+and refuses a removed or contested node.
+
+`GET /v1/local/agent` answers on every node, whatever its role, with the agent of that node as
+`pco agent status` shows it: the controller it follows, since when none answered, the epoch and
+seq it applied, its connectors, the size of its egress set, its certificate's fingerprint and
+end, the ready replicas of each tunnel by the last heartbeat, and its problems. `POST
+/v1/local/agent/reset-epoch {}`, root's alone, has the agent forget the epoch it remembers,
+which takes effect at the next start of the daemon.
+
 ## Revisions, offers and digests
 
 Two admins, or an admin and a script, can act at once. The API never applies a change to
@@ -734,6 +792,9 @@ stream pco web holds, handed out to every browser filtered for its session.
 | `POST /api/v1/networks`, `/networks/probe`, `/managed/approve`, `/managed/revoke`, `/managed/enable` | the same | admin | 64 KiB; 60 s |
 | `DELETE /api/v1/credentials/:id`, `/routes/manual/:id` | the same | admin | none; 60 s |
 | `DELETE /api/v1/networks/:id` | the same, with `rev` and `confirm` | admin | none; 60 s |
+| `GET /api/v1/cluster`, `/nodes`, `/local/agent` | the same | admin | none; 10 s |
+| `POST /api/v1/cluster/handoff`, `/cluster/join-tokens`, `/cluster/finish-upgrade`, `/cluster/unblock`, `/nodes/:name/admit`, `/nodes/:name/drain`, `/nodes/:name/undrain`, `/nodes/:name/forget` | the same | admin | 64 KiB; 60 s |
+| `PUT /api/v1/nodes/:name` | the same | admin | 64 KiB; 60 s |
 
 A reader gets the networks without the MACs of the legs, and of the managed network the cards,
 the waiting guests and the foreign cards of the guests it may audit, without their MACs, their

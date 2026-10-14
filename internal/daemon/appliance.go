@@ -200,7 +200,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	keepWeb := func(ctx context.Context) { web.keep(ctx, deps.WebEvery) }
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
 	gid, uids, webUID := socketAccess(deps.Accounts, log)
-	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
+	srv := api.New(served{eng, doc, nil}, cfg.Version, uids, log)
 	srv.SetWebUID(webUID)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	sources := newSourceWatch(parts.gw, st, eng, deps, log)

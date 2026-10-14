@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"maps"
@@ -133,7 +135,7 @@ func (e *Engine) AdmitNode(ctx context.Context, name, fingerprint string, renew 
 		if err != nil {
 			return e.entryView(n), err
 		}
-		if !strings.HasPrefix(enrolled, fp) {
+		if !fingerprintMatches(enrolled, fp) {
 			return e.entryView(n), fmt.Errorf("%w: the fingerprint %s is not that of the certificate enrolled for node %s (%s); "+
 				"read it with pco agent status on the node", ErrRefused, fp, name, enrolled)
 		}
@@ -177,18 +179,33 @@ func checkFingerprint(s string) (string, error) {
 	return s, nil
 }
 
+// fingerprintMatches says whether what the admin typed is the beginning of
+// the enrolled fingerprint, a whole SHA-256 in hex, compared in time that
+// does not depend on where the two differ.
+func fingerprintMatches(enrolled, typed string) bool {
+	if len(enrolled) != 2*sha256.Size || len(typed) < minFingerprint || len(typed) > len(enrolled) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(enrolled[:len(typed)]), []byte(typed)) == 1
+}
+
 // enrolledFingerprint is the SHA-256 of the certificate enrolled for a
-// node: its enrolment's on a host, the registry's for an appliance agent.
+// node: its enrolment's on a host, the registry's for an appliance agent. A
+// value that is no SHA-256 in hex is refused as none.
 func (e *Engine) enrolledFingerprint(n store.NodeEntry) (string, error) {
+	sum := n.CertSHA256
 	if en, found, err := e.d.Store.Enrolment(n.Name); err != nil {
 		return "", fmt.Errorf("reading the enrolment of node %s: %w", n.Name, err)
-	} else if found && en.SHA256 != "" {
-		return en.SHA256, nil
+	} else if found {
+		sum = en.SHA256
 	}
-	if n.CertSHA256 == "" {
+	if sum == "" {
 		return "", fmt.Errorf("%w: no certificate is enrolled for node %s yet", ErrRefused, n.Name)
 	}
-	return n.CertSHA256, nil
+	if len(sum) != 2*sha256.Size || strings.ContainsFunc(sum, func(r rune) bool { return (r < '0' || r > '9') && (r < 'a' || r > 'f') }) {
+		return "", fmt.Errorf("%w: the certificate enrolled for node %s has no fingerprint pco can check (%q)", ErrRefused, n.Name, sum)
+	}
+	return sum, nil
 }
 
 func usesText(uses []store.JoinUse) string {
@@ -405,7 +422,9 @@ func (e *Engine) ForgetNode(ctx context.Context, name string, compromised bool) 
 	case s.ObserveOnly:
 		res.Done = append(res.Done, "the secret of the shared tunnel is kept: pco is in observe-only mode; pco tunnel rotate after pco apply")
 	default:
-		res.Done = append(res.Done, e.rotateShared(ctx)...)
+		done, pending := e.rotateShared(ctx)
+		res.Done = append(res.Done, done...)
+		res.Pending = pending
 	}
 	return res, nil
 }
@@ -421,14 +440,16 @@ func compromisedText(compromised bool) string {
 // corosync node list or the members file has it online: it would receive
 // every new secret through the cluster filesystem.
 func (e *Engine) stillInCluster(name string) error {
-	listed := false
-	if read := e.d.Corosync; read != nil {
-		c, err := read()
-		if err != nil {
-			return fmt.Errorf("reading corosync.conf: %w", err)
-		}
-		listed = slices.Contains(c.Nodes, name)
+	read := e.d.Corosync
+	if read == nil {
+		return fmt.Errorf("%w: this daemon cannot read corosync.conf, so it cannot tell whether node %s left the cluster; "+
+			"a node is forgotten as compromised on a host node of the cluster", ErrRefused, name)
 	}
+	c, err := read()
+	if err != nil {
+		return fmt.Errorf("%w: reading corosync.conf: %w; a node is forgotten as compromised only once it is known to have left the cluster", ErrRefused, err)
+	}
+	listed := slices.Contains(c.Nodes, name)
 	if m := e.d.Members; m != nil && !listed {
 		for _, n := range m().Nodes {
 			if n.Name == name && n.Online {
@@ -467,24 +488,24 @@ func (e *Engine) forgetReports(name string) {
 }
 
 // rotateShared rotates the secret of the shared tunnel in every account,
-// and says what it did.
-func (e *Engine) rotateShared(ctx context.Context) []string {
-	var out []string
+// and says what it did and what is left for the admin: a rotation that
+// failed leaves the node's run token working until pco tunnel rotate.
+func (e *Engine) rotateShared(ctx context.Context) (done, pending []string) {
 	for _, t := range e.State().Tunnels {
 		if t.Kind == TunnelPinned || !t.Exists || t.ID == "" || t.CredentialID == "" {
 			continue
 		}
 		what := fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID)
 		if err := e.rotateSecret(ctx, t.TunnelState); err != nil {
-			out = append(out, fmt.Sprintf("the secret of %s could not be rotated: %v; pco tunnel rotate tries again", what, err))
+			pending = append(pending, fmt.Sprintf("the secret of %s could not be rotated: %v; the run token the node holds still works: pco tunnel rotate --account %s", what, err, t.AccountID))
 			continue
 		}
-		out = append(out, fmt.Sprintf("the secret of %s is rotated: the run token the node holds stops working, and the remaining replicas restart with the new one", what))
+		done = append(done, fmt.Sprintf("the secret of %s is rotated: the run token the node holds stops working, and the remaining replicas restart with the new one", what))
 	}
-	if len(out) == 0 {
-		out = append(out, "no tunnel of the install is known to rotate the secret of")
+	if len(done) == 0 && len(pending) == 0 {
+		pending = append(pending, "no tunnel of the install is known to rotate the secret of; pco tunnel rotate once pco status lists one")
 	}
-	return out
+	return done, pending
 }
 
 // Handoff releases the lease for another node, after the running cycle: to

@@ -75,6 +75,7 @@ func (s *Server) routes() http.Handler {
 	s.configRoutes(v1)
 	s.networkRoutes(v1)
 	s.managedRoutes(v1)
+	s.clusterRoutes(v1)
 	s.router = r
 	return s.logRequests(s.guard(s.stamp(r)))
 }

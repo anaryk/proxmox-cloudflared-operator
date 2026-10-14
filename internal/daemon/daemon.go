@@ -19,6 +19,7 @@ import (
 	"github.com/vishvananda/netns"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
@@ -365,7 +366,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
 	gid, uids, web := socketAccess(deps.Accounts, log)
-	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
+	srv := api.New(served{eng, doc, cp.agentView}, cfg.Version, uids, log)
 	srv.SetRole(api.LeaseRole(eng.State, hl.alone))
 	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
@@ -409,10 +410,20 @@ func logStart(log zerolog.Logger, cfg Config, st *store.Store) {
 type served struct {
 	*engine.Engine
 	doc *doctor.Runner
+	// agent is the agent of this node as its client knows it, which the
+	// engine alone does not.
+	agent func() (agentproto.AgentView, error)
 }
 
 func (s served) Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error) {
 	return s.doc.Diagnose(ctx, hostname)
+}
+
+func (s served) AgentView() (agentproto.AgentView, error) {
+	if s.agent != nil {
+		return s.agent()
+	}
+	return s.Engine.AgentView()
 }
 
 func (s served) Doctor(ctx context.Context) []doctor.Finding { return s.doc.Doctor(ctx) }

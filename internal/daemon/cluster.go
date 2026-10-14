@@ -49,6 +49,7 @@ type clusterPart struct {
 	node   string
 	st     *store.Store
 	paths  store.Paths
+	pveDir string
 	keeper leaseView
 	eng    *engine.Engine
 	remote *RemoteFleet

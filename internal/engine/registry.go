@@ -11,6 +11,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/registry"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -452,12 +453,22 @@ func (c *cycleRun) nodeViews() []NodeView {
 		return nil
 	}
 	reports := c.reports
+	uses := c.joinUsesByNode()
+	shared := c.sharedTunnelIDs()
+	pinned := map[string]int{}
+	for _, p := range c.placements {
+		if p.Kind == store.PlacementPinned {
+			pinned[p.Node]++
+		}
+	}
 	out := make([]NodeView, 0, len(c.nodes))
 	for _, name := range slices.Sorted(maps.Keys(c.nodes)) {
 		n := c.nodes[name].Node
 		v := NodeView{
 			Name: n.Name, State: n.State, StateSince: n.StateSince, Kind: entryKind(n), VMID: n.VMID,
 			Index: n.Index, AgentAddress: n.AgentAddress, Controller: n.Name == c.e.d.Node && !c.leaseHeld,
+			Covered: !slices.Contains(c.cover.uncovered, name), Pinned: pinned[name],
+			JoinUses: uses[name], Contested: joinUseViews(n.ContestedUses), CertExpires: c.certExpiry(name),
 		}
 		if n.Drained != nil {
 			v.Drained = n.Drained.Reason
@@ -469,10 +480,66 @@ func (c *cycleRun) nodeViews() []NodeView {
 			if !rep.Status.Clock.IsZero() {
 				v.ClockSkew = rep.Status.Clock.Sub(rep.ReceivedAt)
 			}
+			for _, t := range rep.Status.Targets {
+				switch {
+				case !t.OK:
+					v.Failing++
+				case !t.InEgressSet:
+					v.BelowMinimum++
+				default:
+					v.Verified++
+				}
+			}
+			v.ReplicaReady = slices.ContainsFunc(rep.Status.Connectors, func(s connector.Status) bool {
+				return s.Ready && slices.Contains(shared, s.TunnelID)
+			})
 		}
 		out = append(out, v)
 	}
 	return out
+}
+
+// joinUsesByNode are the uses of the join tokens of every node, as the
+// store keeps them; none when they cannot be read.
+func (c *cycleRun) joinUsesByNode() map[string][]JoinUseView {
+	tokens, err := c.e.d.Store.JoinTokens()
+	if err != nil {
+		return nil
+	}
+	out := map[string][]JoinUseView{}
+	for _, id := range slices.Sorted(maps.Keys(tokens)) {
+		r := tokens[id]
+		if len(r.Uses) > 0 {
+			out[r.Node] = append(out[r.Node], joinUseViews(r.Uses)...)
+		}
+	}
+	return out
+}
+
+// sharedTunnelIDs are the ids of the shared tunnels the last tunnel run
+// found, or the state knows.
+func (c *cycleRun) sharedTunnelIDs() []string {
+	var out []string
+	for _, t := range c.st.Tunnels {
+		if t.Kind != TunnelPinned && t.ID != "" {
+			out = append(out, t.ID)
+		}
+	}
+	return out
+}
+
+// certExpiry is when the certificate enrolled for a host node ends; zero
+// when none is enrolled or it cannot be read.
+func (c *cycleRun) certExpiry(name string) time.Time {
+	en, found, err := c.e.d.Store.Enrolment(name)
+	if err != nil || !found {
+		return time.Time{}
+	}
+	cert, err := parseCert(en.CertPEM)
+	if err != nil {
+		return time.Time{}
+	}
+	return cert.NotAfter
 }
 
 func protocolText(r agentproto.Range) string {

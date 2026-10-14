@@ -3,6 +3,8 @@ package daemon
 import (
 	"cmp"
 	"context"
+	"errors"
+	"net/netip"
 	"path/filepath"
 	"time"
 
@@ -29,7 +31,7 @@ const pveTimeout = 15 * time.Second
 func newClusterPart(cfg Config, deps Deps, st *store.Store, hl *hostLease, log zerolog.Logger) *clusterPart {
 	now := deps.Now
 	c := &clusterPart{
-		node: cfg.Node, st: st, paths: cfg.Paths, keeper: hl.keeper,
+		node: cfg.Node, st: st, paths: cfg.Paths, keeper: hl.keeper, pveDir: hl.d.PVEDir,
 		quorum: hl.members,
 		first:  newFirstStart(st, cfg.Node, cfg.Version, now, hl.Cluster, log),
 		events: agent.NewEventLog(now),
@@ -56,7 +58,74 @@ func (c *clusterPart) wire(ed *engine.Deps, client *pve.Client, multi *pve.Multi
 		st, err := client.HAStatus(ctx)
 		return st.Maintenance, err
 	}
+	ed.Close = c.closeNode
+	ed.Corosync = func() (members.Corosync, error) {
+		return members.ReadCorosync(filepath.Join(c.pveDir, filepath.Base(members.CorosyncFile)))
+	}
+	ed.Endpoints = c.endpoints
+	ed.Reissue = c.reissue
 	ed.Fleet.Also(c.events.Add, c.trigger)
+}
+
+// closeNode ends the connections of a node's agent to the endpoint, when
+// this node serves one.
+func (c *clusterPart) closeNode(node string) {
+	c.mu.Lock()
+	srv := c.server
+	c.mu.Unlock()
+	if srv != nil {
+		srv.Close(node)
+	}
+}
+
+// endpoints is where this controller answers the agents: its agent address
+// and port; none while the registry gives it no address.
+func (c *clusterPart) endpoints() []string {
+	addr, err := c.agentAddress()
+	if err != nil {
+		return nil
+	}
+	return []string{netip.AddrPortFrom(addr, c.port).String()}
+}
+
+// reissue has this node issue its certificates again from the install's
+// current CA, and the endpoint serve the new server certificate at once.
+func (c *clusterPart) reissue(context.Context) error {
+	inst, found, err := c.st.Install()
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("the install is not known")
+	}
+	files := agent.TLSFiles{Dir: agent.TLSDir(c.paths)}
+	r := agent.Reissuer{Node: c.node, InstallID: inst.ID, Store: c.st, Files: files, Now: c.now, Log: c.log}
+	if _, _, err := r.Ensure(""); err != nil {
+		return err
+	}
+	creds, err := files.Server()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	srv := c.server
+	c.mu.Unlock()
+	if srv != nil {
+		srv.SetCertificate(creds.ServerTLS())
+	}
+	return nil
+}
+
+// agentView is the agent of this node as pco agent status shows it: what
+// its client knows while it follows a controller, else the agent's own.
+func (c *clusterPart) agentView() (agentproto.AgentView, error) {
+	c.mu.Lock()
+	cl := c.client
+	c.mu.Unlock()
+	if cl != nil {
+		return cl.View(), nil
+	}
+	return c.eng.AgentView()
 }
 
 // attach gives the cluster mode the engine it serves for.

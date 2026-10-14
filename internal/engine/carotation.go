@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -141,7 +142,7 @@ func (c *cycleRun) rotationStepDone(rec *store.CARotation, step string) (done bo
 		}
 		return true, ""
 	case stepCA:
-		if err := c.rotateCA(); err != nil {
+		if err := c.rotateCA(rec.StartedAt); err != nil {
 			return false, fmt.Sprintf(problemRotationCA, rec.Node, err)
 		}
 		return true, ""
@@ -180,10 +181,16 @@ func (c *cycleRun) pveSecretReplaced(was string) bool {
 }
 
 // rotateTunnels rotates the secret of every tunnel of the install the tunnel
-// run found, shared and pinned, each once.
+// run found, shared and pinned, each once. The step is done only in a cycle
+// that read every account through to the end: a held cycle, or one with an
+// account it could not read, may have missed a tunnel, and the CA must not
+// be rotated while a tunnel keeps a secret the node knows.
 func (c *cycleRun) rotateTunnels(rec *store.CARotation) (bool, string) {
-	if !c.connected && len(c.tunnels) == 0 {
-		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels", errors.New("the tunnels were not read in this cycle"))
+	switch {
+	case c.cfHold || !c.checked:
+		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels", errors.New("the cycle did not get through to Cloudflare, so not every tunnel is known"))
+	case len(c.unreported) > 0:
+		return false, fmt.Sprintf(problemRotationTunnels, rec.Node, "the tunnels", fmt.Errorf("%d tunnels are in accounts the tunnel run could not read", len(c.unreported)))
 	}
 	for _, t := range c.tunnels {
 		if !t.Exists || t.ID == "" || t.CredentialID == "" || slices.Contains(rec.Rotated, t.ID) {
@@ -203,69 +210,69 @@ func (c *cycleRun) rotateTunnels(rec *store.CARotation) (bool, string) {
 }
 
 // notRolledOut names the tunnels a connector of which does not run ready
-// with the new secret yet, on this node or on one the agents report.
+// with the new secret yet on every node that runs one: the replicas for
+// the shared tunnel, the node of a pinned one. A node whose report is stale,
+// or says nothing of the tunnel, has not rolled it out.
 func (c *cycleRun) notRolledOut(rotated []string) []string {
 	waiting := map[string]bool{}
-	nameOf := map[string]string{}
 	for _, t := range c.tunnels {
-		nameOf[t.ID] = t.Name
-	}
-	for _, s := range c.before {
-		if slices.Contains(rotated, s.TunnelID) && s.Active && !s.Ready {
-			waiting[s.TunnelID] = true
-		}
-	}
-	for name, rep := range c.reportsNow() {
-		if name == c.e.d.Node || !rep.Fresh {
+		if !slices.Contains(rotated, t.ID) {
 			continue
 		}
-		for _, s := range rep.Status.Connectors {
-			if slices.Contains(rotated, s.TunnelID) && s.Active && !s.Ready {
-				waiting[s.TunnelID] = true
+		for _, node := range c.runners(t) {
+			if !c.readyOn(node, t.ID) {
+				waiting[t.Name] = true
 			}
 		}
 	}
-	var out []string
-	for id := range maps.Keys(waiting) {
-		name := nameOf[id]
-		if name == "" {
-			name = id
-		}
-		out = append(out, name)
+	return slices.Sorted(maps.Keys(waiting))
+}
+
+// runners are the nodes that run a connector of a tunnel: the replicas of
+// the shared one, the node of a pinned one while it is neither removed nor
+// contested.
+func (c *cycleRun) runners(t reconcile.TunnelState) []string {
+	if t.Kind != TunnelPinned {
+		return c.replicas()
 	}
-	slices.Sort(out)
-	return out
+	if n, ok := c.nodes[t.Node]; ok && n.Node.State != store.NodeRemoved && n.Node.State != store.NodeContested {
+		return []string{t.Node}
+	}
+	return nil
 }
 
 // rotateCA makes a new CA of the install, keeps the old one as the previous
 // for the window, names the new one in leader.json, which every host agent
-// reads, and has this node issue its own certificates again at once.
-func (c *cycleRun) rotateCA() error {
-	cur, _, _, err := c.e.d.Store.CA()
+// reads, and has this node issue its own certificates again at once. A CA
+// made for this rotation already, by a cycle that could not finish the
+// step, is kept: a third one would put the agents' CA out of the window.
+func (c *cycleRun) rotateCA(since time.Time) error {
+	cur, prev, rotatedAt, err := c.e.d.Store.CA()
 	if err != nil {
 		return fmt.Errorf("reading the CA: %w", err)
 	}
-	old, err := pki.ParseCA([]byte(cur.CertPEM), []byte(cur.KeyPEM.Reveal()))
+	ca, err := pki.ParseCA([]byte(cur.CertPEM), []byte(cur.KeyPEM.Reveal()))
 	if err != nil {
 		return fmt.Errorf("reading the CA: %w", err)
 	}
-	// The new CA is of the install the old one names: the one the agents'
-	// identities carry.
-	installID, err := old.InstallID()
-	if err != nil {
-		return err
-	}
-	ca, err := pki.NewCA(installID, c.now, rand.Reader)
-	if err != nil {
-		return err
-	}
-	certPEM, keyPEM, err := ca.PEM()
-	if err != nil {
-		return err
-	}
-	next := store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}
-	if err := c.e.d.Store.SaveCA(next, &cur, c.now); err != nil {
-		return fmt.Errorf("saving the new CA: %w", err)
+	if prev == nil || rotatedAt.Before(since) {
+		// The new CA is of the install the old one names: the one the
+		// agents' identities carry.
+		installID, err := ca.InstallID()
+		if err != nil {
+			return err
+		}
+		if ca, err = pki.NewCA(installID, c.now, rand.Reader); err != nil {
+			return err
+		}
+		certPEM, keyPEM, err := ca.PEM()
+		if err != nil {
+			return err
+		}
+		next := store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}
+		if err := c.e.d.Store.SaveCA(next, &cur, c.now); err != nil {
+			return fmt.Errorf("saving the new CA: %w", err)
+		}
 	}
 	rec, rev, found, err := c.e.d.Store.Leader()
 	switch {
@@ -274,9 +281,11 @@ func (c *cycleRun) rotateCA() error {
 	case !found:
 		return errors.New("leader.json is missing")
 	}
-	rec.CASHA256 = ca.SHA256()
-	if _, err := c.e.d.Store.SaveLeaderIf(rec, rev); err != nil {
-		return fmt.Errorf("naming the new CA in leader.json: %w", err)
+	if rec.CASHA256 != ca.SHA256() {
+		rec.CASHA256 = ca.SHA256()
+		if _, err := c.e.d.Store.SaveLeaderIf(rec, rev); err != nil {
+			return fmt.Errorf("naming the new CA in leader.json: %w", err)
+		}
 	}
 	if reissue := c.e.d.Reissue; reissue != nil {
 		if err := reissue(c.ctx); err != nil {
