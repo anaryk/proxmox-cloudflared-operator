@@ -293,7 +293,7 @@ describe('a save', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Save settings' }))
     expect(await screen.findByText('pollInterval 1s: at least 5s')).toBeTruthy()
     expect(screen.getByLabelText('Poll interval').getAttribute('aria-invalid')).toBe('true')
-    expect(document.activeElement).toBe(screen.getByLabelText('Poll interval'))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Poll interval')))
     expect(daemon.writes()).toEqual(['PUT /api/v1/settings'])
     // typing again clears it
     type('Poll interval', '12s')
@@ -527,7 +527,8 @@ describe('a link from a route that waits for allowHosts', () => {
   test('adds the pattern to the form, focuses the list and saves nothing', async () => {
     const { daemon } = await mount({ url: '/settings?addAllowHost=example.com&owner=qemu%2F102', state: rejected })
     expect(allowed()).toBe('example.com')
-    expect(document.activeElement).toBe(screen.getByLabelText('Allowed hostnames'))
+    // The form shows before the effect that focuses the list has run.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Allowed hostnames')))
     expect(screen.getByText(/is in the allowed hostnames below, for the route of/)).toBeTruthy()
     expect(screen.getByText(/Nothing is saved until you press Save/)).toBeTruthy()
     expect(daemon.writes()).toEqual([])
