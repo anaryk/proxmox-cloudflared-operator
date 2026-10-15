@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -78,4 +79,34 @@ func TestLinuxWatchRuleset(t *testing.T) {
 		apply(t, "flush ruleset\n")
 		seen(t)
 	})
+}
+
+// A user that may not subscribe, as one without CAP_NET_ADMIN, is told so,
+// and what the attempt opened is not closed once more when it is collected:
+// by then its number may be another file's, such as a connection to the API.
+func TestLinuxAWatchThatCannotSubscribeClosesNothingLater(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := WatchRuleset(ctx, func() {}); err == nil {
+		t.Skip("this user may subscribe to the notifications of nf_tables")
+	}
+	var files []*os.File
+	for range 8 {
+		f, err := os.Open(os.DevNull)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = f.Close() })
+		files = append(files, f)
+	}
+	// Two rounds, so that what the first collection found is finalized
+	// before the second one's mark is.
+	for range 2 {
+		collected := make(chan struct{})
+		runtime.SetFinalizer(new([64]byte), func(*[64]byte) { close(collected) })
+		runtime.GC()
+		<-collected
+	}
+	for _, f := range files {
+		_, err := f.Stat()
+		require.NoError(t, err, "a file the test opened after the attempt was closed")
+	}
 }
