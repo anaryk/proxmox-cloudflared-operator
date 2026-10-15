@@ -672,7 +672,17 @@ func TestAnAttachOffTheControllerAsksNoAgent(t *testing.T) {
 func TestTheOtherNodesAreReadOutsideTheCycleLock(t *testing.T) {
 	c := newNetCluster(t)
 	c.nets.mu.Lock()
-	c.nets.locked = func() bool { return len(c.eng.sem) == 1 }
+	// The cycles of the test take the lock too, but each gives it up: the
+	// lock is held by the read only when it cannot be taken while it waits.
+	c.nets.locked = func() bool {
+		select {
+		case c.eng.sem <- struct{}{}:
+			<-c.eng.sem
+			return false
+		case <-time.After(5 * time.Second):
+			return true
+		}
+	}
 	c.nets.mu.Unlock()
 
 	_, _, err := c.attach(t, AttachRequest{Bridge: "vmbr2", VLAN: 20, Prefix: vlan20, Address: leg250, ConfirmUplink: true,

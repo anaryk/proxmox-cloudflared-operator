@@ -40,17 +40,27 @@ type fakeNetworks struct {
 	lockedReads []string
 }
 
+// underLock counts the read what when it is made under the cycle lock. It
+// is called without mu: a cycle that holds the lock may read this node.
 func (f *fakeNetworks) underLock(what string) {
-	if f.locked != nil && f.locked() {
-		f.lockedReads = append(f.lockedReads, what)
+	f.mu.Lock()
+	locked := f.locked
+	f.mu.Unlock()
+	if locked == nil || !locked() {
+		return
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lockedReads = append(f.lockedReads, what)
 }
 
 func (f *fakeNetworks) NodeNetwork(_ context.Context, node string) ([]pve.NodeIface, error) {
+	if node != testNode {
+		f.underLock("network of " + node)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if cfg, ok := f.nodes[node]; ok {
-		f.underLock("network of " + node)
 		return slices.Clone(cfg), nil
 	}
 	if node != testNode {
@@ -60,9 +70,9 @@ func (f *fakeNetworks) NodeNetwork(_ context.Context, node string) ([]pve.NodeIf
 }
 
 func (f *fakeNetworks) Zones(context.Context) ([]pve.SDNZone, error) {
+	f.underLock("zones")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.underLock("zones")
 	return slices.Clone(f.zones), nil
 }
 
