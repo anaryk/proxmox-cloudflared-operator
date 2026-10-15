@@ -40,5 +40,6 @@ func TestRoutesOfAnEarlierCycleSaySo(t *testing.T) {
 
 	r, _ := daemonWith(t, healthyState())
 	res := r.run("", "routes")
+	require.NoError(t, res.err, res.errOut)
 	require.True(t, strings.HasPrefix(res.out, "HOSTNAME "), "a cycle that checked says nothing: %s", res.out)
 }
