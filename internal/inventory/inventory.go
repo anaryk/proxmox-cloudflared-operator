@@ -147,7 +147,7 @@ type Inventory struct {
 	// remembered is what an earlier process read of the watched guests,
 	// guarded by mu; kept what is passed on to the next, and keptOwn says
 	// that a refresh of this one made it; both guarded by keptMu.
-	remembered map[model.GuestRef]pve.GuestConfig
+	remembered map[model.GuestRef]Remembered
 	keptMu     sync.Mutex
 	kept       []Remembered
 	keptOwn    bool
@@ -161,7 +161,8 @@ type Inventory struct {
 // cacheEntry is what is remembered about one guest between refreshes.
 type cacheEntry struct {
 	cfg      pve.GuestConfig
-	cfgAt    time.Time
+	cfgAt    time.Time      // zero for a configuration only remembered
+	readAt   time.Time      // when Proxmox was read for it, also by the process that remembered it
 	running  bool           // last running state read from Proxmox
 	identity string         // of the guest running was read for; empty when none was
 	reported *reportedEntry // nil when nothing is cached
@@ -526,14 +527,14 @@ func (i *Inventory) configEntry(r *run, row pve.Resource, res configResult, offl
 		// not; it is read again once the node is back. Without it a guest
 		// cannot be told apart from one that is gone, and only a watched
 		// one has routes that must not be dropped.
-		if cfg, ok := i.remembered[ref]; ok {
-			entry.cfg, cached = cfg, true
+		if rm, ok := i.remembered[ref]; ok {
+			entry.cfg, entry.readAt, cached = pve.GuestConfig{Values: maps.Clone(rm.Values), Digest: rm.Digest}, rm.ReadAt, true
 		} else if i.isWatched(r, row, pve.GuestConfig{}) {
 			r.fail("guest %s: node %s is offline and the guest is not cached", label(row), row.Node)
 		}
 	case offline, !res.attempted:
 	case res.err == nil:
-		entry.cfg, entry.cfgAt, cached = res.cfg, r.now, true
+		entry.cfg, entry.cfgAt, entry.readAt, cached = res.cfg, r.now, r.now, true
 		delete(i.remembered, ref)
 	case pve.IsNotFound(res.err):
 		i.log.Debug().Stringer("guest", ref).Str("node", row.Node).Msg("config not found; the guest may have moved")

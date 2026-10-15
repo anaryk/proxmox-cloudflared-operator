@@ -275,19 +275,22 @@ func TestRefreshOfARoutedGuestOnAnOfflineNodeIsIncompleteUntilCached(t *testing.
 func TestRefreshOfAGuestOnAnOfflineNodeUsesWhatWasRemembered(t *testing.T) {
 	src := newFake()
 	src.configs[refApp].Values["lxc.cgroup2.devices.allow"] = "c 10:200 rwm"
-	before, _ := newInventory(src, Options{})
+	before, readClock := newInventory(src, Options{})
 	first := before.Refresh(t.Context())
 	kept := before.Remembered()
+	readAt := readClock.now()
 
 	var refs []model.GuestRef
 	for _, r := range kept {
 		refs = append(refs, r.Ref)
 		require.NotContains(t, r.Values, "lxc.cgroup2.devices.allow", "only what a guest is built from is kept")
+		require.Equal(t, readAt, r.ReadAt, "when it was read")
 	}
 	require.Equal(t, []model.GuestRef{refApp, refWeb, refBatch}, refs, "the watched guests, in the order of the snapshot")
 
 	src.setOnline("pve2", false)
-	inv, _ := newInventory(src, Options{})
+	inv, clk := newInventory(src, Options{})
+	clk.advance(time.Hour)
 	inv.Remember(kept)
 	snap := inv.Refresh(t.Context())
 
@@ -299,7 +302,12 @@ func TestRefreshOfAGuestOnAnOfflineNodeUsesWhatWasRemembered(t *testing.T) {
 	require.Equal(t, want.Identity, app.Identity)
 	require.Equal(t, 1, src.count("config "+refApp.String()), "nothing more is asked of the offline node")
 	require.Equal(t, 2, src.count("config "+refWeb.String()), "a guest of an online node is read")
-	require.Contains(t, refsOf(inv.Remembered()), refApp, "what was remembered is remembered on")
+	again := map[model.GuestRef]time.Time{}
+	for _, r := range inv.Remembered() {
+		again[r.Ref] = r.ReadAt
+	}
+	require.Equal(t, readAt, again[refApp], "what was remembered is remembered on, read when it was")
+	require.Equal(t, clk.now(), again[refWeb], "a guest read again is read now")
 }
 
 // Of the Notes only what routes are read from is remembered: the route
@@ -325,14 +333,6 @@ func TestRememberedNotesKeepTheRouteTextAndTheHostnamesAlone(t *testing.T) {
 	require.Equal(t, want[0].Hosts, got[0].Hosts)
 	require.Equal(t, want[0].Target, got[0].Target)
 	require.Equal(t, annotation.Hostnames(notes), annotation.Hostnames(kept))
-}
-
-func refsOf(rs []Remembered) []model.GuestRef {
-	out := make([]model.GuestRef, 0, len(rs))
-	for _, r := range rs {
-		out = append(out, r.Ref)
-	}
-	return out
 }
 
 func TestRefreshGuestBecomingWatchedIsFetchedAtOnce(t *testing.T) {

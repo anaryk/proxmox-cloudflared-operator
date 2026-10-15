@@ -3,10 +3,10 @@ package inventory
 import (
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/annotation"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 )
 
 // Remembered is what a refresh read of the configuration of a watched
@@ -17,6 +17,9 @@ type Remembered struct {
 	Ref    model.GuestRef    `json:"ref"`
 	Digest string            `json:"digest,omitempty"`
 	Values map[string]string `json:"values"`
+	// ReadAt is when a refresh last read it from Proxmox, passed on as it
+	// is by every process that only remembered it.
+	ReadAt time.Time `json:"readAt"`
 }
 
 // Remembered returns the configurations of the watched guests as the last
@@ -27,7 +30,7 @@ func (i *Inventory) Remembered() []Remembered {
 	defer i.keptMu.Unlock()
 	out := make([]Remembered, len(i.kept))
 	for j, r := range i.kept {
-		out[j] = Remembered{Ref: r.Ref, Digest: r.Digest, Values: maps.Clone(r.Values)}
+		out[j] = Remembered{Ref: r.Ref, Digest: r.Digest, Values: maps.Clone(r.Values), ReadAt: r.ReadAt}
 	}
 	return out
 }
@@ -38,12 +41,12 @@ func (i *Inventory) Remembered() []Remembered {
 func (i *Inventory) Remember(rs []Remembered) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.remembered = make(map[model.GuestRef]pve.GuestConfig, len(rs))
+	i.remembered = make(map[model.GuestRef]Remembered, len(rs))
 	kept := make([]Remembered, 0, len(rs))
 	for _, r := range rs {
-		values := builtFrom(r.Values)
-		i.remembered[r.Ref] = pve.GuestConfig{Values: values, Digest: r.Digest}
-		kept = append(kept, Remembered{Ref: r.Ref, Digest: r.Digest, Values: maps.Clone(values)})
+		r.Values = builtFrom(r.Values)
+		i.remembered[r.Ref] = r
+		kept = append(kept, Remembered{Ref: r.Ref, Digest: r.Digest, Values: maps.Clone(r.Values), ReadAt: r.ReadAt})
 	}
 	i.keptMu.Lock()
 	defer i.keptMu.Unlock()
@@ -59,7 +62,7 @@ func (i *Inventory) keep(ts []tracked) {
 		if !t.watched || t.entry.cfg.Values == nil {
 			continue
 		}
-		kept = append(kept, Remembered{Ref: t.guest.Ref, Digest: t.entry.cfg.Digest, Values: builtFrom(t.entry.cfg.Values)})
+		kept = append(kept, Remembered{Ref: t.guest.Ref, Digest: t.entry.cfg.Digest, Values: builtFrom(t.entry.cfg.Values), ReadAt: t.entry.readAt})
 	}
 	i.keptMu.Lock()
 	defer i.keptMu.Unlock()

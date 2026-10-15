@@ -147,7 +147,7 @@ func TestTheMemoryKeepsTheVerifiedConfigurationsPerTunnel(t *testing.T) {
 // controller is built from it, and no cycle holds for it. A node alone keeps
 // no guests in its memory.
 func TestTheMemoryCarriesTheGuestsOverToTheNextController(t *testing.T) {
-	web := inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Digest: "d1", Values: map[string]string{"name": "web", "description": "www.example.com -> :8080"}}
+	web := inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Digest: "d1", Values: map[string]string{"name": "web", "description": "www.example.com -> :8080"}, ReadAt: t0}
 
 	alone := newEnv(t)
 	alone.inv.kept = []inventory.Remembered{web}
@@ -162,7 +162,7 @@ func TestTheMemoryCarriesTheGuestsOverToTheNextController(t *testing.T) {
 	w.settle()
 	m, err = w.store.EngineMemory()
 	require.NoError(t, err)
-	require.Equal(t, []store.RememberedGuest{{Ref: web.Ref, Digest: web.Digest, Values: web.Values}}, m.Guests)
+	require.Equal(t, []store.RememberedGuest{{Ref: web.Ref, Digest: web.Digest, Values: web.Values, ReadAt: t0}}, m.Guests)
 
 	w.inv.kept = nil
 	w.eng = w.newEngine()
@@ -179,7 +179,7 @@ func TestTheGuestsOfTheMemoryKeepToTheirBudget(t *testing.T) {
 	w := threeNodes(t)
 	big := strings.Repeat("x", 4096)
 	for vmid := range 200 {
-		w.inv.kept = append(w.inv.kept, inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 1000 + vmid}, Values: map[string]string{"name": big}})
+		w.inv.kept = append(w.inv.kept, inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 1000 + vmid}, Values: map[string]string{"name": big}, ReadAt: t0})
 	}
 	st := w.settle()
 
@@ -194,20 +194,49 @@ func TestTheGuestsOfTheMemoryKeepToTheirBudget(t *testing.T) {
 	require.True(t, hasProblem(st, "guests with routes are left out of the memory"), st.Problems)
 }
 
-// Guests remembered longer ago than rememberedFor are not given to the
-// inventory: a configuration that old says nothing safe of the guest now.
-func TestGuestsRememberedLongAgoAreNotUsed(t *testing.T) {
-	web := inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Values: map[string]string{"name": "web"}}
+// A guest is used for rememberedFor after it was last read, however many
+// controllers passed it on meanwhile and whatever restarts: A reads it, B
+// takes over a day less an hour later and keeps it, as its node stays
+// down, and C, two hours after that, does not use it. One read in the
+// future, past the clock skew allowed, is not used either.
+func TestARememberedGuestCountsFromWhenItWasRead(t *testing.T) {
+	web := inventory.Remembered{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Values: map[string]string{"name": "web"}, ReadAt: t0}
 	w := threeNodes(t)
 	w.inv.kept = []inventory.Remembered{web}
 	w.settle()
-	w.inv.kept = nil
 
-	w.clock.advance(rememberedFor + time.Minute)
+	w.clock.advance(23 * time.Hour)
+	w.inv.kept = nil
 	w.eng = w.newEngine()
 	w.watchHere(t)
 	w.tick(time.Second)
-	require.Empty(t, w.inv.given)
+	require.Equal(t, []inventory.Remembered{web}, w.inv.given, "B uses it")
+	w.inv.kept = w.inv.given
+	w.settle()
+	m, err := w.store.EngineMemory()
+	require.NoError(t, err)
+	require.Len(t, m.Guests, 1)
+	require.Equal(t, t0, m.Guests[0].ReadAt.UTC(), "B passes on when it was read")
+
+	w.clock.advance(2 * time.Hour)
+	w.inv.given = nil
+	w.eng = w.newEngine()
+	w.watchHere(t)
+	w.tick(time.Second)
+	require.Empty(t, w.inv.given, "C does not use it")
+	w.inv.kept = []inventory.Remembered{web}
+	w.settle()
+	m, err = w.store.EngineMemory()
+	require.NoError(t, err)
+	require.Empty(t, m.Guests, "nor does C keep it")
+
+	ahead := web
+	ahead.ReadAt = w.clock.now().Add(time.Hour)
+	w.inv.kept = []inventory.Remembered{ahead}
+	w.settle()
+	m, err = w.store.EngineMemory()
+	require.NoError(t, err)
+	require.Empty(t, m.Guests, "a time in the future is not taken")
 }
 
 // A tunnel whose account the run reported on is not taken for unreported

@@ -57,7 +57,7 @@ func (e *Engine) recall(installID string) error {
 		e.gone[ref] = true
 	}
 	e.rememberEgress(m)
-	if len(m.Guests) > 0 && e.d.Now().Sub(m.GuestsAt) < rememberedFor {
+	if len(m.Guests) > 0 {
 		e.rememberGuests(m.Guests)
 	}
 	e.repMu.Lock()
@@ -99,7 +99,7 @@ func (e *Engine) memory() store.EngineMemory {
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
 	e.egressMemory(&m)
 	if e.clustered {
-		m.Guests, m.GuestsAt = e.guestsMemory()
+		m.Guests = e.guestsMemory()
 	}
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
@@ -113,11 +113,13 @@ const (
 	// guestsBudget is how much of the memory the guests take at most; the
 	// cluster filesystem takes no file over 1 MiB.
 	guestsBudget = 256 << 10
-	// rememberedFor is how long guests remembered by an earlier controller
-	// are given to the inventory: older, they say nothing safe of a guest
-	// now. guestsConfirmed is how often the time they were read is written
-	// again while they stay the same.
+	// rememberedFor is how long after it was read from Proxmox a guest is
+	// kept and given to the inventory of a later controller: older, it says
+	// nothing safe of the guest now. A time read further in the future than
+	// readSkew is not taken. guestsConfirmed is how often the times they
+	// were read are written again while the guests stay the same.
 	rememberedFor   = 24 * time.Hour
+	readSkew        = 5 * time.Minute
 	guestsConfirmed = time.Hour
 
 	problemGuestsLeftOut = "%d guests with routes are left out of the memory, past its %d KiB for them: " +
@@ -125,14 +127,19 @@ const (
 )
 
 // guestsMemory is what the memory keeps of the guests: those the inventory
-// remembers, as many as guestsBudget takes, and when they were read. The
-// time is written again only when they change, or guestsConfirmed after it
-// was last written, so that the memory is not written every cycle.
-func (e *Engine) guestsMemory() ([]store.RememberedGuest, time.Time) {
+// remembers that are recent enough, as many as guestsBudget takes, each
+// with when it was read. While they stay the same, the times they were read
+// are written again only guestsConfirmed after they last were, so that the
+// memory is not written every cycle.
+func (e *Engine) guestsMemory() []store.RememberedGuest {
 	var out []store.RememberedGuest
 	size, left := 0, 0
+	now := e.d.Now()
 	for _, r := range e.d.Inventory.Remembered() {
-		g := store.RememberedGuest{Ref: r.Ref, Digest: r.Digest, Values: r.Values}
+		if !recentRead(r.ReadAt, now) {
+			continue
+		}
+		g := store.RememberedGuest{Ref: r.Ref, Digest: r.Digest, Values: r.Values, ReadAt: r.ReadAt}
 		raw, err := json.Marshal(g)
 		if err != nil || size+len(raw)+1 > guestsBudget {
 			left++
@@ -144,24 +151,33 @@ func (e *Engine) guestsMemory() ([]store.RememberedGuest, time.Time) {
 	e.guestsLeftOut = left
 	sum := sha256.New()
 	for _, g := range out {
+		g.ReadAt = time.Time{}
 		raw, _ := json.Marshal(g)
 		sum.Write(raw)
 	}
-	digest, now := hex.EncodeToString(sum.Sum(nil)), e.d.Now()
+	digest := hex.EncodeToString(sum.Sum(nil))
 	if digest != e.guestsDigest || now.Sub(e.guestsAt) >= guestsConfirmed {
-		e.guestsDigest, e.guestsAt = digest, now
+		e.guestsDigest, e.guestsAt, e.guestsKept = digest, now, out
 	}
-	return out, e.guestsAt
+	return e.guestsKept
 }
 
-// rememberGuests gives the inventory the guests an earlier controller read:
-// a guest of a node that is offline now is built from them, rather than
-// holding every cycle as one the inventory cannot tell from a guest that is
-// gone.
+// recentRead says whether a guest read at at may still be used at now.
+func recentRead(at, now time.Time) bool {
+	return !at.IsZero() && now.Sub(at) < rememberedFor && at.Sub(now) <= readSkew
+}
+
+// rememberGuests gives the inventory the guests an earlier controller read
+// that are recent enough: a guest of a node that is offline now is built
+// from them, rather than holding every cycle as one the inventory cannot
+// tell from a guest that is gone.
 func (e *Engine) rememberGuests(gs []store.RememberedGuest) {
 	rs := make([]inventory.Remembered, 0, len(gs))
+	now := e.d.Now()
 	for _, g := range gs {
-		rs = append(rs, inventory.Remembered{Ref: g.Ref, Digest: g.Digest, Values: g.Values})
+		if recentRead(g.ReadAt, now) {
+			rs = append(rs, inventory.Remembered{Ref: g.Ref, Digest: g.Digest, Values: g.Values, ReadAt: g.ReadAt})
+		}
 	}
 	e.d.Inventory.Remember(rs)
 }
@@ -216,7 +232,7 @@ func (c *cycleRun) saveMemory() (string, bool) {
 		// The guests are kept for a takeover alone: the rest of the memory
 		// is saved without them rather than holding the cycle.
 		c.problem("saving the guests with routes in what the engine remembers: %v; it is saved without them", err)
-		m.Guests, m.GuestsAt = nil, time.Time{}
+		m.Guests = nil
 		err = c.e.d.Store.SaveEngineMemory(m)
 	}
 	if err != nil {

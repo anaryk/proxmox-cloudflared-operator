@@ -55,8 +55,6 @@ type EngineMemory struct {
 	// controller that takes over while the node of one is offline, and
 	// cannot read it, builds it from this.
 	Guests []RememberedGuest `json:"guests,omitempty"`
-	// GuestsAt is when the guests were last read as they are kept.
-	GuestsAt time.Time `json:"guestsAt,omitzero"`
 }
 
 // RememberedGuest is the configuration of a watched guest as the inventory
@@ -65,6 +63,8 @@ type RememberedGuest struct {
 	Ref    model.GuestRef    `json:"ref"`
 	Digest string            `json:"digest,omitempty"`
 	Values map[string]string `json:"values"`
+	// ReadAt is when the inventory last read it from Proxmox.
+	ReadAt time.Time `json:"readAt,omitzero"`
 }
 
 // VerifiedTargets are the targets of the configuration of a tunnel of an
