@@ -71,6 +71,9 @@ type placementMemory struct {
 	// forgottenAsked is, by tunnel id, when its connectors were last listed
 	// for the connectors of forgotten nodes.
 	forgottenAsked map[string]time.Time
+	// forgottenDrops are how often each connector of a forgotten node was
+	// dropped while a listing still showed it.
+	forgottenDrops map[forgottenConnector]int
 	// ids are the connector ids the agents of other nodes reported;
 	// heard are the nodes whose agent reported to this process while it
 	// controlled, and heardSince when its first such cycle noted them.

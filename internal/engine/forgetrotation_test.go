@@ -115,12 +115,30 @@ func TestAForgetWithoutRotationDropsTheConnectorOfTheNode(t *testing.T) {
 		require.Equal(t, []string{"c-pve1", "pve2-" + id}, w.listedIDs(t, id))
 		require.False(t, slices.ContainsFunc(st.RogueConnectors, func(r RogueConnector) bool { return r.ID != "pve3-"+id }), st.RogueConnectors)
 	})
+	stillConnects := "node pve3 still connects to tunnel " + tunnelName + " in account acc1 with the run token it kept; " +
+		"rotate the shared secret: pco tunnel rotate --account acc1"
 	t.Run("but not listed in every cycle", func(t *testing.T) {
 		n := len(w.cf.Calls())
+		var st State
 		for range 3 {
-			w.tick(time.Second)
+			st = w.tick(time.Second)
 		}
 		require.Zero(t, count(w.callsSince(n), "Connectors acc1 "+id))
+		require.Contains(t, st.Problems, stillConnects, "dropped twice: said in every cycle, also those that do not list")
+	})
+	t.Run("said once as an event, then as a problem while it goes on", func(t *testing.T) {
+		for range 3 {
+			w.listAt(t, tunnelName, "c-pve1", "pve2-"+id, "pve3-"+id)
+			st := w.tick(time.Second)
+			require.Contains(t, st.Problems, stillConnects)
+		}
+		require.Equal(t, 1, count(nodeEventsOf(w.env), "node pve3 was forgotten: its connector pve3-"+id+" of tunnel "+tunnelName+
+			" in account acc1 is dropped; its run token still works, as cluster.rotateOnForget is off"))
+	})
+	t.Run("and no more once it is gone", func(t *testing.T) {
+		w.listAt(t, tunnelName, "c-pve1", "pve2-"+id)
+		st := w.tick(time.Second)
+		require.NotContains(t, st.Problems, stillConnects)
 	})
 }
 

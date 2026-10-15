@@ -16,7 +16,13 @@ const (
 		"the run token the node holds may work until it is done, which is tried again in the next cycle"
 	problemForgetHeld = "node %s was forgotten: the rotation of the shared tunnel's secret waits for a cycle that writes: %s; " +
 		"until then the run token the node holds still works"
+	problemStillConnects = "node %s still connects to tunnel %s in account %s with the run token it kept; " +
+		"rotate the shared secret: pco tunnel rotate --account %s"
 )
+
+// forgottenConnector is a connector of a tunnel that a forgotten node
+// reported.
+type forgottenConnector struct{ node, tunnel, id string }
 
 // forgetRotations finishes the rotations of the shared tunnel's secret that
 // the forget of a node began and could not finish: a secret given once, then
@@ -134,8 +140,23 @@ func (c *cycleRun) dropForgotten() {
 				continue
 			}
 			c.dropOf(name, t)
+			if c.stillConnects(name, t) {
+				c.problem(problemStillConnects, name, t.Name, t.AccountID, t.AccountID)
+			}
 		}
 	}
+}
+
+// stillConnects says whether a connector of a tunnel that a forgotten node
+// reported came back after it was dropped: its run token works, and only a
+// rotation of the secret ends it.
+func (c *cycleRun) stillConnects(node string, t reconcile.TunnelState) bool {
+	for id := range c.e.place.ids[node][t.ID] {
+		if c.e.place.forgottenDrops[forgottenConnector{node, t.ID, id}] >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 // dropOf drops the connectors of a tunnel that a forgotten node reported.
@@ -158,15 +179,25 @@ func (c *cycleRun) dropOf(node string, t reconcile.TunnelState) {
 			node, t.Name, t.AccountID, err)
 		return
 	}
+	if mem.forgottenDrops == nil {
+		mem.forgottenDrops = map[forgottenConnector]int{}
+	}
 	ids := mem.ids[node][t.ID]
 	for _, id := range slices.Sorted(maps.Keys(ids)) {
+		key := forgottenConnector{node, t.ID, id}
 		if !slices.ContainsFunc(listed, func(x cfapi.Connector) bool { return x.ID == id }) {
 			delete(ids, id)
+			delete(mem.forgottenDrops, key)
 			continue
 		}
 		if err := api.CleanUpConnector(c.ctx, t.AccountID, t.ID, id); err != nil {
 			c.problem("node %s was forgotten: dropping its connector %s of tunnel %s in account %s failed: %v; it is tried again",
 				node, id, t.Name, t.AccountID, err)
+			continue
+		}
+		// It comes back with the same id while its token works: the event
+		// is said once, and a drop after it makes the problem line.
+		if mem.forgottenDrops[key]++; mem.forgottenDrops[key] > 1 {
 			continue
 		}
 		c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindNode, Subject: node, Node: node, Tunnel: t.Name, Account: t.AccountID,
