@@ -143,9 +143,18 @@ func (c *cycleRun) restoreRotation() {
 		c.problem("ending the rotation of the restored install: %v", err)
 		return
 	}
-	inst := c.install
+	inst, rev, found, err := c.e.d.Store.InstallRev()
+	switch {
+	case err != nil:
+		c.problem("ending the rotation of the restored install: reading the install: %v", err)
+		return
+	case !found || inst.ID != rec.InstallID || inst.RestoreRotation != rec.Restore:
+		// Another promotion asked for another rotation meanwhile: it is
+		// left for the cycles that follow.
+		return
+	}
 	inst.RestoreRotation = ""
-	if err := c.e.d.Store.SaveInstall(inst); err != nil {
+	if _, err := c.e.d.Store.SaveInstallIf(inst, rev); err != nil {
 		c.problem("ending the rotation of the restored install: %v", err)
 		return
 	}

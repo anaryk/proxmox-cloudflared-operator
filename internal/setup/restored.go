@@ -155,6 +155,12 @@ func (r *run) takeOver() error {
 	if err != nil {
 		return fmt.Errorf("encoding the CA: %w", err)
 	}
+	// The CA is the one thing of a take-over another node's cannot be told
+	// from: it is replaced only while the claim of this node is the one
+	// stored.
+	if err := r.stillClaimed(); err != nil {
+		return err
+	}
 	if err := r.st.SaveCA(store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}, nil, time.Time{}); err != nil {
 		return fmt.Errorf("storing the new CA: %w", err)
 	}
@@ -202,6 +208,20 @@ func (r *run) takeOver() error {
 		return fmt.Errorf("recording that this node took the store: %w", err)
 	}
 	r.install = inst
+	return nil
+}
+
+// stillClaimed refuses unless the stored install is the one this node
+// claimed, at the revision it claimed it at.
+func (r *run) stillClaimed() error {
+	const again = "the restored store was claimed again while this node took it over: run pco setup again"
+	inst, rev, found, err := r.st.InstallRev()
+	switch {
+	case err != nil:
+		return fmt.Errorf("reading the install: %w", err)
+	case !found || inst.Restored == nil || inst.Restored.TakenOverBy != r.o.Node || rev != r.claimRev:
+		return errors.New(again)
+	}
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -502,4 +503,39 @@ func TestANewInstallIsRefusedOnARestoredStore(t *testing.T) {
 	e.done()
 	requireUntaken(t, e, old)
 	require.Equal(t, testInstall, e.install().ID)
+}
+
+// A node that claims the store after this one did, and before this one made
+// the new CA, keeps it: the CA it may already have made is not replaced.
+func TestATakeOverStopsBeforeTheCAWhenTheStoreIsClaimedMeanwhile(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	old := e.restoredElsewhere()
+	e.s.rand = claimingRand{Reader: e.s.rand, claim: func() {
+		inst := e.install()
+		if inst.Restored != nil && inst.Restored.TakenOverBy == testNode {
+			inst.Restored.TakenOverBy = firstNode
+			require.NoError(t, e.st.SaveInstall(inst))
+		}
+	}}
+	e.script(preflight("9.0.10"))
+
+	err := e.setup(Options{Yes: true, Node: testNode})
+
+	require.ErrorContains(t, err, "claimed again")
+	e.done()
+	requireUntaken(t, e, old)
+	require.Equal(t, firstNode, e.install().Restored.TakenOverBy)
+}
+
+// claimingRand lets another node claim the store whenever setup draws
+// random bytes, as it does to make the new CA.
+type claimingRand struct {
+	io.Reader
+	claim func()
+}
+
+func (c claimingRand) Read(p []byte) (int, error) {
+	c.claim()
+	return c.Reader.Read(p)
 }

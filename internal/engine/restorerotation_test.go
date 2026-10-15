@@ -340,3 +340,48 @@ func TestTheRotationOfARestoredInstallWaitsForApply(t *testing.T) {
 	}
 	require.Equal(t, 1, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id))
 }
+
+// The end of a rotation clears only the restore it was of: a promotion that
+// asked for another one while the cycle ran keeps it, and its tunnels get
+// new secrets once more.
+func TestTheEndOfARotationKeepsOneAskedForMeanwhile(t *testing.T) {
+	w := threeNodes(t)
+	asked := false
+	w.useAPI(testToken, cleanedThen{API: w.cf, then: func() {
+		rec, found, err := w.store.RestoreRotation()
+		require.NoError(t, err)
+		if asked || !found || len(rec.TakenUp) == 0 {
+			return
+		}
+		// What a promotion saves: the record first, then the install.
+		asked = true
+		require.NoError(t, w.store.SaveRestoreRotation(store.RestoreRotation{Since: w.clock.now(), InstallID: testInstall, Restore: "a later restore"}))
+		inst, _, err := w.store.Install()
+		require.NoError(t, err)
+		inst.RestoreRotation = "a later restore"
+		require.NoError(t, w.store.SaveInstall(inst))
+	}})
+	w.settle()
+	id := w.tunnelID(t, tunnelName)
+	w.askRotation(t, nil)
+
+	for range 6 {
+		w.tick(time.Minute)
+	}
+
+	require.True(t, asked)
+	require.Equal(t, 2, count(w.cf.Calls(), "RotateTunnelSecret acc1 "+id), "once for each restore")
+}
+
+// cleanedThen runs then after Cloudflare cleaned the connections of a
+// tunnel up.
+type cleanedThen struct {
+	cfapi.API
+	then func()
+}
+
+func (c cleanedThen) CleanUpConnections(ctx context.Context, account, tunnel string) error {
+	err := c.API.CleanUpConnections(ctx, account, tunnel)
+	c.then()
+	return err
+}

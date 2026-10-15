@@ -464,6 +464,50 @@ func TestPromoteOfAStoreTakenFromAnotherNodeSaysSo(t *testing.T) {
 		"which was not an online member of it")
 }
 
+// The install is saved only at the revision the promotion read it at: a
+// node that claims the restored store meanwhile is never overwritten.
+func TestPromoteDoesNotOverwriteAClaimMadeMeanwhile(t *testing.T) {
+	e, l := restoredElsewhere(t)
+	made := e.eng.d.NewClient
+	e.eng.d.NewClient = func(c store.Credential) (cfapi.API, error) {
+		api, err := made(c)
+		return claimingMeanwhile{API: api, claim: func() {
+			inst, _, err := e.store.Install()
+			require.NoError(t, err)
+			if inst.Restored != nil && inst.Restored.TakenOverBy != "pve9" {
+				inst.Restored.TakenOverBy = "pve9"
+				require.NoError(t, e.store.SaveInstall(inst))
+			}
+		}}, err
+	}
+
+	_, err := confirmed(t, e, PromoteRequest{Confirm: true, Cluster: "old-lab"})
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "changed while")
+	require.Empty(t, l.promoted)
+	inst, _, err := e.store.Install()
+	require.NoError(t, err)
+	require.Equal(t, "pve9", inst.Restored.TakenOverBy, "the claim made meanwhile stays")
+	require.Equal(t, caOld, inst.Cluster.CASHA256)
+	require.Empty(t, inst.RestoreRotation)
+	_, found, err := e.store.RestoreRotation()
+	require.NoError(t, err)
+	require.False(t, found, "the rotation of a promotion that did not happen is not asked for")
+}
+
+// claimingMeanwhile has another node claim the restored store while the
+// promotion looks at the connectors at Cloudflare.
+type claimingMeanwhile struct {
+	cfapi.API
+	claim func()
+}
+
+func (c claimingMeanwhile) Connectors(ctx context.Context, account, tunnel string) ([]cfapi.Connector, error) {
+	c.claim()
+	return c.API.Connectors(ctx, account, tunnel)
+}
+
 type connectorsUnread struct{ cfapi.API }
 
 func (connectorsUnread) Connectors(context.Context, string, string) ([]cfapi.Connector, error) {

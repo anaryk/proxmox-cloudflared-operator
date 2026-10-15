@@ -73,8 +73,10 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 		return PromoteResult{}, err
 	}
 	defer e.release()
-	// Read again under the lock: the install saved below is this one.
-	switch inst, found, err = e.d.Store.Install(); {
+	// Read again under the lock, with its revision: the install saved below
+	// is this one, and only while nobody else saved it since.
+	var rev int64
+	switch inst, rev, found, err = e.d.Store.InstallRev(); {
 	case err != nil:
 		return PromoteResult{}, fmt.Errorf("reading the install identity again: %w", err)
 	case !found:
@@ -120,7 +122,7 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 	// admin adopts it as it is. The engine holds on its own until the new
 	// epoch is drawn.
 	e.d.Store.StartTenure()
-	claimedFrom := ""
+	claimedFrom, asked := "", ""
 	if inst.Restored != nil {
 		claimedFrom = inst.Restored.ClaimedFrom
 		// Copies of the run tokens may be left on the disks of the install
@@ -129,7 +131,7 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 		// the restore, after: a record no install names is never acted on,
 		// and a promotion cut short in between is made again.
 		restore := inst.Restored.BundleMadeAt.UTC().Format(time.RFC3339) + "/" + e.d.Now().UTC().Format(time.RFC3339Nano)
-		inst.RestoreRotation = restore
+		inst.RestoreRotation, asked = restore, restore
 		rec := store.RestoreRotation{Since: e.d.Now(), InstallID: inst.ID, Restore: restore}
 		if err := e.d.Store.SaveRestoreRotation(rec); err != nil {
 			return res, fmt.Errorf("asking for new secrets of the tunnels: %w", err)
@@ -143,7 +145,17 @@ func (e *Engine) Promote(ctx context.Context, req PromoteRequest) (PromoteResult
 			inst.Cluster = other
 		}
 		inst.Restored = nil
-		if err := e.d.Store.SaveInstall(inst); err != nil {
+		_, err := e.d.Store.SaveInstallIf(inst, rev)
+		switch {
+		case errors.Is(err, store.ErrRevision):
+			// The record asked for above is of a promotion that does not
+			// happen: it goes, so that no install's rotation finds it.
+			if rec, found, rerr := e.d.Store.RestoreRotation(); rerr == nil && found && asked != "" && rec.Restore == asked {
+				_ = e.d.Store.DeleteRestoreRotation()
+			}
+			return res, fmt.Errorf("%w: the install changed while it was promoted, as when another node claims a restored store; "+
+				"run pco promote again to see it", ErrRefused)
+		case err != nil:
 			return res, fmt.Errorf("making this cluster the store's: %w", err)
 		}
 	}
