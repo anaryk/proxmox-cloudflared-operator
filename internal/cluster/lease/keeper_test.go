@@ -732,8 +732,13 @@ func TestRunEndsAfterARelease(t *testing.T) {
 	go func() { done <- pve1.k.Run(l.ctx) }()
 	ticks <- t0
 	require.NoError(t, pve1.k.Release(l.ctx))
-	ticks <- t0
-	require.NoError(t, <-done)
+	// Run ends at the release or at the next tick, whichever it sees first.
+	select {
+	case ticks <- t0:
+		require.NoError(t, <-done)
+	case err := <-done:
+		require.NoError(t, err)
+	}
 }
 
 func TestNewRefusesAnIncompleteConfig(t *testing.T) {
