@@ -556,3 +556,24 @@ func TestRecoverKeepsTheRotationARestoreAskedFor(t *testing.T) {
 	require.Equal(t, inst.RestoreRotation, got.RestoreRotation)
 	require.Equal(t, inst.RestoreRotation, e.install().RestoreRotation)
 }
+
+// --recover refuses a restored store that records no cluster before it
+// draws a writer, as setup refuses it: nothing is changed.
+func TestRecoverRefusesARestoredStoreWithoutAClusterFirst(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	old := e.restoredElsewhere()
+	inst := e.install()
+	inst.Cluster = nil
+	require.NoError(t, e.st.SaveInstall(inst))
+	e.script(preflight("9.0.10"), daemonIs("inactive"))
+
+	err := e.setup(Options{Yes: true, Recover: true, CloudflareToken: cfToken, Node: testNode})
+
+	require.ErrorContains(t, err, "records no cluster")
+	e.done()
+	require.Equal(t, 3, e.writer().Generation, "no writer is drawn")
+	require.Nil(t, e.install().Cluster)
+	ca, _ := e.currentCA()
+	require.Equal(t, old.SHA256(), ca.SHA256())
+}

@@ -57,8 +57,12 @@ func (r *run) restoredStopped(ctx context.Context) error {
 	switch {
 	case err != nil:
 		return fmt.Errorf("reading the install: %w", err)
-	case !found || stored.Restored == nil || stored.Cluster == nil:
+	case !found || stored.Restored == nil:
 		return nil
+	case stored.Cluster == nil:
+		// The cluster step refuses it after the writer was drawn: it is
+		// refused before, so that a refused recovery changes nothing.
+		return errRestoredWithoutCluster(stored)
 	}
 	fingerprint, err := members.CAFingerprint(r.host.pveRootCA)
 	if err != nil {
