@@ -264,6 +264,11 @@ func adopt(st *store.Store, id string, highest int, now func() time.Time, rand i
 		return store.Install{}, 0, err
 	}
 	inst.ID, inst.CreatedAt = id, created
+	if found {
+		// A rotation of the tunnel secrets a promotion of a restored store
+		// asked for goes on: the install names the record it acts on.
+		inst.RestoreRotation = stored.RestoreRotation
+	}
 	if found && stored.Restored != nil {
 		// A store restored from a bundle keeps what says so, and the
 		// cluster it was made in: in another cluster, the cluster step

@@ -539,3 +539,20 @@ func (c claimingRand) Read(p []byte) (int, error) {
 	c.claim()
 	return c.Reader.Read(p)
 }
+
+// A recovery keeps the rotation of the tunnel secrets a promotion of a
+// restored store asked for and that did not end: without it, the install
+// would not name the record, and the rotation would never go on.
+func TestRecoverKeepsTheRotationARestoreAskedFor(t *testing.T) {
+	e := newTestEnv(t)
+	e.joinable()
+	inst := e.install()
+	inst.RestoreRotation = "2026-09-30T00:00:00Z/2026-10-01T12:00:00Z"
+	require.NoError(t, e.st.SaveInstall(inst))
+
+	got, _, err := adopt(e.st, testInstall, 3, func() time.Time { return t0 }, e.s.rand, store.Install{Profile: store.ProfileHost})
+
+	require.NoError(t, err)
+	require.Equal(t, inst.RestoreRotation, got.RestoreRotation)
+	require.Equal(t, inst.RestoreRotation, e.install().RestoreRotation)
+}
