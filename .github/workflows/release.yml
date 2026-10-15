@@ -145,7 +145,9 @@ jobs:
       - name: Install the tools of the template
         run: |
           sudo apt-get update
-          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap arch-test qemu-user-static
+          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap arch-test qemu-user-static binfmt-support
+          # arm64 runs through qemu only once binfmt has it; stop here if not.
+          arch-test arm64
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       # The cloudflared packages stay beside the templates (--cache), for the
