@@ -33,9 +33,12 @@ const (
 	agentsIPSet   = "pco-agents"
 	agentsComment = "pco: the agent containers of the other nodes"
 	joinFile      = stateDir + "/join.token"
-	// roleDatastoreAudit is Proxmox's role that holds Datastore.Audit, which
-	// a controller's token gets on its own storage only.
-	roleDatastoreAudit = "PVEDatastoreAuditor"
+	// roleDatastoreAudit is the role of Proxmox that holds Datastore.Audit, which
+	// a controller's token gets on its own storage only. Proxmox VE has no role
+	// of Datastore.Audit alone: PVEAuditor holds it with the audit privileges
+	// the token has on / already, and Mapping.Audit, which no storage path
+	// carries.
+	roleDatastoreAudit = "PVEAuditor"
 )
 
 // kindName is the kind of the options, never an empty one.
