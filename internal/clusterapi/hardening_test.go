@@ -85,8 +85,14 @@ func TestAConnectionUnderThePreviousCAEndsWithItsWindow(t *testing.T) {
 	h.srv.sweep()
 	select {
 	case err := <-poll:
+		// The long-poll ends with its connection, or, when the sweep finds
+		// it between two reads, is refused as the request on it was: never
+		// answered with a snapshot.
 		var answered *statusErr
-		require.False(t, errors.As(err, &answered), "the long-poll ends with its connection")
+		if errors.As(err, &answered) {
+			require.Equal(t, http.StatusUnauthorized, answered.code, "the long-poll ends with its connection")
+		}
+		require.Error(t, err, "the long-poll ends with its connection")
 	case <-time.After(10 * time.Second):
 		t.Fatal("the long-poll outlived the window of its CA")
 	}
