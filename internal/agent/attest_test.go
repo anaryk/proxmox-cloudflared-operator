@@ -242,12 +242,12 @@ func TestAConflictIsReportedWhileItHoldsAndBlocksTheAddressAtOnce(t *testing.T) 
 		Kind: agentproto.ObservationConflict, MAC: testMAC, Bridge: "vmbr0", Port: "fwpr102p0", From: "tap101i0",
 		Owner: &model.GuestRef{Kind: model.KindLXC, VMID: 102}, At: t0,
 	}, st.Observations[0], "the kind of the owner is the snapshot's")
-	e.agent.Wait()
 	// The observation is in the status as the watch hands it over; the
-	// address leaves the filter in the same handling, a moment later.
-	require.Eventually(t, func() bool { return len(log.all()) > 0 }, 5*time.Second, time.Millisecond)
-	require.Equal(t, "egress remove 10.0.0.11", log.all()[0], "the address this node serves on the MAC is out at once")
+	// address leaves the filter in the same handling, a moment later, and
+	// what it says comes last: the check it starts is counted by then.
 	e.said(t, conflictSaid)
+	e.agent.Wait()
+	require.Equal(t, "egress remove 10.0.0.11", log.all()[0], "the address this node serves on the MAC is out at once")
 
 	t.Run("seen again, it is the same conflict", func(t *testing.T) {
 		f.see(egress.Observation{Kind: egress.Conflict, MAC: testMAC, Bridge: "vmbr0", Port: "fwpr102p0", Owner: owner, At: t0.Add(time.Minute)})
@@ -278,12 +278,12 @@ func TestAMoveIsReportedForAWhileAndBlocksTheAddressAtOnce(t *testing.T) {
 	st := e.status(t, func(st agentproto.Status) bool { return len(st.Observations) == 1 })
 	require.Empty(t, st.Attestations, "what moved is attested no more")
 	require.Equal(t, agentproto.Observation{Kind: agentproto.ObservationMoved, MAC: testMAC, Bridge: "vmbr0", From: "tap101i0", Port: "eno1", At: t0.Add(time.Second)}, st.Observations[0])
-	e.agent.Wait()
 	// The observation is in the status as the watch hands it over; the
-	// address leaves the filter in the same handling, a moment later.
-	require.Eventually(t, func() bool { return len(log.all()) > 0 }, 5*time.Second, time.Millisecond)
-	require.Equal(t, "egress remove 10.0.0.11", log.all()[0])
+	// address leaves the filter in the same handling, a moment later, and
+	// what it says comes last: the check it starts is counted by then.
 	e.said(t, "guest qemu/101: its MAC bc:24:11:00:00:01 left its own port tap101i0 for eno1 on bridge vmbr0; the address is verified again before it is reached")
+	e.agent.Wait()
+	require.Equal(t, "egress remove 10.0.0.11", log.all()[0])
 
 	t.Run("learned on its own port again, it is attested from then", func(t *testing.T) {
 		f.see(learned(testMAC, "tap101i0", t0.Add(2*time.Second)))
@@ -387,6 +387,10 @@ func TestAnObservationQueuedWhenTheRunEndedSaysNothing(t *testing.T) {
 	f.end <- errors.New("the subscription ended")
 	e.status(t, func(st agentproto.Status) bool { return st.WatchRunningSince.IsZero() })
 	close(held)
+	// The handling of the conflict says it last, once the check its block
+	// starts is counted.
+	e.said(t, "guest qemu/101: its MAC bc:24:11:00:00:01 is on port fwpr102p0 of bridge vmbr0, a port of guest qemu/102; "+
+		"the address is not reached until the controller lifts the block")
 	e.agent.Wait()
 	tm.fire(t)
 	f.started(t, 2)
