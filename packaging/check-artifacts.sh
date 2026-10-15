@@ -137,7 +137,7 @@ for path in "$dist"/*; do
 	[[ -f $path ]] || continue
 	name=${path##*/}
 	case $name in
-	artifacts.json | config.yaml | metadata.json | CHANGELOG.md) continue ;;
+	artifacts.json | config.yaml | metadata.json | CHANGELOG.md | digests.txt) continue ;;
 	esac
 	actual="$actual$name
 "
@@ -222,8 +222,12 @@ fi
 
 # carries <arch> <name> <template> <package>: fails unless ./usr/bin/<name> of
 # the template is the one in the package, byte for byte.
+# The template is decompressed whole first: tar stops at the end of its
+# archive, and a zstd still writing the padding after it would die of the
+# closed pipe.
 carries() {
-	if ! zstd --decompress --stdout --long=27 --quiet "$3" 2>/dev/null | tar -xO "./usr/bin/$2" >"$work/template" 2>/dev/null; then
+	if ! zstd --decompress --long=27 --quiet --force -o "$work/template.tar" "$3" 2>/dev/null ||
+		! tar -xOf "$work/template.tar" "./usr/bin/$2" >"$work/template" 2>/dev/null; then
 		fail "cannot read ./usr/bin/$2 out of ${3##*/}"
 	elif ! dpkg-deb --fsys-tarfile "$4" 2>/dev/null | tar -xO "./usr/bin/$2" >"$work/package" 2>/dev/null; then
 		fail "cannot read ./usr/bin/$2 out of ${4##*/}"
