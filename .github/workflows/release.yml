@@ -146,7 +146,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mmdebstrap zstd systemd-container uidmap arch-test qemu-user-static binfmt-support
-          # arm64 runs through qemu only once binfmt has it; stop here if not.
+          # arm64 runs through qemu only once binfmt has it: register it where the
+          packages did not, and stop here if it still does not run.
+          if [[ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then
+            sudo systemctl restart systemd-binfmt || true
+          fi
+          if [[ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then
+            sudo update-binfmts --import qemu-aarch64 || true
+            sudo update-binfmts --enable qemu-aarch64 || true
+          fi
           arch-test arm64
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
