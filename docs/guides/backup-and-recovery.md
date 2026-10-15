@@ -186,6 +186,10 @@ and every epoch an agent remembers.
 - Restore a bundle once. A second `pco import` of the same bundle, or of another, into a cluster
   where the first is restored is refused, as the store holds an install; restoring one bundle
   into two clusters makes two writers of one install, which undo each other at Cloudflare.
+- `pco setup --new-install` is refused on a restored install, as it would start another install
+  beside it and leave the restore half done. Finish the restore with `pco setup` and
+  `pco promote`, as below. To drop it instead, `pco uninstall --keep-cloudflare` removes the
+  restored store and leaves Cloudflare as it is, and `pco setup` then makes a new install.
 
 **The store lost, the cluster kept**, as after `/etc/pve/pco` was removed by mistake:
 

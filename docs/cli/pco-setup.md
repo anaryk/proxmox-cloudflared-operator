@@ -17,7 +17,9 @@ was lost; when the token sees several, `--install-id` chooses.
 A node whose store holds no install but that runs connectors of one is refused, as a new
 install would never prune them: pco setup `--recover` adopts that install, and pco uninstall
 `--keep-cloudflare` removes pco from the node so that setup can start over. `--new-install`
-starts a new install beside them regardless.
+starts a new install beside them regardless; on a store that pco import restored it is
+refused, as it would leave the restore half done: finish the restore with pco setup and
+pco promote, or remove it with pco uninstall `--keep-cloudflare` and set up anew.
 
 On a node of a Proxmox VE cluster whose store, shared by the cluster filesystem, holds an
 install that other nodes run, setup joins it: the node gets its key and certificates from the

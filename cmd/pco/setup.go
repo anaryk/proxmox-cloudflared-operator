@@ -50,7 +50,9 @@ func (a *app) setupCmd() *cobra.Command {
 			"A node whose store holds no install but that runs connectors of one is refused, as a new\n" +
 			"install would never prune them: pco setup --recover adopts that install, and pco uninstall\n" +
 			"--keep-cloudflare removes pco from the node so that setup can start over. --new-install\n" +
-			"starts a new install beside them regardless.\n\n" +
+			"starts a new install beside them regardless; on a store that pco import restored it is\n" +
+			"refused, as it would leave the restore half done: finish the restore with pco setup and\n" +
+			"pco promote, or remove it with pco uninstall --keep-cloudflare and set up anew.\n\n" +
 			"On a node of a Proxmox VE cluster whose store, shared by the cluster filesystem, holds an\n" +
 			"install that other nodes run, setup joins it: the node gets its key and certificates from the\n" +
 			"install's CA, which the first node makes, and an entry of the node registry as joining, which\n" +
