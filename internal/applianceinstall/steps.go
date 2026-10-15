@@ -305,7 +305,7 @@ func (r *run) start(ctx context.Context) error {
 		return fmt.Errorf("asking the pco in lxc/%d for its version: %w", vmid, err)
 	}
 	f := strings.Fields(out)
-	if len(f) < 2 || f[0] != "pco" || f[1] != r.h.version {
+	if len(f) < 2 || f[0] != "pco" || releaseVersion(f[1]) != r.h.version {
 		return fmt.Errorf("lxc/%d holds %s, not pco %s as this installer: use the template of version %s",
 			vmid, strings.TrimSpace(out), r.h.version, r.h.version)
 	}

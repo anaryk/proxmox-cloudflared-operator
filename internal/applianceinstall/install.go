@@ -286,8 +286,14 @@ func nodeHost() host {
 				return nil
 			}
 		},
-		version: version.Version,
+		version: releaseVersion(version.Version),
 	}
+}
+
+// releaseVersion is the version of a build as the files of its release name
+// it: a release build carries the tag, v1.2.3, and its files 1.2.3.
+func releaseVersion(build string) string {
+	return strings.TrimPrefix(build, "v")
 }
 
 // findCommand looks a command up where the runner of setup looks.
