@@ -97,7 +97,11 @@ func (a *app) renderCluster(s *screen, cs engine.ClusterStatus) {
 		statusLine(s, "Generation", fmt.Sprint(c.Generation))
 	}
 	if !c.HeldSince.IsZero() {
-		statusLine(s, "Held", fmt.Sprintf("the cycles hold since %s; coverage and blocks as judged at %s", a.when(c.HeldSince), a.when(c.JudgedAt)))
+		judged := "as judged at " + a.when(c.JudgedAt)
+		if c.JudgedAt.IsZero() {
+			judged = "never judged by this controller"
+		}
+		statusLine(s, "Held", fmt.Sprintf("the cycles hold since %s; coverage and blocks %s", a.when(c.HeldSince), judged))
 	}
 	if l := cs.Lease; l != nil {
 		statusLine(s, "Lease", leaseText(l))

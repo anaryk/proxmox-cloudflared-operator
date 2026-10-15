@@ -68,6 +68,12 @@ func TestClusterStatusOfACycleThatHeld(t *testing.T) {
 
 	require.Contains(t, res.out, "Controller:  pve1, its lease expired")
 	require.Regexp(t, `Held:        the cycles hold since 2026-\S+; coverage and blocks as judged at 2026-\S+\n`, res.out)
+
+	// A controller that held from its first cycle never judged them.
+	st.Cluster.JudgedAt = time.Time{}
+	r, _ = daemonWith(t, st)
+	res = r.run("", "cluster", "status")
+	require.Regexp(t, `Held:        the cycles hold since 2026-\S+; coverage and blocks never judged by this controller\n`, res.out)
 }
 
 func TestClusterStatusOfANodeAlone(t *testing.T) {
