@@ -370,8 +370,8 @@ sections above:
 | 1, API token | [Add a Cloudflare token](#add-a-cloudflare-token): its buttons open the form of the Cloudflare dashboard with the permissions chosen, and the token you paste is checked, and its write access proved, as `pco credential add` and `check --deep` do. |
 | 2, Zones | `pco credential check`: the zones the token lists, and those it leaves out. |
 | 3, Reaching guests | the first point of [Before you start](#before-you-start). |
-| 4, First route | [Tag a guest and write its routes](#tag-a-guest-and-write-its-routes): it writes the block for the Notes, which you paste into the guest and give it the tag, as above; pco never writes tags or Notes itself. |
-| 5, Start publishing | [See what pco would do](#see-what-pco-would-do) and [Publish](#publish): the plan, and the button that does what `pco apply` does. |
+| 4, First route | Optional: publishing starts without it. [Tag a guest and write its routes](#tag-a-guest-and-write-its-routes): it writes the block for the Notes, which you paste into the guest and give it the tag, as above; pco never writes tags or Notes itself. |
+| 5, Start publishing | [See what pco would do](#see-what-pco-would-do) and [Publish](#publish): the plan, and the button that does what `pco apply` does; in the appliance it acknowledges the segment of the appliance's card with the same click. |
 
 Then the overview shows the route on its way from Cloudflare to the guest, and the route's page,
 under Routes, runs `pco diagnose` on its tab Diagnosis of the current holder.
@@ -402,8 +402,9 @@ in front. With the appliance in container 120, add the token:
 
 Tag a guest and write its routes [as above](#tag-a-guest-and-write-its-routes); the guest
 must be on the appliance's bridge and VLAN. The appliance proves addresses at the level
-`observed`, and serves them only on a segment you acknowledged, so acknowledge the bridge
-once `pco routes` shows the routes waiting for it:
+`observed`, and serves them only on a segment you acknowledged. The last step of the setup in
+the web interface acknowledges the appliance's own segment when it starts publishing; on the
+command line, acknowledge the bridge, before or after the routes show up:
 
     pct exec 120 -- pco routes
     pct exec 120 -- pco segment acknowledge vmbr0

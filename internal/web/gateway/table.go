@@ -111,6 +111,10 @@ var Table = []Rule{
 	{Method: http.MethodPost, Path: "/claims/resolve", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPost, Path: "/guests/approve", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPost, Path: "/guests/revoke", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
+	// A segment is acknowledged by an admin, who trusts every device on it
+	// with what its MAC can claim; the state lists the segments.
+	{Method: http.MethodPost, Path: "/segments/acknowledge", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
+	{Method: http.MethodPost, Path: "/segments/revoke", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPost, Path: "/routes/manual", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPost, Path: "/daemon/restart", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPut, Path: "/settings", Min: auth.RoleAdmin, Body: maxSettings, Timeout: writeTimeout},

@@ -167,3 +167,22 @@
 .manual-details[open] summary {
   margin-bottom: 10px;
 }
+
+.wizard-segments {
+  min-width: 0;
+  margin: 12px 0;
+  padding: 0;
+  border: 0;
+}
+
+.wizard-segments legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wizard-segments .check {
+  display: block;
+  margin-bottom: 6px;
+}

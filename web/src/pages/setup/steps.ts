@@ -20,7 +20,7 @@ export interface StepInfo {
 
 export type TokenState = 'none' | 'problem' | 'unknown' | 'usable'
 export type ZonesState = 'blocked' | 'waiting' | 'empty' | 'listed'
-export type Missing = 'token' | 'route'
+export type Missing = 'token'
 
 export interface Progress {
   // the daemon cannot run before the install command ran on the node
@@ -108,7 +108,6 @@ export function progressOf(st: State, pending?: CredentialView): Progress {
   const publishing = !unset(st.at) && st.mode !== 'observe'
   const missing: Missing[] = []
   if (token !== 'usable') missing.push('token')
-  if (routes === 0) missing.push('route')
 
   const marks: Record<StepId, Mark> = {
     install: 'problem',
@@ -116,7 +115,9 @@ export function progressOf(st: State, pending?: CredentialView): Progress {
     token: token === 'usable' ? 'done' : token === 'none' || token === 'unknown' ? 'todo' : 'problem',
     zones: zoneMarks[zones],
     reach: 'optional',
-    route: routes > 0 ? 'done' : 'todo',
+    // publishing starts without a route: a guest tagged later is published
+    // once its Notes name its routes
+    route: routes > 0 ? 'done' : 'optional',
     publish: publishing && token === 'usable' ? 'done' : missing.length === 0 ? 'todo' : 'blocked',
   }
   const order: StepId[] = ['install', 'token', 'zones', 'reach', 'route', 'publish']

@@ -6,14 +6,19 @@ import { useApp } from '../../api/store'
 import type { RouteView, SegmentView } from '../../api/types.gen'
 import { Head } from '../../app/Head'
 import { Link } from '../../app/Link'
+import { explain } from '../../api/errors'
 import { Badge } from '../../components/Badge'
+import { Button } from '../../components/Button'
 import { Drawer } from '../../components/Drawer'
 import { Skeleton } from '../../components/Skeleton'
 import { StateBadge } from '../../components/StateBadge'
 import { type Column, Table } from '../../components/Table'
 import { Time } from '../../components/Time'
+import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
+import { asApiError, useAdminReason } from '../kit'
 import { guestsOf, levelsOf, type Network, networksOf } from './networks'
+import { acknowledgeSegment, revokeSegment, segmentName } from './segments'
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
@@ -208,6 +213,44 @@ function Identity() {
   )
 }
 
+function SegmentAction({ s }: { s: SegmentView }) {
+  const toast = useToast()
+  const refusal = useAdminReason()
+  const [sending, setSending] = useState(false)
+  const send = async () => {
+    setSending(true)
+    try {
+      if (s.acknowledged) {
+        await revokeSegment(s)
+        toast(
+          <>
+            The acknowledgement of segment <Untrusted text={segmentName(s)} /> is revoked; its routes at observed are held from the next cycle.
+          </>,
+          'ok',
+        )
+      } else {
+        await acknowledgeSegment(s)
+        toast(
+          <>
+            Segment <Untrusted text={segmentName(s)} /> is acknowledged; its routes at observed are served from the next cycle.
+          </>,
+          'ok',
+        )
+      }
+    } catch (e) {
+      const said = explain(asApiError(e))
+      toast(said.quoted ? <Untrusted text={said.text} /> : said.text, 'fail')
+    } finally {
+      setSending(false)
+    }
+  }
+  return (
+    <Button small disabled={sending} disabledReason={refusal} onClick={() => void send()}>
+      {s.acknowledged ? 'Revoke' : 'Acknowledge'}
+    </Button>
+  )
+}
+
 function Segments({ segments, nodeZone }: { segments: SegmentView[]; nodeZone?: string }) {
   if (segments.length === 0) return null
   const columns: Column<SegmentView>[] = [
@@ -215,6 +258,8 @@ function Segments({ segments, nodeZone }: { segments: SegmentView[]; nodeZone?: 
     { key: 'vlan', header: 'VLAN', cell: (s) => (s.vlan === undefined ? <span className="muted">untagged</span> : <span className="num">{s.vlan}</span>) },
     { key: 'acknowledged', header: 'Acknowledged', cell: (s) => (s.acknowledged ? <Time at={s.acknowledgedAt ?? ''} nodeZone={nodeZone} /> : <span className="muted">no</span>) },
     { key: 'routes', header: 'Routes', cell: (s) => <span className="num">{s.routes}</span> },
+    { key: 'note', header: 'Note', cell: (s) => (s.own ? "an appliance's card" : <span className="muted">-</span>) },
+    { key: 'action', header: 'Action', cell: (s) => <SegmentAction s={s} /> },
   ]
   return (
     <section className="card" aria-labelledby="networks-segments">
@@ -223,8 +268,8 @@ function Segments({ segments, nodeZone }: { segments: SegmentView[]; nodeZone?: 
       </div>
       <div className="card-body">
         <p>
-          A route proven at <b>observed</b> is served only on a segment, a bridge and a VLAN, that an admin acknowledged: on a new one nothing is served until then. On the node,{' '}
-          <code>pco segment list</code> shows the segments and <code>pco segment acknowledge</code> acknowledges one.
+          A route proven at <b>observed</b> is served only on a segment, a bridge and a VLAN, that an admin acknowledged: on a new one nothing is served until then. Acknowledge
+          one once you would trust any device on it with what its MAC can claim. The segments of the appliances&apos; own cards are listed before any route is proven on them.
         </p>
         <Table label="Segments" columns={columns} rows={segments} rowKey={(s) => `${s.bridge}:${s.vlan ?? ''}`} />
       </div>

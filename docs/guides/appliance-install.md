@@ -53,7 +53,9 @@ costs against the host profile.
 4. Tag a guest on the appliance's segment with `cf-tunnel` and write its routes into its Notes,
    as in [Quickstart](../quickstart.md#tag-a-guest-and-write-its-routes).
 
-5. Acknowledge the segment once its routes show up as waiting for it:
+5. Acknowledge the segment: the last step of the setup in the web interface does it together
+   with Start publishing, and the Networks page has it for later. On the command line, before or
+   after the routes show up:
 
        pct exec 120 -- pco routes
        pct exec 120 -- pco segment acknowledge vmbr0

@@ -136,8 +136,8 @@ has the rest.
 | `GET /v1/guests` | the guests of the last listing | `pco guest list` | reader, filtered |
 | `GET /v1/guests/:kind/:vmid/annotation` | the route text of a guest's Notes | none | reader, filtered |
 | `GET /v1/segments` | the segments | `pco segment list` | not passed on |
-| `POST /v1/segments/acknowledge` | 200 | `pco segment acknowledge` | not passed on |
-| `POST /v1/segments/revoke` | 200 | `pco segment revoke` | not passed on |
+| `POST /v1/segments/acknowledge` | 200 | `pco segment acknowledge` | admin |
+| `POST /v1/segments/revoke` | 200 | `pco segment revoke` | admin |
 | `GET /v1/diagnose` | the steps | `pco diagnose` | reader, as `POST /api/v1/diagnose` |
 | `GET /v1/doctor` | the findings | `pco doctor` | reader, as `POST /api/v1/doctor` |
 | `GET /v1/settings` | the settings with their revision | `pco settings show` | reader |
@@ -774,7 +774,8 @@ something other than what the caller read:
 
 pco web is the only other client of the socket. The page calls pco web under `/api/v1`, and pco web
 passes on the calls of one table, each with the role it needs, and nothing else; the rotation of a
-secret and the segments are not in it, and are answered `404 no_route`. The way of a call, from the
+secret and the list of segments, which the state holds, are not in it, and are answered
+`404 no_route`. The way of a call, from the
 browser to the socket and back:
 
 ```mermaid
@@ -802,7 +803,7 @@ stream pco web holds, handed out to every browser filtered for its session.
 | `GET /api/v1/credentials`, `/claims`, `/approvals`, `/guests`, `/guests/:kind/:vmid/annotation`, `/settings`, `/routes/manual`, `/version` | the same | reader | none; 10 s |
 | `POST /api/v1/diagnose {"hostname"}` | `GET /v1/diagnose?hostname=` | reader | 64 KiB; 30 s; one at a time for each user, six a minute |
 | `POST /api/v1/doctor {}` | `GET /v1/doctor` | reader | 64 KiB; 60 s; two a minute for each user |
-| `POST /api/v1/sync`, `/adopt`, `/claims/resolve`, `/guests/approve`, `/guests/revoke`, `/routes/manual`, `/daemon/restart` | the same | admin | 64 KiB; 60 s |
+| `POST /api/v1/sync`, `/adopt`, `/claims/resolve`, `/guests/approve`, `/guests/revoke`, `/segments/acknowledge`, `/segments/revoke`, `/routes/manual`, `/daemon/restart` | the same | admin | 64 KiB; 60 s |
 | `POST /api/v1/apply`, `/credentials`, `/credentials/:id/check` | the same | admin | 64 KiB; 75 s |
 | `PUT /api/v1/settings` | the same | admin | 1 MiB; 60 s |
 | `PUT /api/v1/routes/manual/:id` | the same | admin | 64 KiB; 60 s |

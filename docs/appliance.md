@@ -322,8 +322,10 @@ addresses at. Four things make it publish.
        app.example.com   unreachable  observed  -        -    lxc/131   example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
        wiki.example.com  unreachable  observed  -        -    qemu/132  example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
 
-   Acknowledge it once you know that you would trust any device on it with what its MAC can
-   claim:
+   The segments of the appliances' own cards are listed before any route is proven on them,
+   and the last step of the setup in the web interface acknowledges them with Start publishing;
+   the Networks page acknowledges and revokes one later. Acknowledge one once you know that you
+   would trust any device on it with what its MAC can claim:
 
        pct exec 120 -- pco segment acknowledge vmbr0
 

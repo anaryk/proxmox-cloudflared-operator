@@ -27,8 +27,8 @@ describe('without a credential', () => {
     const p = progressOf(fresh)
     expect(p.token).toBe('none')
     expect(p.current).toBe('token')
-    expect(p.missing).toEqual(['token', 'route'])
-    expect(marks(fresh)).toEqual({ token: 'todo', zones: 'blocked', reach: 'optional', route: 'todo', publish: 'blocked' })
+    expect(p.missing).toEqual(['token'])
+    expect(marks(fresh)).toEqual({ token: 'todo', zones: 'blocked', reach: 'optional', route: 'optional', publish: 'blocked' })
   })
 
   test('there is no install step while the daemon runs', () => {
@@ -106,8 +106,8 @@ describe('a token that can be used', () => {
     const p = progressOf(waiting)
     expect(p.token).toBe('usable')
     expect(p.zones).toBe('waiting')
-    expect(p.current).toBe('route')
-    expect(marks(waiting)).toMatchObject({ token: 'done', zones: 'wait', route: 'todo', publish: 'blocked' })
+    expect(p.current).toBe('publish')
+    expect(marks(waiting)).toMatchObject({ token: 'done', zones: 'wait', route: 'optional', publish: 'todo' })
   })
 
   test('with a cycle after the check and no zone, the zones step says so', () => {
@@ -138,7 +138,7 @@ describe('a token that was just added and is not in the state yet', () => {
     expect(p.token).toBe('usable')
     expect(p.writeUntried).toBe(true)
     expect(p.zones).toBe('waiting')
-    expect(p.missing).toEqual(['route'])
+    expect(p.missing).toEqual([])
     expect(progressOf(st).zones).toBe('blocked')
   })
 
@@ -164,8 +164,11 @@ describe('publishing', () => {
     expect(p.steps.find((s) => s.id === 'publish')?.mark).toBe('blocked')
   })
 
-  test('stays closed for a token alone, saying that the route is missing', () => {
-    expect(progressOf(withToken(good, { zones: full.zones })).missing).toEqual(['route'])
+  test('opens with a token alone: a guest tagged later is published once its Notes name its routes', () => {
+    const p = progressOf(withToken(good, { zones: full.zones, routes: [], mode: 'observe' }))
+    expect(p.missing).toEqual([])
+    expect(p.current).toBe('publish')
+    expect(marks(withToken(good, { zones: full.zones, routes: [] }))).toMatchObject({ route: 'optional', publish: 'todo' })
   })
 
   test('is done once the daemon left observe-only mode', () => {

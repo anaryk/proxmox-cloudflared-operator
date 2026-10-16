@@ -82,7 +82,7 @@ describe('the steps', () => {
       '1API tokento do',
       '2Zonesnot yet',
       '3Reaching guestsoptional',
-      '4First routeto do',
+      '4First routeoptional',
       '5Start publishingnot yet',
     ])
     expect(opened()).toEqual(['1API tokento do'])
@@ -340,8 +340,15 @@ describe('step 3, reaching guests', () => {
 describe('step 4, the first route', () => {
   const ready = withToken({ mode: 'observe', zones: full.zones, routes: [], gateTagged: 1 })
 
+  // The step is optional, and opens when it is chosen.
+  async function openRoute(st: State) {
+    const shown = await open(st)
+    fireEvent.click(step('First route'))
+    return shown
+  }
+
   async function build() {
-    const shown = await open(ready)
+    const shown = await openRoute(ready)
     const guest = within(region('Annotate a guest'))
     fireEvent.change(guest.getByLabelText('Name'), { target: { value: 'App' } })
     fireEvent.change(guest.getByLabelText('Port'), { target: { value: '3000' } })
@@ -350,7 +357,7 @@ describe('step 4, the first route', () => {
 
   test('builds the block for the Notes from a name, the zone of step 2 and a port, with a copy button, and the tag to set', async () => {
     const { guest } = await build()
-    expect(opened()).toEqual(['4First routeto do'])
+    expect(opened()).toEqual(['4First routeoptional'])
     expect(screen.getByText(/Give a guest the tag/).textContent).toContain('cf-tunnel')
     expect(guest.getByLabelText('Zone').querySelectorAll('option')).toHaveLength(1)
     const block = screen.getByLabelText('The block for the Notes')
@@ -407,7 +414,7 @@ describe('step 4, the first route', () => {
   })
 
   test('without a zone the hostname is typed whole', async () => {
-    await open(withToken({ zones: [], routes: [] }))
+    await openRoute(withToken({ zones: [], routes: [] }))
     const guest = within(region('Annotate a guest'))
     fireEvent.change(guest.getByLabelText('Hostname'), { target: { value: 'wiki.example.com' } })
     fireEvent.change(guest.getByLabelText('Port'), { target: { value: '8080' } })
@@ -415,7 +422,7 @@ describe('step 4, the first route', () => {
   })
 
   test('a manual route is the other way, with the form of the Routes page', async () => {
-    await open(ready)
+    await openRoute(ready)
     const manual = within(region('Or make a manual route'))
     expect(manual.getByLabelText('Hostname')).toBeTruthy()
     expect(manual.getByRole('button', { name: 'Make the route' })).toBeTruthy()
@@ -423,37 +430,52 @@ describe('step 4, the first route', () => {
 })
 
 describe('step 5, start publishing', () => {
-  test('is closed without a usable credential and without a route, says which is missing, and links the step that adds it', async () => {
+  test('is closed without a usable credential, says so, and links the step that adds it', async () => {
     const sent = stubApi({})
     await open(fresh)
     fireEvent.click(step('Start publishing'))
     const body = stepRegion('Start publishing')
     expect(within(body).getByText('a Cloudflare API token that can be used:')).toBeTruthy()
-    expect(within(body).getByText('a route:')).toBeTruthy()
     expect(within(body).queryByRole('button', { name: 'Start publishing' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Pending actions' })).toBeNull()
-    fireEvent.click(within(body).getByRole('button', { name: 'Step 4' }))
-    expect(opened()).toEqual(['4First routeto do'])
-    fireEvent.click(step('Start publishing'))
-    fireEvent.click(within(stepRegion('Start publishing')).getByRole('button', { name: 'Step 1' }))
+    fireEvent.click(within(body).getByRole('button', { name: 'Step 1' }))
     expect(opened()).toEqual(['1API tokento do'])
     expect(writes(sent)).toEqual([])
   })
 
-  test('is closed with a route and no usable token, naming the token only', async () => {
+  test('is closed with a route and no usable token', async () => {
     await open({ ...fresh, routes: full.routes })
     fireEvent.click(step('Start publishing'))
     const body = stepRegion('Start publishing')
     expect(within(body).getByText('a Cloudflare API token that can be used:')).toBeTruthy()
-    expect(within(body).queryByText('a route:')).toBeNull()
   })
 
-  test('is closed with a usable token and no route, naming the route only', async () => {
-    await open(withToken({ zones: full.zones, routes: [] }))
-    fireEvent.click(step('Start publishing'))
+  test('opens with a usable token and no route yet, acknowledges the segment of the appliance and starts publishing in one click', async () => {
+    const sent = stubApi({
+      'POST /api/v1/segments/acknowledge': { status: 200, body: {} },
+      'POST /api/v1/apply': { status: 200, body: { leftObserveOnly: true, accepted: [] } },
+    })
+    const segments = [
+      { bridge: 'vmbr0', acknowledged: false, routes: 0, own: true },
+      { bridge: 'vmbr2', vlan: 30, acknowledged: false, routes: 1 },
+      { bridge: 'vmbr3', acknowledged: false, routes: 0 },
+      { bridge: 'vmbr1', acknowledged: true, acknowledgedAt: '2026-10-01T12:00:00Z', routes: 2, own: true },
+    ]
+    await open(withToken({ mode: 'observe', zones: full.zones, routes: [], segments }))
+    expect(opened()).toEqual(['5Start publishingto do'])
     const body = stepRegion('Start publishing')
-    expect(within(body).getByText('a route:')).toBeTruthy()
-    expect(within(body).queryByText('a Cloudflare API token that can be used:')).toBeNull()
+    const boxes = within(body).getAllByRole('checkbox')
+    expect(boxes.map((b) => [b.closest('label')?.textContent?.trim(), (b as HTMLInputElement).checked])).toEqual([
+      ["vmbr0 (an appliance's card)", true],
+      ['vmbr2 VLAN 30: 1 route waits', true],
+    ])
+    fireEvent.click(boxes[1] as HTMLElement)
+    fireEvent.click(within(body).getByRole('button', { name: 'Start publishing' }))
+    await within(body).findByText(applying)
+    expect(writes(sent)).toEqual([
+      { method: 'POST', path: '/api/v1/segments/acknowledge', body: { bridge: 'vmbr0', vlan: 0 } },
+      { method: 'POST', path: '/api/v1/apply', body: {} },
+    ])
   })
 
   const observing = withToken({ mode: 'observe', zones: full.zones, routes: full.routes, actions: full.actions.filter((a) => !a.applied), waiting: [] })

@@ -61,6 +61,10 @@ test.describe('a new install with a token', () => {
   test('the first route is a block for the Notes, followed until it serves', async ({ page, pco, fake }) => {
     await fake.post('/state', noRoute())
     await signIn(page, pco, '/setup')
+    // the step is optional: publishing is what is left to do, and the route
+    // step opens when it is chosen
+    await expect(step(page, /^Step 5: Start publishing/)).toHaveAttribute('aria-expanded', 'true')
+    await step(page, /^Step 4: First route/).click()
     await expect(step(page, /^Step 4: First route/)).toHaveAttribute('aria-expanded', 'true')
     const annotate = page.getByRole('region', { name: 'Annotate a guest' })
     await annotate.getByRole('textbox', { name: 'Name' }).fill('docs')
@@ -101,15 +105,19 @@ test.describe('a new install with a token', () => {
     expect((await fake.calls('Apply')).map((c) => c.args)).toEqual([{ confirmDeletes: false, offer: '' }])
   })
 
-  test('publishing waits for a route, and says which step adds one', async ({ page, pco, fake }) => {
-    await fake.post('/state', noRoute())
+  test('publishing starts before any route, with the segment of the appliance acknowledged in the same click', async ({ page, pco, fake }) => {
+    const st = noRoute()
+    st.segments = [{ bridge: 'vmbr0', acknowledged: false, routes: 0, own: true }]
+    await fake.post('/state', st)
     await signIn(page, pco, '/setup')
-    await step(page, /^Step 5: Start publishing/).click()
+    await expect(step(page, /^Step 5: Start publishing/)).toHaveAttribute('aria-expanded', 'true')
     const publish = region(page, /^Step 5: Start publishing/)
-    await expect(publish).toContainText('Publishing opens once pco has both of these, and still lacks:')
-    await expect(publish.getByRole('button', { name: 'Start publishing' })).toHaveCount(0)
-    await publish.getByRole('button', { name: 'Step 4' }).click()
-    await expect(step(page, /^Step 4: First route/)).toHaveAttribute('aria-expanded', 'true')
+    await expect(publish.getByRole('checkbox', { name: "vmbr0 (an appliance's card)" })).toBeChecked()
+    await fake.clearCalls()
+    await publish.getByRole('button', { name: 'Start publishing' }).click()
+    await expect(publish.getByRole('status')).toContainText('Publishing has started')
+    expect((await fake.calls('AcknowledgeSegment')).map((c) => c.args)).toEqual([{ bridge: 'vmbr0', vlan: 0 }])
+    expect((await fake.calls('Apply')).map((c) => c.args)).toEqual([{ confirmDeletes: false, offer: '' }])
   })
 
   test('a reader is told that an admin has to finish the setup', async ({ page, pco }) => {

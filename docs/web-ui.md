@@ -2,14 +2,14 @@
 
 pco web serves a web interface over HTTPS, on the node or in the appliance. It shows what the
 daemon found and did, draws how traffic reaches each guest, and lets an admin do what the
-commands that ask the daemon do: start publishing, confirm what waits, approve guests, hand a
-hostname to another owner, add Cloudflare tokens, edit the settings and the manual routes. A
+commands that ask the daemon do: start publishing, confirm what waits, approve guests,
+acknowledge segments, hand a hostname to another owner, add Cloudflare tokens, edit the settings
+and the manual routes. A
 user signs in with what Proxmox VE already knows of them, and what they may do follows from
 their privileges there.
 
 What changes the node itself stays on the command line, as root: `pco setup`, `pco uninstall`,
-`pco egress`, `pco tunnel rotate`, `pco segment acknowledge` and `revoke`, `pco netns` and
-`pco web cert`. Where one of them is the fix, the page shows the command with a button that
+`pco egress`, `pco tunnel rotate`, `pco netns` and `pco web cert`. Where one of them is the fix, the page shows the command with a button that
 copies it. The networks pco attaches and its managed network ([Networking](networking.md)) are
 set up on the command line too, with `pco network` and `pco managed`; the page shows how a
 route is reached through them.
@@ -517,8 +517,15 @@ through which network. The networks pco attached and its managed network are not
 yet: `pco network list` and `pco managed status` show them. The page says what each identity
 level proves and which level the setting `identityMinimum` serves.
 
-The segments of routes at `observed` are listed with whether an admin acknowledged them. They are
-acknowledged on the node, as root, with `pco segment acknowledge`: the page has no action.
+The segments of routes at `observed` are listed with whether an admin acknowledged them, and so
+are the segments of the appliances' own cards before any route is proven on them: the guests an
+appliance reaches are on those. Acknowledge a segment once you would trust any device on it with
+what its MAC can claim.
+
+| Action | What it does | Who | Confirmation | Command line |
+|---|---|---|---|---|
+| Acknowledge (`POST /api/v1/segments/acknowledge`) | From the next cycle the routes at `observed` proven on the segment are served. | admin | none | `pco segment acknowledge <bridge>[:<vlan>]` |
+| Revoke (`POST /api/v1/segments/revoke`) | From the next cycle the routes at `observed` on the segment are held. | admin | none | `pco segment revoke <bridge>[:<vlan>]` |
 
 ## Credentials
 
@@ -720,14 +727,19 @@ bridge and VLAN, and where routes were proven so far.
 
 ![Step 4 of the setup: a name, zone, scheme and port, and the block for the Notes of the guest that they make](images/ui-setup-route-light.png)
 
-Step 4, **First route**, writes the block for the Notes of a guest from a name, a zone, a scheme
+Step 4, **First route**, is optional: publishing starts without a route, and a guest tagged
+later is published once its Notes name its routes. It writes the block for the Notes of a guest from a name, a zone, a scheme
 and a port, with the options of the Notes, and waits for the route to appear; or it makes a
 manual route. pco never writes tags or Notes itself: you paste the block into the Notes of the
 guest and give it the tag.
 
 ![Step 5 of the setup: the first route is there, what the next cycle would change at Cloudflare, and the button that starts publishing](images/ui-setup-publish-light.png)
 
-Step 5, **Start publishing**, shows the plan and leaves observe-only mode.
+Step 5, **Start publishing**, opens once a token can be used. It shows the plan, and lists the
+segments nobody acknowledged yet that matter: those of the appliances' own cards and those a
+route waits for, each chosen. Start publishing acknowledges the chosen ones and leaves
+observe-only mode in one click: in the appliance, from then on a guest tagged on an acknowledged
+segment is published by itself.
 
 | Action | What it does | Who | Confirmation | Command line |
 |---|---|---|---|---|
@@ -735,7 +747,7 @@ Step 5, **Start publishing**, shows the plan and leaves observe-only mode.
 | Check and add, Check again, Check write access (step 1) | As on [Credentials](#credentials). | admin | as there | `pco credential add`, `pco credential check <id> [--deep]` |
 | Copy (step 4) | Copies the block for the Notes. | admin | none | none |
 | The form of a manual route (step 4) | As on [Manual routes](#manual-routes). | admin | as there | `pco route manual add` |
-| Start publishing (step 5, `POST /api/v1/apply`) | Leaves observe-only mode. | admin | the step shows the plan above the button | `pco apply` |
+| Start publishing (step 5, `POST /api/v1/segments/acknowledge`, then `POST /api/v1/apply`) | Acknowledges the segments chosen, then leaves observe-only mode. | admin | the step shows the plan and the segments above the button | `pco segment acknowledge`, then `pco apply` |
 
 ## What a reader sees
 

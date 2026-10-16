@@ -66,6 +66,8 @@ var tableRows = map[string]tableRow{
 	"POST /claims/resolve":               {body: `{"hostname":"www.example.com","owner":"qemu/101"}`},
 	"POST /guests/approve":               {body: `{"owner":"lxc/201","identity":"uuid:201"}`},
 	"POST /guests/revoke":                {body: `{"owner":"qemu/101"}`},
+	"POST /segments/acknowledge":         {body: `{"bridge":"vmbr0"}`},
+	"POST /segments/revoke":              {body: `{"bridge":"vmbr0","vlan":20}`},
 	"POST /routes/manual":                {body: `{"hostname":"status.example.com","target":{"kind":"address","scheme":"http","addr":"10.0.5.20","port":9000}}`},
 	"POST /daemon/restart":               {body: `{}`},
 	"PUT /settings":                      {body: `{"rev":7,"settings":{"pollInterval":"10s"}}`},
@@ -269,7 +271,7 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 			require.Zero(t, r.Body, key)
 		}
 	}
-	require.Len(t, Table, len(readers)+33)
+	require.Len(t, Table, len(readers)+35)
 }
 
 func TestReadersAreRefusedEveryAdminRule(t *testing.T) {

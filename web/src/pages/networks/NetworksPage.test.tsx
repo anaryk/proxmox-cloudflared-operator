@@ -4,7 +4,9 @@ import { describe, expect, test } from 'vitest'
 import { AppStore, StoreProvider } from '../../api/store'
 import type { RouteView, State } from '../../api/types.gen'
 import populated from '../../fixtures/populated.json'
-import { fakeStore, memoryStorage } from '../../test/store'
+import { ToastProvider } from '../../components/Toast'
+import { fakeStore, flush, memoryStorage } from '../../test/store'
+import { stubApi, writes } from '../testing'
 import { NetworksPage } from './NetworksPage'
 
 const base = populated as unknown as State
@@ -19,7 +21,9 @@ async function mount(st: State = state) {
   const { store } = await fakeStore({ state: st })
   return render(
     <StoreProvider store={store}>
-      <NetworksPage />
+      <ToastProvider>
+        <NetworksPage />
+      </ToastProvider>
     </StoreProvider>,
   )
 }
@@ -123,6 +127,26 @@ describe('the page', () => {
       ['vmbr1', '20', '1'],
     ])
     expect(rowsOf('Segments')[1]?.[2]).toBe('no')
+  })
+
+  test("lists an appliance's own segment before any route, and acknowledges or revokes one", async () => {
+    const st: State = { ...state, segments: [...state.segments, { bridge: 'vmbr0', acknowledged: false, routes: 0, own: true }] }
+    const sent = stubApi({
+      'POST /api/v1/segments/acknowledge': { status: 200, body: {} },
+      'POST /api/v1/segments/revoke': { status: 200, body: {} },
+    })
+    await mount(st)
+    const rows = within(table('Segments')).getAllByRole('row').slice(1)
+    const own = rows.find((r) => r.textContent?.includes("an appliance's card"))
+    expect(own?.textContent).toContain('vmbr0')
+    fireEvent.click(within(own as HTMLElement).getByRole('button', { name: 'Acknowledge' }))
+    await flush()
+    expect(writes(sent)).toEqual([{ method: 'POST', path: '/api/v1/segments/acknowledge', body: { bridge: 'vmbr0', vlan: 0 } }])
+
+    const acked = rows.find((r) => r.textContent?.includes('vmbr1') && !r.textContent.includes('no'))
+    fireEvent.click(within(acked as HTMLElement).getByRole('button', { name: 'Revoke' }))
+    await flush()
+    expect(writes(sent).at(-1)).toEqual({ method: 'POST', path: '/api/v1/segments/revoke', body: { bridge: 'vmbr1', vlan: 0 } })
   })
 
   test('has no segments section without segments', async () => {

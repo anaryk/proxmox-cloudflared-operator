@@ -120,6 +120,7 @@ test('the route step fits the width of a small phone', async ({ page, context, p
   await fake.post('/state', { ...populated(), routes: [], mode: 'observe', waiting: [] })
   await page.setViewportSize({ width: 320, height: 700 })
   await page.goto('/setup')
+  await page.getByRole('button', { name: /^Step 4: First route/ }).click()
   await expect(page.getByRole('button', { name: /^Step 4: First route/ })).toHaveAttribute('aria-expanded', 'true')
   await expect(page.getByRole('region', { name: 'Annotate a guest' })).toBeVisible()
   // the steps, not the top bar of the shell, which is wider than this at 320 px
