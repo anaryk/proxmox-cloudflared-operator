@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,9 @@ const (
 	// MaxSmallFile caps checksums.txt, its signature, the manifest and the
 	// answer of GitHub about the latest release.
 	MaxSmallFile = 1 << 20
+	// maxReleaseList caps the list of the newest releases, each with its
+	// files.
+	maxReleaseList = 4 << 20
 	// MaxPackage caps a .deb, as the installer does.
 	MaxPackage = 200 << 20
 
@@ -106,10 +110,19 @@ type httpFetcher struct {
 }
 
 func (f *httpFetcher) latestURL() string {
+	return f.apiBase() + "/repos/" + Repository + "/releases/latest"
+}
+
+// listURL lists the newest releases, pre-releases and drafts among them.
+func (f *httpFetcher) listURL() string {
+	return f.apiBase() + "/repos/" + Repository + "/releases?per_page=30"
+}
+
+func (f *httpFetcher) apiBase() string {
 	if f.base != "" {
-		return f.base + "/repos/" + Repository + "/releases/latest"
+		return f.base
 	}
-	return githubAPI + "/repos/" + Repository + "/releases/latest"
+	return githubAPI
 }
 
 func (f *httpFetcher) releaseURL(version, name string) string {
@@ -135,6 +148,11 @@ func (f *httpFetcher) packageURL(raw string) (string, error) {
 
 func (f *httpFetcher) Latest(ctx context.Context) (string, error) {
 	path, err := f.download(ctx, f.latestURL(), MaxSmallFile)
+	if errors.Is(err, errNoSuchFile) {
+		// GitHub names no latest release while every release is a
+		// pre-release, as before the first final one.
+		return f.newestPublished(ctx)
+	}
 	if err != nil {
 		return "", fmt.Errorf("asking for the latest release of %s: %w", Repository, err)
 	}
@@ -154,6 +172,42 @@ func (f *httpFetcher) Latest(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("the latest release of %s: %w", Repository, err)
 	}
 	return version, nil
+}
+
+// newestPublished is the highest version among the newest releases that are
+// published, pre-releases among them; a draft and a tag that is no version
+// of pco are passed over.
+func (f *httpFetcher) newestPublished(ctx context.Context) (string, error) {
+	path, err := f.download(ctx, f.listURL(), maxReleaseList)
+	if err != nil {
+		return "", fmt.Errorf("listing the releases of %s: %w", Repository, err)
+	}
+	defer func() { _ = os.Remove(path) }()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var releases []struct {
+		Tag   string `json:"tag_name"`
+		Draft bool   `json:"draft"`
+	}
+	if err := json.Unmarshal(b, &releases); err != nil {
+		return "", fmt.Errorf("the releases of %s: the answer is not the JSON of a list of releases", Repository)
+	}
+	newest := ""
+	for _, r := range releases {
+		v, err := cleanRelease(r.Tag)
+		if err != nil || r.Draft {
+			continue
+		}
+		if newest == "" || compareVersions(debVersion(v), debVersion(newest)) > 0 {
+			newest = v
+		}
+	}
+	if newest == "" {
+		return "", fmt.Errorf("%s has no published release", Repository)
+	}
+	return newest, nil
 }
 
 func (f *httpFetcher) Get(ctx context.Context, version, name string, max int64) (string, error) {
@@ -188,6 +242,9 @@ func (f *httpFetcher) download(ctx context.Context, u string, max int64) (path s
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("GET %s: %s: %w", u, resp.Status, errNoSuchFile)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GET %s: %s", u, resp.Status)
 	}
@@ -228,3 +285,6 @@ func (f *httpFetcher) download(ctx context.Context, u string, max int64) (path s
 
 // fileOf is the name of the file a URL asks for.
 func fileOf(u *url.URL) string { return path.Base(u.Path) }
+
+// errNoSuchFile is a file the release host answers 404 for.
+var errNoSuchFile = errors.New("not found")

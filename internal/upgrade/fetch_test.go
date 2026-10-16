@@ -77,6 +77,38 @@ func TestTheFetcherAsksTheOverrideAtGitHubsPaths(t *testing.T) {
 	require.Equal(t, "cloudflared package", string(b))
 }
 
+// Before the first final release GitHub has no latest one: the newest
+// published pre-release is the latest then, and a draft is none.
+func TestBeforeAFinalReleaseTheNewestPreReleaseIsTheLatest(t *testing.T) {
+	host := &releaseHost{files: map[string]string{
+		"/repos/anaryk/proxmox-cloudflared-operator/releases": `[
+			{"tag_name":"v0.1.0-rc.11","draft":true},
+			{"tag_name":"v0.1.0-rc.9","prerelease":true},
+			{"tag_name":"v0.1.0-rc.10","prerelease":true},
+			{"tag_name":"nightly","prerelease":true},
+			{"tag_name":"v0.1.0-rc.8","prerelease":true}
+		]`,
+	}}
+	srv := httptest.NewServer(host)
+	t.Cleanup(srv.Close)
+	f, _ := fetcherFor(t, srv.URL)
+
+	latest, err := f.Latest(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "0.1.0-rc.10", latest)
+	require.Equal(t, []string{
+		"/repos/anaryk/proxmox-cloudflared-operator/releases/latest",
+		"/repos/anaryk/proxmox-cloudflared-operator/releases",
+	}, host.paths())
+
+	empty := &releaseHost{files: map[string]string{"/repos/anaryk/proxmox-cloudflared-operator/releases": `[]`}}
+	srv2 := httptest.NewServer(empty)
+	t.Cleanup(srv2.Close)
+	f, _ = fetcherFor(t, srv2.URL)
+	_, err = f.Latest(t.Context())
+	require.ErrorContains(t, err, "anaryk/proxmox-cloudflared-operator has no published release")
+}
+
 func TestTheFetcherRefusesWhatIsNoRelease(t *testing.T) {
 	host := &releaseHost{files: map[string]string{
 		"/repos/anaryk/proxmox-cloudflared-operator/releases/latest": `{"tag_name":"nightly"}`,

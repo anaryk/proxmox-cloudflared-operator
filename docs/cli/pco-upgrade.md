@@ -2,8 +2,8 @@
 
 Upgrade pco, cloudflared or both (all, the default) in place, inside the appliance.
 
-pco comes from its latest release, or the one `--version` names. The signature of the
-release's checksums.txt is checked with the release key the package ships, and the
+pco comes from its latest release, the newest pre-release while no final one is out, or
+the one `--version` names. The signature of the release's checksums.txt is checked with the release key the package ships, and the
 package with its line there. cloudflared comes from the manifest of vetted versions the
 release lists in that checksums.txt: the newest version it allows, or the one `--version`
 names, never one it denies, checked against the sha256 of the manifest. The connectors

@@ -31,7 +31,8 @@ var (
 
 // Overrides are for tests only. Base is the release host on this machine that
 // takes every request in place of GitHub, at the same path: the latest
-// release at <base>/repos/<repository>/releases/latest, the files of a release
+// release at <base>/repos/<repository>/releases/latest and the list of the
+// releases at <base>/repos/<repository>/releases, the files of a release
 // at <base>/<repository>/releases/download/v<version>/<name>, and a package of
 // cloudflared at <base> and the path of its URL in the manifest. Keyring is
 // the keyring a release is checked with. Neither leaves the machine: Base is
