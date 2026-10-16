@@ -10,6 +10,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/registry"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -538,8 +539,9 @@ func (c *cycleRun) nodeViews() []NodeView {
 	out := make([]NodeView, 0, len(c.nodes))
 	for _, name := range slices.Sorted(maps.Keys(c.nodes)) {
 		n := c.nodes[name].Node
+		kind, vmid := viewKind(n, c.install)
 		v := NodeView{
-			Name: n.Name, State: n.State, StateSince: n.StateSince, Kind: entryKind(n), VMID: n.VMID,
+			Name: n.Name, State: n.State, StateSince: n.StateSince, Kind: kind, VMID: vmid,
 			Index: n.Index, AgentAddress: n.AgentAddress, Controller: n.Name == c.e.d.Node && !c.leaseHeld,
 			Covered: !slices.Contains(c.cover.uncovered, name), Pinned: pinned[name],
 			JoinUses: uses[name], Contested: joinUseViews(n.ContestedUses), CertExpires: c.certExpiry(name),
@@ -630,4 +632,15 @@ func entryKind(n store.NodeEntry) string {
 		return "host"
 	}
 	return n.Kind
+}
+
+// viewKind is the kind and container a view shows of a node. The controller
+// of an appliance install runs in the install's container, whose entry the
+// install's init makes without a kind; the entry stays as it is, for what
+// reads its kind takes it for no host's agent either way.
+func viewKind(n store.NodeEntry, inst store.Install) (string, int) {
+	if a := inst.Appliance; n.Kind == "" && a != nil && n.Name == a.Node {
+		return string(pki.KindAppliance), a.VMID
+	}
+	return entryKind(n), n.VMID
 }

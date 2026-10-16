@@ -80,8 +80,10 @@ func (e *Engine) saveEntry(ctx context.Context, before store.NodeEntry, rev int6
 // entryView is a node's entry as an answer shows it, without what only a
 // cycle knows of its agent.
 func (e *Engine) entryView(n store.NodeEntry) NodeView {
+	inst, _, _ := e.d.Store.Install()
+	kind, vmid := viewKind(n, inst)
 	v := NodeView{
-		Name: n.Name, State: n.State, StateSince: n.StateSince, Kind: entryKind(n), VMID: n.VMID,
+		Name: n.Name, State: n.State, StateSince: n.StateSince, Kind: kind, VMID: vmid,
 		Index: n.Index, AgentAddress: n.AgentAddress, Controller: n.Name == e.d.Node,
 	}
 	if n.Index != nil {
