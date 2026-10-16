@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -88,6 +89,15 @@ func (a ApplianceDeps) withDefaults() ApplianceDeps {
 	}
 	if a.StateRetry <= 0 {
 		a.StateRetry = stateRetryEvery
+	}
+	if a.Hostname == nil {
+		a.Hostname = os.Hostname
+	}
+	if a.Net0Addrs == nil {
+		a.Net0Addrs = func(ctx context.Context) ([]netip.Addr, error) { return appnet.LinkAddrs(ctx, net0Card) }
+	}
+	if a.WatchAddrs == nil {
+		a.WatchAddrs = appnet.WatchAddrs
 	}
 	return a
 }

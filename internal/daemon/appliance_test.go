@@ -592,3 +592,12 @@ func TestTheDoctorOfAHostHasNoCheckOfTheAppliance(t *testing.T) {
 		}
 	}
 }
+
+// The cluster part and the web keeper both read net0's addresses: a daemon
+// started without a test's functions reads them from the container itself.
+func TestAnApplianceReadsNet0FromTheContainerUnlessToldOtherwise(t *testing.T) {
+	app := ApplianceDeps{}.withDefaults()
+	require.NotNil(t, app.Hostname)
+	require.NotNil(t, app.Net0Addrs)
+	require.NotNil(t, app.WatchAddrs)
+}

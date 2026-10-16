@@ -18,7 +18,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -51,18 +50,7 @@ const net0Card = "eth0"
 func newApplianceWebKeeper(deps Deps, app ApplianceDeps, install store.ApplianceInstall, note, noteListen func(string),
 	log zerolog.Logger,
 ) *applianceWebKeeper {
-	hostname := app.Hostname
-	if hostname == nil {
-		hostname = os.Hostname
-	}
-	live := app.Net0Addrs
-	if live == nil {
-		live = func(ctx context.Context) ([]netip.Addr, error) { return appnet.LinkAddrs(ctx, net0Card) }
-	}
-	watch := app.WatchAddrs
-	if watch == nil {
-		watch = appnet.WatchAddrs
-	}
+	hostname, live, watch := app.Hostname, app.Net0Addrs, app.WatchAddrs
 	return &applianceWebKeeper{
 		live:       live,
 		watch:      watch,
