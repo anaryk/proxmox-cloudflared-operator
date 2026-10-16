@@ -98,6 +98,9 @@ describe('the banners, most severe first', () => {
     expect(texts[8]).toContain('handed off to node pve2')
     expect(texts[9]).toContain('An upgrade from release 1.3.2 is unfinished')
     expect(texts[9]).toContain('still older: pve3')
+
+    const pinned = { ...state, cluster: state.cluster && { ...state.cluster, coverage: { covered: false, uncovered: ['pve2'], pinned: true } } }
+    expect(keys(appState({ state: pinned }))).not.toContain('coverage')
   })
 
   test('a node that does not hold the lease names the controller, or that none is known', () => {

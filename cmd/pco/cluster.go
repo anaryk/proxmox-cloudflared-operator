@@ -174,6 +174,8 @@ func quorumText(c engine.ClusterView) string {
 
 func coverageText(c engine.CoverageView) string {
 	switch {
+	case c.Pinned:
+		return "pinned: the appliances watch no forwarding tables, and the routes of each node's guests are served from it"
 	case c.Covered && !c.PromoteAt.IsZero():
 		return "every node watches; routes are shared again once it held for ten minutes"
 	case c.Covered:

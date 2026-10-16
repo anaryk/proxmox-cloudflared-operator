@@ -292,7 +292,7 @@ function clusterWarnings(st: State | undefined, at: (t: string) => ReactNode): B
   const cluster = st?.cluster
   if (!cluster) return out
   const c = cluster.coverage
-  if (!c.covered) {
+  if (!c.covered && !c.pinned) {
     out.push({
       key: 'coverage',
       tone: 'warn',

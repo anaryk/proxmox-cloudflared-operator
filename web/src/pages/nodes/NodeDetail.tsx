@@ -210,7 +210,9 @@ export function NodeDetail({ name, variant }: { name: string; variant: 'drawer' 
         <dd className="num">{node.index === undefined ? <span className="muted">none before routing admission</span> : node.index}</dd>
         <dt>Coverage</dt>
         <dd>
-          {node.watchRunning ? 'its watch runs' : 'no running watch'}; {node.covered ? "another node's proof of its ports counts" : 'routes of its guests are pinned to it'}
+          {node.kind === 'appliance'
+            ? 'an appliance watches no forwarding table; routes of its guests are served from it'
+            : `${node.watchRunning ? 'its watch runs' : 'no running watch'}; ${node.covered ? "another node's proof of its ports counts" : 'routes of its guests are pinned to it'}`}
         </dd>
         <dt>Replica</dt>
         <dd>{node.replicaReady ? 'ready: its shared connector runs' : 'not ready'}</dd>

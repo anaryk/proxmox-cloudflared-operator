@@ -156,6 +156,10 @@ type CoverageView struct {
 	// lost it twice in ten minutes.
 	Uncovered []string `json:"uncovered,omitempty"`
 	Flapping  []string `json:"flapping,omitempty"`
+	// Pinned says that the agents of the install are appliances, which watch
+	// no forwarding tables: the routes of every node's guests stay pinned to
+	// it, which is how such an install serves, not a loss.
+	Pinned bool `json:"pinned,omitempty"`
 }
 
 // UpgradeView is an upgrade from an earlier release that pco cluster

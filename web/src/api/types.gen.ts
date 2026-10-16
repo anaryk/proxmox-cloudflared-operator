@@ -219,6 +219,7 @@ export interface CoverageView {
   promoteAt?: string
   uncovered?: string[]
   flapping?: string[]
+  pinned?: boolean
 }
 
 // engine.CredentialView

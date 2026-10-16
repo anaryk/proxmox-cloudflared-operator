@@ -204,3 +204,24 @@ func addGuest(e *env, g model.Guest) {
 	s.Guests = append(slices.DeleteFunc(slices.Clone(s.Guests), func(x model.Guest) bool { return x.Ref == g.Ref }), g)
 	e.inv.snap = s
 }
+
+// The agents of an appliance install watch no forwarding tables: the routes
+// of every node's guests stay pinned to it, which is how such an install
+// serves, and is not said as a loss of coverage.
+func TestAnApplianceInstallPinsWithoutALossOfCoverage(t *testing.T) {
+	e, r, _ := clusterOf(t, applianceNode("pve2", 1), applianceNode("pve3", 2))
+	require.NoError(t, e.store.SaveInstall(applianceInstall()))
+	e.enforce()
+	for range 3 {
+		r.report("pve2", e.clock.now(), t0.Add(-time.Hour))
+		r.report("pve3", e.clock.now(), t0.Add(-time.Hour))
+		e.clock.advance(coverageHold)
+		e.cycle()
+	}
+	st := e.cycle()
+
+	require.NotContains(t, problemsText(st), "running watch")
+	require.NotNil(t, st.Cluster)
+	require.True(t, st.Cluster.Coverage.Pinned)
+	require.False(t, st.Cluster.Coverage.Covered, "the routes stay pinned")
+}

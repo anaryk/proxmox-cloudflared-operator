@@ -168,3 +168,10 @@ func TestClusterUnblock(t *testing.T) {
 	res = r.run("", "cluster", "unblock", "10.0.0.8")
 	require.True(t, errors.Is(res.err, engine.ErrNotFound))
 }
+
+func TestTheCoverageOfAnApplianceInstallIsPinnedNotLost(t *testing.T) {
+	require.Equal(t, "pinned: the appliances watch no forwarding tables, and the routes of each node's guests are served from it",
+		coverageText(engine.CoverageView{Uncovered: []string{"pve1", "pve2"}, Pinned: true}))
+	require.Equal(t, "lost: no running watch on pve3; routes of other nodes' guests are pinned",
+		coverageText(engine.CoverageView{Uncovered: []string{"pve3"}}))
+}

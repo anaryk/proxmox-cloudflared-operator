@@ -98,6 +98,35 @@ function Lease({ lease, nodeZone }: { lease: LeaseView; nodeZone?: string }) {
   )
 }
 
+function WatchCoverage({ c, nodeZone }: { c: ClusterView['coverage']; nodeZone?: string }) {
+  return (
+    <dd>
+      <StatusBadge tone={c.covered ? 'ok' : 'warn'}>{c.covered ? 'every node watches' : 'lost'}</StatusBadge>
+      {c.since && (
+        <>
+          {' '}
+          since <Time at={c.since} nodeZone={nodeZone} />
+        </>
+      )}
+      {list(c.uncovered) && (
+        <p>
+          Without a running watch: <Untrusted className="mono" text={list(c.uncovered) ?? ''} />; routes of other nodes&apos; guests are pinned to their nodes.
+        </p>
+      )}
+      {list(c.flapping) && (
+        <p>
+          Broke twice within ten minutes: <Untrusted className="mono" text={list(c.flapping) ?? ''} />; routes stay pinned until the watch runs for ten minutes.
+        </p>
+      )}
+      {c.promoteAt && c.covered && (
+        <p>
+          The routes it demoted are shared again at <Time at={c.promoteAt} nodeZone={nodeZone} />.
+        </p>
+      )}
+    </dd>
+  )
+}
+
 function Cluster({ cluster, nodeZone }: { cluster: ClusterView; nodeZone?: string }) {
   const c = cluster.coverage
   const rotation = rotationText(cluster.caRotation)
@@ -118,30 +147,13 @@ function Cluster({ cluster, nodeZone }: { cluster: ClusterView; nodeZone?: strin
         )}
       </dd>
       <dt>Coverage</dt>
-      <dd>
-        <StatusBadge tone={c.covered ? 'ok' : 'warn'}>{c.covered ? 'every node watches' : 'lost'}</StatusBadge>
-        {c.since && (
-          <>
-            {' '}
-            since <Time at={c.since} nodeZone={nodeZone} />
-          </>
-        )}
-        {list(c.uncovered) && (
-          <p>
-            Without a running watch: <Untrusted className="mono" text={list(c.uncovered) ?? ''} />; routes of other nodes&apos; guests are pinned to their nodes.
-          </p>
-        )}
-        {list(c.flapping) && (
-          <p>
-            Broke twice within ten minutes: <Untrusted className="mono" text={list(c.flapping) ?? ''} />; routes stay pinned until the watch runs for ten minutes.
-          </p>
-        )}
-        {c.promoteAt && c.covered && (
-          <p>
-            The routes it demoted are shared again at <Time at={c.promoteAt} nodeZone={nodeZone} />.
-          </p>
-        )}
-      </dd>
+      {c.pinned ? (
+        <dd>
+          <StatusBadge tone="ok">pinned</StatusBadge> The appliances watch no forwarding tables: the routes of each node&apos;s guests are served from it.
+        </dd>
+      ) : (
+        <WatchCoverage c={c} nodeZone={nodeZone} />
+      )}
       {cluster.upgrade && (
         <>
           <dt>Upgrade</dt>

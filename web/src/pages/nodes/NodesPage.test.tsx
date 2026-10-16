@@ -58,6 +58,16 @@ describe('the nodes of the cluster scenario', () => {
     expect(card.textContent).toContain('every node watches')
   })
 
+  test('the coverage of an appliance install is pinned by design, and not lost', async () => {
+    const cluster = st.cluster && { ...st.cluster, coverage: { covered: false, uncovered: ['pve1', 'pve2'], pinned: true } }
+    const { store } = await fakeStore({ state: { ...st, cluster } })
+    renderPage(store, <NodesPage view={{ name: 'nodes' }} />)
+    const card = screen.getByRole('region', { name: 'Cluster' })
+    expect(card.textContent).toContain("The appliances watch no forwarding tables: the routes of each node's guests are served from it.")
+    expect(card.textContent).not.toContain('lost')
+    expect(card.textContent).not.toContain('Without a running watch')
+  })
+
   test('the blocked address and the dialog that ends its block', async () => {
     const sent = stubApi({ 'POST /api/v1/cluster/unblock': { status: 200, body: {} } })
     const { store } = await fakeStore({ state: st })

@@ -200,6 +200,11 @@ func (c *cycleRun) observeCoverage() {
 		}
 		mem.covered = covered
 	}
+	// The agents of an appliance install watch nothing: their routes stay
+	// pinned by design, and no node has a watch to lose or break.
+	if c.install.Appliance != nil {
+		return
+	}
 	if c.cover.lost() {
 		for _, name := range uncovered {
 			c.problem(problemCoverageLost, name)
@@ -286,7 +291,7 @@ func quorumOverrides(cs members.Corosync) []string {
 // coverageOfView is coverage as the state shows it.
 func (c *cycleRun) coverageOfView() CoverageView {
 	mem := &c.e.place
-	v := CoverageView{Covered: c.cover.covered, Uncovered: c.cover.uncovered, Flapping: c.cover.flapping}
+	v := CoverageView{Covered: c.cover.covered, Uncovered: c.cover.uncovered, Flapping: c.cover.flapping, Pinned: c.install.Appliance != nil}
 	switch {
 	case !c.cover.covered:
 		v.Since = mem.lost
