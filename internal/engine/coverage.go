@@ -263,6 +263,16 @@ func (c *cycleRun) quorumView(controller string) *ClusterView {
 	v.Members = append([]string{}, slices.Sorted(maps.Keys(c.listedMembers()))...)
 	if q := c.e.d.Quorum; q != nil {
 		v.Quorate, _ = q()
+	} else if c.quorateRead != nil {
+		// The appliance has no members file: the quorum is what the API
+		// said, and the members the nodes of the inventory.
+		v.Quorate = *c.quorateRead
+		if len(v.Members) == 0 {
+			for _, n := range c.snap.Nodes {
+				v.Members = append(v.Members, n.Name)
+			}
+			slices.Sort(v.Members)
+		}
 	}
 	if read := c.e.d.Corosync; read != nil {
 		if cs, err := read(); err == nil {

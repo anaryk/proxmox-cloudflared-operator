@@ -53,16 +53,19 @@ type cycleRun struct {
 	st     State   // the state being built
 	events []Event // reported by the steps; the changes against the last state come on top
 
-	settings  store.Settings
-	install   store.Install
-	snap      inventory.Snapshot
-	manual    []model.Route
-	approvals map[string]store.Approval
-	stored    map[string]planner.Claim
-	bindings  map[string]resolve.Binding
-	segments  map[string]store.Segment // acknowledged, by id
-	access    accessView               // the access control as this cycle goes by it
-	deny      resolve.Denylist
+	settings store.Settings
+	install  store.Install
+	snap     inventory.Snapshot
+	// quorateRead is what the read of the quorum through the API found this
+	// cycle, where there is no members file; nil before it, or on the host.
+	quorateRead *bool
+	manual      []model.Route
+	approvals   map[string]store.Approval
+	stored      map[string]planner.Claim
+	bindings    map[string]resolve.Binding
+	segments    map[string]store.Segment // acknowledged, by id
+	access      accessView               // the access control as this cycle goes by it
+	deny        resolve.Denylist
 	// soft is the soft deny list as this cycle saves it, once it goes on;
 	// softSaved says whether the store has it so already.
 	soft      store.SoftDeny

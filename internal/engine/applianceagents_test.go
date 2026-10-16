@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -224,4 +226,26 @@ func TestAnApplianceInstallPinsWithoutALossOfCoverage(t *testing.T) {
 	require.NotNil(t, st.Cluster)
 	require.True(t, st.Cluster.Coverage.Pinned)
 	require.False(t, st.Cluster.Coverage.Covered, "the routes stay pinned")
+}
+
+// The appliance reads the quorum from the API, not from a members file: its
+// cluster view says what that read found, and lists the nodes of the
+// inventory as the members, even in a cycle that holds later on.
+func TestTheClusterViewOfAnApplianceHasTheQuorumOfTheAPI(t *testing.T) {
+	e, r, listed := clusterOf(t, applianceNode("pve2", 1))
+	*listed = nil
+	require.NoError(t, e.store.SaveInstall(applianceInstall()))
+	e.quorate = func(context.Context) (bool, error) { return true, nil }
+	e.inv.set(inventory.Snapshot{
+		Nodes:    []inventory.Node{{Name: testNode, Addr: nodeAddr, Online: true, Local: true}, {Name: "pve2", Online: true}},
+		Complete: true,
+	})
+	e.eng = e.newEngine()
+	r.report("pve2", e.clock.now(), t0.Add(-time.Hour))
+
+	st := e.cycle()
+
+	require.NotNil(t, st.Cluster)
+	require.True(t, st.Cluster.Quorate)
+	require.Equal(t, []string{"pve1", "pve2"}, st.Cluster.Members)
 }

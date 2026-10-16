@@ -256,6 +256,9 @@ func (c *cycleRun) quorate() bool {
 		return true
 	}
 	ok, err := c.e.d.Quorate(c.ctx)
+	if err == nil {
+		c.quorateRead = &ok
+	}
 	switch {
 	case err != nil:
 		c.hold(c.problem("the quorum of the cluster could not be read (%v); nothing is written", err))
