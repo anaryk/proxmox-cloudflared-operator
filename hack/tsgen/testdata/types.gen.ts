@@ -732,6 +732,7 @@ export interface SegmentView {
   acknowledged: boolean
   acknowledgedAt?: string
   routes: number
+  own?: boolean
 }
 
 // wire.Session
