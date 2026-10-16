@@ -291,7 +291,15 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, out
 	if tooBig {
 		return fmt.Errorf("response exceeds %d bytes", maxBodyBytes)
 	}
-	return decodeData(body, out)
+	if err := decodeData(body, out); err != nil {
+		// A body cut off as the context ends is the end of the context,
+		// not an answer that cannot be read.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("reading response: %w", ctxErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // LastVerifyError is why the certificate of the API failed to verify on the
