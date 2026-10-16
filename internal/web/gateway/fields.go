@@ -161,7 +161,7 @@ var clusterFields = map[string]decision{
 // node.
 var (
 	coverageFields = map[string]decision{
-		"covered": kept, "since": kept, "promoteAt": kept, "uncovered": kept, "flapping": kept,
+		"covered": kept, "since": kept, "promoteAt": kept, "uncovered": kept, "flapping": kept, "pinned": kept,
 	}
 	upgradeFields    = map[string]decision{"from": kept, "since": kept, "older": kept}
 	caRotationFields = map[string]decision{
