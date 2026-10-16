@@ -49,10 +49,10 @@ var (
 const keySentence = "This account's second factor is a security key, which works only on Proxmox VE's own page. " +
 	"Use a TOTP or recovery code, or an API token."
 
-// rootRefused is the refusal of root@pam: the appliance is reachable from more
-// places than the node's own page, and root's password is the one most worth
-// guessing. PCO_WEB_ALLOW_ROOT=1 allows it.
-const rootRefused = "Sign in with a user that has Sys.Modify on /, or with an API token"
+// rootRefused is the refusal of root@pam where the admin turned its password
+// off with PCO_WEB_ALLOW_ROOT=0.
+const rootRefused = "The password of root@pam is turned off here: PCO_WEB_ALLOW_ROOT=0 is in /etc/default/pco-web " +
+	"of the appliance. Sign in with another user that has Sys.Modify on /, or with an API token"
 
 func (a *Auth) signInPassword(c *gin.Context) {
 	if !a.admit(c) {

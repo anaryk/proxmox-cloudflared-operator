@@ -174,8 +174,8 @@ company to set.
 
 The appliance has a sign-in of its own, which asks Proxmox for a ticket: a user, a realm and
 a password, and a TOTP or recovery code when the account has a second factor. A security key
-does not work there. `root@pam` is refused unless `PCO_WEB_ALLOW_ROOT=1` is set, which the
-company should not do; use accounts of its own staff. Admins are the accounts with
+does not work there. Set `PCO_WEB_ALLOW_ROOT=0` there, so that `root@pam` is
+refused, and use accounts of the company's own staff. Admins are the accounts with
 `Sys.Modify` on `/`, readers those with `Sys.Audit` on `/`, so a tenant must not hold
 `Sys.Audit` on `/`: a reader can read the state of the whole install, which names every
 tenant's hostnames.

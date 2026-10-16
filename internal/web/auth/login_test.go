@@ -562,7 +562,8 @@ func TestRootOnThePasswordForm(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, rec.Code)
 		e := errorOf(t, rec)
 		require.Equal(t, wire.CodeForbidden, e.Code)
-		require.Equal(t, "Sign in with a user that has Sys.Modify on /, or with an API token", e.Error)
+		require.Equal(t, rootRefused, e.Error)
+		require.Contains(t, e.Error, "PCO_WEB_ALLOW_ROOT=0")
 	}
 	require.Zero(t, h.fake.Calls("access/ticket"), "root's password never left the request")
 

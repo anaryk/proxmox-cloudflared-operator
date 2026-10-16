@@ -382,10 +382,10 @@ one, in place of one of your own only with `--force`.
 You sign in with a user of Proxmox VE and its password, at the node's API as the appliance
 reaches it, with a TOTP or recovery code where the user has a second factor (a security key
 works only on Proxmox VE's own page), or with an API token. `Sys.Audit` on `/` lets you look,
-`Sys.Modify` on `/` lets you change. `root@pam` may not sign in with a password, so that the
-most powerful account of the cluster is not one more password this page accepts; sign in as a
-user of its own, or with a token. `PCO_WEB_ALLOW_ROOT=1` in `/etc/default/pco-web` of the
-appliance allows it, if you mean it.
+`Sys.Modify` on `/` lets you change. `root@pam` signs in with its password as on the page of
+Proxmox VE. To keep the most powerful account of the cluster off this page, put
+`PCO_WEB_ALLOW_ROOT=0` in `/etc/default/pco-web` of the appliance and sign in as a user of its
+own, or with a token.
 
 ## Upgrades
 

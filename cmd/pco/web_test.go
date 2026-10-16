@@ -462,7 +462,7 @@ func TestTheApplianceSignsInWithAPassword(t *testing.T) {
 	require.Equal(t, "pve1", session.Node)
 
 	status, body = post(`{"user":"root","realm":"pam","password":"` + password + `"}`)
-	require.Equal(t, http.StatusForbidden, status, body)
+	require.Equal(t, http.StatusOK, status, "root@pam signs in as on the page of Proxmox VE: %s", body)
 	require.NotContains(t, log.String(), password)
 }
 

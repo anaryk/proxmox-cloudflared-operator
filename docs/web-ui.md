@@ -172,9 +172,9 @@ TOTP or recovery code, or an API token.` The step of the code lasts two minutes 
 three wrong codes; then the password is asked again. The realms in the list are those of the
 node, which the page shows to anyone who reaches it, as the sign-in page of Proxmox VE does.
 
-`root@pam` may not sign in with a password unless `PCO_WEB_ALLOW_ROOT=1` is in
-`/etc/default/pco-web` of the appliance: `Sign in with a user that has Sys.Modify on /, or with
-an API token`. The API token works as on a node, and is the way in for an account whose second
+`root@pam` signs in with its password as on the page of Proxmox VE. `PCO_WEB_ALLOW_ROOT=0` in
+`/etc/default/pco-web` of the appliance refuses it, with `The password of root@pam is turned
+off here`. The API token works as on a node, and is the way in for an account whose second
 factor is a security key.
 
 Proxmox VE does not lock a user out after wrong passwords, so the appliance keeps a lock of its

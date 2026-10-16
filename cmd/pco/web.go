@@ -66,7 +66,8 @@ func (a *app) webCmd() *cobra.Command {
 			"$CREDENTIALS_DIRECTORY, which the daemon writes). It listens on net0's IPv4 address only,\n" +
 			"as " + webcert.Net0File + " says it, which the installer writes and the daemon keeps current,\n" +
 			"port 8643 unless PCO_WEB_LISTEN names another, and refuses to start on any other address.\n" +
-			"root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.\n\n" +
+			"root@pam signs in with its password as on the page of Proxmox VE; PCO_WEB_ALLOW_ROOT=0\n" +
+			"refuses it.\n\n" +
 			"pco-web.service runs it as the user pco-web, whom the daemon answers on its socket while\n" +
 			"the unit is installed; by hand, run it as root.",
 		Example: "  # By hand beside pco-web.service: on another port, with the files the unit reads\n" +
@@ -231,11 +232,11 @@ func (a *app) applianceAuth(f webFlags, cfg web.Config) (*auth.Auth, error) {
 	if !roots.AppendCertsFromPEM([]byte(api.CA)) {
 		return nil, fmt.Errorf("%s holds no CA that can be read", file)
 	}
-	allowRoot := false
+	allowRoot := true
 	switch v := a.getenv("PCO_WEB_ALLOW_ROOT"); v {
-	case "1":
-		allowRoot = true
-	case "", "0":
+	case "", "1":
+	case "0":
+		allowRoot = false
 	default:
 		return nil, fmt.Errorf("PCO_WEB_ALLOW_ROOT is %q: want 1 or 0", v)
 	}

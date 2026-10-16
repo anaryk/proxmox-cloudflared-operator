@@ -40,7 +40,8 @@ type Config struct {
 	// Login is the sign-in with a password, the appliance's; nil on a node,
 	// whose browsers carry the ticket of Proxmox VE's own page instead.
 	Login Login
-	// AllowRoot lets root@pam sign in with a password (PCO_WEB_ALLOW_ROOT=1).
+	// AllowRoot lets root@pam sign in with a password; PCO_WEB_ALLOW_ROOT=0
+	// turns it off.
 	AllowRoot bool
 }
 

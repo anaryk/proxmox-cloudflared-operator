@@ -81,13 +81,13 @@ test('a wrong password is said, and the password field is empty again', async ()
 
 test('the refusals of root, of a locked account and of a user without Sys.Audit', async () => {
   const answers = [
-    new ApiError(403, { code: 'forbidden', error: 'Sign in with a user that has Sys.Modify on /, or with an API token' }),
+    new ApiError(403, { code: 'forbidden', error: 'The password of root@pam is turned off here: PCO_WEB_ALLOW_ROOT=0 is in /etc/default/pco-web of the appliance. Sign in with another user that has Sys.Modify on /, or with an API token' }),
     new ApiError(429, { code: 'rate_limited', error: 'too many failed sign-ins of this account; try again in 60 s, or sign in with an API token', retryAfter: 60 }),
     new ApiError(403, { code: 'forbidden', error: 'pco needs Sys.Audit on /', missing: 'Sys.Audit' }),
   ]
   await page(() => answers.shift())
   for (const want of [
-    'Sign in with a user that has Sys.Modify on /, or with an API token',
+    'The password of root@pam is turned off here: PCO_WEB_ALLOW_ROOT=0 is in /etc/default/pco-web of the appliance. Sign in with another user that has Sys.Modify on /, or with an API token',
     'Too many failed sign-ins of this account; try again in 60 s, or sign in with an API token',
     'This user has no Sys.Audit on /: pco cannot show it anything.',
   ]) {

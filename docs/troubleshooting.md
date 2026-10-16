@@ -1027,7 +1027,7 @@ In the appliance:
 |---|---|
 | `Proxmox VE did not accept the user and password` | A wrong user, realm or password. Proxmox VE answers it late, after about three seconds. |
 | `too many failed sign-ins of this account; try again in <n> s, or sign in with an API token` | Five failures of this account locked it at pco, for one minute and up to 15. Anyone who tries the user name can cause it; the journal of `pco-web` names the account and the addresses. Sign in with an API token, or wait. A restart of `pco-web` forgets the lock. |
-| `Sign in with a user that has Sys.Modify on /, or with an API token` | `root@pam` may not sign in with a password. Use an account of its own for pco, or a token; `PCO_WEB_ALLOW_ROOT=1` in `/etc/default/pco-web` of the appliance allows it. |
+| `The password of root@pam is turned off here` | `PCO_WEB_ALLOW_ROOT=0` is in `/etc/default/pco-web` of the appliance. Sign in as another user with `Sys.Modify` on `/`, or with a token; remove the line and `systemctl restart pco-web` to let root in. |
 | `This account's second factor is a security key, which works only on Proxmox VE's own page. ...` | WebAuthn is bound to the address of Proxmox VE's own page. Use a TOTP or a recovery code, or an API token. |
 | `Proxmox VE did not accept the code` | A wrong code; three end the step, and the password is asked again. Proxmox VE answers the same once it locked the user's second factor: on Proxmox VE 9.2 after eight wrong TOTP codes in a row, until a recovery code is used or root runs `pveum user tfa unlock <user>`, and after 100 failed attempts every factor for an hour. |
 | `Start again with the password: the step of the second factor is over` | The step of the code lasts two minutes. |

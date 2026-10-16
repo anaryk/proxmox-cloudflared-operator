@@ -927,8 +927,9 @@ store in pco, at a price: an appliance whose `pco web` was taken over could read
 codes of the users who sign in while it is. What stands against that, and against guessing:
 
 - The sandbox of the unit, the appliance's own key, and the password living for one call.
-- `root@pam`, the account most worth guessing, may not sign in with a password unless
-  `PCO_WEB_ALLOW_ROOT=1`.
+- `root@pam` signs in with its password as on the page of Proxmox VE, under the same lock of
+  the account after failures. It is the account most worth guessing: `PCO_WEB_ALLOW_ROOT=0`
+  keeps it off the page where the appliance is reachable from more places than the node.
 - The page listens on the address of `net0` only and refuses to start on any other: the other
   cards lead into the networks of guests, which could otherwise reach it and try the passwords
   of the cluster through it. `pco doctor` checks it in `web listen`.
