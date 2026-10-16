@@ -29,6 +29,7 @@ func someSegments() []engine.SegmentView {
 	return []engine.SegmentView{
 		{Bridge: "vmbr1", Acknowledged: true, AcknowledgedAt: t0.Add(-time.Hour), Routes: 2},
 		{Bridge: "vmbr1", VLAN: 20, Routes: 1},
+		{Bridge: "vmbr2", Own: true},
 	}
 }
 
@@ -44,9 +45,10 @@ func TestSegmentList(t *testing.T) {
 	res := r.run("", "segment", "list")
 
 	require.NoError(t, res.err)
-	require.Equal(t, "SEGMENT   ACKNOWLEDGED               ROUTES\n"+
-		"vmbr1     2026-10-01T13:00:00+02:00  2\n"+
-		"vmbr1:20  no                         1\n", res.out)
+	require.Equal(t, "SEGMENT   ACKNOWLEDGED               ROUTES  NOTE\n"+
+		"vmbr1     2026-10-01T13:00:00+02:00  2       -\n"+
+		"vmbr1:20  no                         1       -\n"+
+		"vmbr2     no                         0       an appliance's card\n", res.out)
 	require.Empty(t, e.called())
 
 	t.Run("none", func(t *testing.T) {

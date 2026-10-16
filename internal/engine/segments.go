@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -25,6 +28,10 @@ type SegmentView struct {
 	Acknowledged   bool      `json:"acknowledged"`
 	AcknowledgedAt time.Time `json:"acknowledgedAt,omitzero"`
 	Routes         int       `json:"routes"` // routes at observed proven on it in the last cycle
+	// Own says that a card of an appliance container of the install is on
+	// it: the guests the appliance reaches there are on it too, and it is
+	// the segment to acknowledge before the first route.
+	Own bool `json:"own,omitempty"`
 }
 
 // SegmentArg names a segment as pco segment takes it: "vmbr1", "vmbr1:20".
@@ -45,13 +52,48 @@ func SegmentReason(bridge string, vlan int) string {
 // segmentViews lists the segments this cycle saw at observed, with how many
 // routes each, and those acknowledged, by bridge and VLAN.
 func (c *cycleRun) segmentViews(seen map[resolve.Segment]int) []SegmentView {
-	return segmentList(seen, c.segments)
+	return segmentList(seen, c.ownSegments(), c.segments)
 }
 
-func segmentList(seen map[resolve.Segment]int, acked map[string]store.Segment) []SegmentView {
+// ownSegments are the segments of the cards of the install's appliance
+// containers, the controller's and those of the agents, as the snapshot has
+// their configuration; the managed network is pco's own and is not one.
+func (c *cycleRun) ownSegments() map[resolve.Segment]bool {
+	a := c.install.Appliance
+	if a == nil {
+		return nil
+	}
+	vmids := []int{a.VMID}
+	for _, n := range c.nodes {
+		if n.Node.Kind == string(pki.KindAppliance) && n.Node.VMID != 0 && n.Node.State != store.NodeRemoved {
+			vmids = append(vmids, n.Node.VMID)
+		}
+	}
+	own := map[resolve.Segment]bool{}
+	for _, vmid := range vmids {
+		g, ok := c.snap.Guest(model.GuestRef{Kind: model.KindLXC, VMID: vmid})
+		if !ok {
+			continue
+		}
+		for _, nic := range g.NICs {
+			if nic.Bridge != "" && nic.Bridge != gateway.ManagedBridge && !nic.LinkDown {
+				own[resolve.Segment{Bridge: nic.Bridge, VLAN: nic.VLAN}] = true
+			}
+		}
+	}
+	return own
+}
+
+func segmentList(seen map[resolve.Segment]int, own map[resolve.Segment]bool, acked map[string]store.Segment) []SegmentView {
 	byID := map[string]SegmentView{}
+	for seg := range own {
+		byID[store.SegmentID(seg.Bridge, seg.VLAN)] = SegmentView{Bridge: seg.Bridge, VLAN: seg.VLAN, Own: true}
+	}
 	for seg, n := range seen {
-		byID[store.SegmentID(seg.Bridge, seg.VLAN)] = SegmentView{Bridge: seg.Bridge, VLAN: seg.VLAN, Routes: n}
+		id := store.SegmentID(seg.Bridge, seg.VLAN)
+		v := byID[id]
+		v.Bridge, v.VLAN, v.Routes = seg.Bridge, seg.VLAN, n
+		byID[id] = v
 	}
 	for id, s := range acked {
 		v := byID[id]
@@ -71,12 +113,17 @@ func (e *Engine) Segments() ([]SegmentView, error) {
 		return nil, fmt.Errorf("reading the acknowledged segments: %w", err)
 	}
 	seen := map[resolve.Segment]int{}
+	own := map[resolve.Segment]bool{}
 	for _, v := range e.State().Segments {
+		seg := resolve.Segment{Bridge: v.Bridge, VLAN: v.VLAN}
 		if v.Routes > 0 {
-			seen[resolve.Segment{Bridge: v.Bridge, VLAN: v.VLAN}] = v.Routes
+			seen[seg] = v.Routes
+		}
+		if v.Own {
+			own[seg] = true
 		}
 	}
-	return segmentList(seen, acked), nil
+	return segmentList(seen, own, acked), nil
 }
 
 // AcknowledgeSegment lets routes at observed be served on a bridge and VLAN
@@ -97,7 +144,7 @@ func (e *Engine) AcknowledgeSegment(ctx context.Context, bridge string, vlan int
 	if _, ok := acked[store.SegmentID(bridge, vlan)]; ok {
 		return nil
 	}
-	if err := e.d.Store.SaveSegment(store.Segment{Bridge: bridge, VLAN: vlan, AcknowledgedAt: e.d.Now(), By: "cli"}); err != nil {
+	if err := e.d.Store.SaveSegment(store.Segment{Bridge: bridge, VLAN: vlan, AcknowledgedAt: e.d.Now(), By: cmp.Or(ActorOf(ctx), "cli")}); err != nil {
 		return fmt.Errorf("saving the segment: %w", err)
 	}
 	e.adminEvent(ctx, SegmentArg(bridge, vlan), fmt.Sprintf("segment %s is acknowledged; the routes at observed on it are served from the next cycle",

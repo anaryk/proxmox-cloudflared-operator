@@ -1,7 +1,8 @@
 # pco segment list
 
-List the segments the last cycle proved routes at observed on, with how many, and those
-acknowledged, with since when.
+List the segments the last cycle proved routes at observed on, with how many, those
+acknowledged, with since when, and in the appliance those of the appliances' own cards,
+where the guests they reach are, before any route is proven on them.
 
 With `--json` the answer of the daemon is printed as the daemon sent it, re-indented, with
 control and bidirectional characters escaped.

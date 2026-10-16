@@ -32,8 +32,9 @@ func (a *app) segmentListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the segments routes at observed were proven on, and those acknowledged",
-		Long: "List the segments the last cycle proved routes at observed on, with how many, and those\n" +
-			"acknowledged, with since when.\n\n" + jsonHelp + "\n\n" + askHelp,
+		Long: "List the segments the last cycle proved routes at observed on, with how many, those\n" +
+			"acknowledged, with since when, and in the appliance those of the appliances' own cards,\n" +
+			"where the guests they reach are, before any route is proven on them.\n\n" + jsonHelp + "\n\n" + askHelp,
 		Example: "  # The segments routes at observed were proven on\n" +
 			"  pco segment list\n\n" +
 			"  # As JSON, for a script\n" +
@@ -58,13 +59,17 @@ func (a *app) segmentListCmd() *cobra.Command {
 				return s.done()
 			}
 			t := s.table()
-			t.row("SEGMENT", "ACKNOWLEDGED", "ROUTES")
+			t.row("SEGMENT", "ACKNOWLEDGED", "ROUTES", "NOTE")
 			for _, v := range segments {
 				acked := "no"
 				if v.Acknowledged {
 					acked = a.when(v.AcknowledgedAt)
 				}
-				t.row(engine.SegmentArg(v.Bridge, v.VLAN), acked, strconv.Itoa(v.Routes))
+				note := "-"
+				if v.Own {
+					note = "an appliance's card"
+				}
+				t.row(engine.SegmentArg(v.Bridge, v.VLAN), acked, strconv.Itoa(v.Routes), note)
 			}
 			t.flush()
 			return s.done()

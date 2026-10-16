@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -88,4 +90,31 @@ func TestTheReasonASegmentGives(t *testing.T) {
 	require.Equal(t, "segment vmbr1 VLAN 7 is not acknowledged; pco segment acknowledge vmbr1:7", SegmentReason("vmbr1", 7))
 	require.Equal(t, "vmbr1:7", SegmentArg("vmbr1", 7))
 	require.Equal(t, "vmbr1", SegmentArg("vmbr1", 0))
+}
+
+// The segments of the appliance containers' cards are listed before any
+// route is proven on them, so that the first one can be acknowledged ahead.
+func TestTheSegmentsOfTheAppliancesAreListedBeforeAnyRoute(t *testing.T) {
+	e := observing(t)
+	require.NoError(t, e.store.SaveInstall(applianceInstall()))
+	require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: "pve2", Since: t0, Kind: "appliance", VMID: 9201}))
+	ct := func(vmid int, nics ...model.NIC) model.Guest {
+		return model.Guest{Ref: model.GuestRef{Kind: model.KindLXC, VMID: vmid}, Node: testNode, Running: true, NICs: nics}
+	}
+	e.inv.set(snapshot(
+		guest(101, "web-1", "www.example.com -> :8080"),
+		ct(9200, model.NIC{MAC: "bc:24:11:00:92:00", Bridge: "vmbr0"}, model.NIC{Index: 1, MAC: "bc:24:11:00:92:01", Bridge: gateway.ManagedBridge}),
+		ct(9201, model.NIC{MAC: "bc:24:11:00:92:10", Bridge: "vmbr0", VLAN: 30}, model.NIC{Index: 1, MAC: "bc:24:11:00:92:11", Bridge: "vmbr9", LinkDown: true}),
+	))
+
+	st := e.cycle()
+
+	require.Equal(t, []SegmentView{
+		{Bridge: "vmbr0", Own: true},
+		{Bridge: "vmbr0", VLAN: 30, Own: true},
+		{Bridge: "vmbr1", Acknowledged: true, AcknowledgedAt: t0, Routes: 1},
+	}, st.Segments)
+	segments, err := e.eng.Segments()
+	require.NoError(t, err)
+	require.Equal(t, st.Segments, segments)
 }

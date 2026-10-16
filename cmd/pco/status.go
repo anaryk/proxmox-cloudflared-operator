@@ -291,11 +291,12 @@ func (a *app) renderStatus(w io.Writer, st engine.State, agent *agentAnswer) err
 }
 
 // unacknowledged counts the segments routes at observed were proven on that
-// nobody acknowledged.
+// nobody acknowledged; an appliance's own segment without a route holds
+// nothing.
 func unacknowledged(segments []engine.SegmentView) int {
 	n := 0
 	for _, v := range segments {
-		if !v.Acknowledged {
+		if !v.Acknowledged && v.Routes > 0 {
 			n++
 		}
 	}
