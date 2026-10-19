@@ -461,6 +461,9 @@ func checkUpgrade(c engine.ClusterView) Finding {
 // pinned to them meanwhile.
 func checkCoverage(st engine.State, c engine.ClusterView) Finding {
 	const check = "coverage"
+	if c.Coverage.Pinned {
+		return ok(check, "pinned by design: the appliances watch no forwarding tables, and the routes of each node's guests are served from it")
+	}
 	if len(c.Coverage.Flapping) == 0 && len(c.Coverage.Uncovered) == 0 {
 		return ok(check, "every node has an agent whose watch runs")
 	}

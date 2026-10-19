@@ -223,6 +223,9 @@ func TestTheChecksOfAClusterFindFaults(t *testing.T) {
 		}, "coverage", LevelWarn, "the watch of pve2 was lost twice within ten minutes, which keeps app.example.com pinned", ""},
 		{"a node without an agent", func(st *engine.State, _ *fakeCluster) { st.Cluster.Coverage.Uncovered = []string{"pve3"} },
 			"coverage", LevelWarn, "pve3 has no agent whose watch runs, so no port another node proves counts", ""},
+		{"an appliance install", func(st *engine.State, _ *fakeCluster) {
+			st.Cluster.Coverage.Pinned, st.Cluster.Coverage.Uncovered = true, []string{"pve1", "pve2"}
+		}, "coverage", LevelOK, "pinned by design: the appliances watch no forwarding tables, and the routes of each node's guests are served from it", ""},
 		{"one ready replica", func(_ *engine.State, c *fakeCluster) { c.facts.ReadyReplicas[sharedID] = 1 },
 			"replicas pco-abc123 in account acc1", LevelWarn, "one node reports a ready connector: the loss of that node takes the tunnel down", ""},
 		{"a pinned tunnel without routes", func(_ *engine.State, c *fakeCluster) {
