@@ -90,10 +90,11 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	events := agent.NewEventLog(deps.Now)
 	r := &agentRun{log: log, now: deps.Now, flag: self.SetFlag}
 	checks := &agentDoctor{}
+	book := &engine.TrafficBook{}
 	ag, err := agent.New(agent.Deps{
 		Node: a.Node, Kind: pki.KindAppliance, InstallID: state.install.ID, Store: st,
 		Resolver: res, Connectors: conns, Egress: filter, Blocked: filter.ov.Blocked, Gateway: agentGateway{gw: gw},
-		Now: deps.Now, Log: log, Event: events.Add, Changed: r.trigger, Doctor: checks.run,
+		Now: deps.Now, Log: log, Event: events.Add, Changed: r.trigger, Doctor: checks.run, Traffic: book.Report,
 	})
 	if err != nil {
 		return fmt.Errorf("making the agent of node %s: %w", a.Node, err)
@@ -166,13 +167,21 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 		idle: func(_ context.Context, fn func()) error { fn(); return nil },
 	}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
+	// The connectors of the container are scraped as the controller's are,
+	// and their traffic goes to the controller with the status: the map
+	// shows a tunnel pinned to this node by it.
+	traffic := &sampler{
+		statuses: ag.Connectors,
+		scrape:   conns.Metrics, record: book.Record, targets: func(context.Context, time.Time) {},
+		now: deps.Now, log: log,
+	}
 	main := func(ctx context.Context) { r.run(ctx, deps.Sleep) }
 	// pco.service has the same watchdog in every kind of appliance: the
 	// agent pings it while its checks run on time, as the engine does
 	// while its cycles do. The first check is due as the daemon starts.
 	r.progress.due(deps.Now())
 	wd := newWatchdog(deps.Notifier, r.healthy, deps.Now, log)
-	return serve(ctx, srv, main, cfg.SocketPath, gid, deps.Notifier, nil, log, keep, wd.run)
+	return serve(ctx, srv, main, cfg.SocketPath, gid, deps.Notifier, nil, log, keep, wd.run, traffic.run)
 }
 
 // tokenUser is the user of a token id.

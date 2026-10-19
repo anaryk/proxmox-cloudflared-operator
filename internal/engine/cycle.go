@@ -288,6 +288,7 @@ func (c *cycleRun) run() State {
 	if views := c.nodeViews(); views != nil {
 		c.st.Nodes = views
 	}
+	c.recordRemoteTraffic()
 	switch {
 	case c.fleet != nil:
 		c.st.Cluster = c.clusterView()

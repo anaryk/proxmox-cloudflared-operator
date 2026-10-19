@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 )
@@ -249,11 +250,11 @@ func TestEveryRoundSendsOneTrafficNotice(t *testing.T) {
 		"traffic " + at(2).Format(time.TimeOnly), "traffic " + at(3).Format(time.TimeOnly),
 	}, shown(got), "one notice a round, and no state")
 	require.Equal(t, &TrafficNotice{At: at(1), Tunnels: []TunnelNotice{
-		{TunnelID: tunnelA, RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4, Sampled: true},
+		{TunnelID: tunnelA, At: at(1), RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4, Sampled: true},
 		{TunnelID: tunnelB},
 	}}, got[1].Traffic)
 	require.Equal(t, &TrafficNotice{At: at(3), Tunnels: []TunnelNotice{
-		{TunnelID: tunnelA, RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4, Sampled: true},
+		{TunnelID: tunnelA, At: at(1), RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4, Sampled: true},
 		{TunnelID: tunnelB, Stale: true},
 	}}, got[3].Traffic, "the newest sample of each tunnel")
 	require.Equal(t, digest, e.State().Digest, "the traffic is not part of the state")
@@ -270,7 +271,7 @@ func TestATunnelHasNoRateBeforeItsSecondScrape(t *testing.T) {
 
 	got := until(t, e, ch)
 	require.Equal(t, []TunnelNotice{{TunnelID: tunnelA, HAConnections: 4}}, got[0].Traffic.Tunnels)
-	require.Equal(t, []TunnelNotice{{TunnelID: tunnelA, RPS: 10, Concurrent: 2, HAConnections: 4, Sampled: true}}, got[1].Traffic.Tunnels)
+	require.Equal(t, []TunnelNotice{{TunnelID: tunnelA, At: at(1), RPS: 10, Concurrent: 2, HAConnections: 4, Sampled: true}}, got[1].Traffic.Tunnels)
 	first, err := json.Marshal(got[0].Traffic.Tunnels[0])
 	require.NoError(t, err)
 	require.JSONEq(t, `{"tunnelId": "`+tunnelA+`", "rps": 0, "errorsPerSec": 0, "concurrent": 0, "haConnections": 4, "stale": false}`, string(first))
@@ -396,4 +397,63 @@ func TestAHeldCycleKeepsTheRollout(t *testing.T) {
 
 	require.True(t, st.Tunnels[0].Unchecked)
 	require.Equal(t, want, st.Tunnels[0].Rollout)
+}
+
+// A book of its own, as an agent container keeps of its connectors, reports
+// what the view would show of them, in the words of the protocol.
+func TestATrafficBookReportsItsTunnels(t *testing.T) {
+	b := &TrafficBook{}
+	b.Record(at(0), map[string]*connector.Metrics{tunnelA: scraped(100, 1, 0)})
+	b.Record(at(1), map[string]*connector.Metrics{tunnelA: scraped(150, 3, 2)})
+
+	got := b.Report()
+
+	require.Len(t, got, 1)
+	require.Equal(t, tunnelA, got[0].TunnelID)
+	require.Equal(t, "2026.9.3", got[0].Cloudflared)
+	require.Equal(t, 14, got[0].ConfigVersion)
+	require.Equal(t, 4, got[0].HAConnections)
+	require.Equal(t, []connector.Edge{{Connection: 0, Location: "fra08"}, {Connection: 1, Location: "prg01"}}, got[0].Edges)
+	require.Equal(t, []float64{11.2, 18.9}, got[0].RTTMillis)
+	require.False(t, got[0].Stale)
+	require.Equal(t, []agentproto.TrafficSample{{At: at(1), RPS: 10, ErrorsPerSec: 0.4, Concurrent: 2}}, got[0].Samples)
+}
+
+// What the agents of the other nodes report of the connectors of the tunnels
+// pinned to their nodes is in the view and in the notices, by their node;
+// what they report of the shared tunnel is not, as this node's own line
+// carries the figures of the shared tunnel.
+func TestTheTrafficOfATunnelPinnedToAnotherNodeIsWhatItsAgentReports(t *testing.T) {
+	e := newEnv(t).eng
+	round(e, 0, map[string]*connector.Metrics{tunnelA: scraped(100, 1, 0)})
+	reported := agentproto.TunnelTraffic{
+		TunnelID: tunnelB, Cloudflared: "2026.10.0", ConfigVersion: 5, HAConnections: 2,
+		Edges: []connector.Edge{{Connection: 0, Location: "vie06"}}, RTTMillis: []float64{7},
+		Samples: []agentproto.TrafficSample{{At: at(1), RPS: 3, ErrorsPerSec: 0, Concurrent: 1}},
+	}
+	shared := agentproto.TunnelTraffic{TunnelID: tunnelA, HAConnections: 4}
+
+	e.RecordRemoteTraffic(map[string][]agentproto.TunnelTraffic{"pve2": {reported, shared}}, map[string]string{tunnelB: "pve2"})
+
+	v := e.Traffic()
+	require.Len(t, v.Tunnels, 2)
+	require.Equal(t, tunnelA, v.Tunnels[0].TunnelID)
+	require.Equal(t, testNode, v.Tunnels[0].Node)
+	require.Equal(t, TunnelTraffic{
+		TunnelID: tunnelB, Node: "pve2", Cloudflared: "2026.10.0", ConfigVersion: 5, HAConnections: 2,
+		Edges: []connector.Edge{{Connection: 0, Location: "vie06"}}, RTTMillis: []float64{7},
+		Samples: []TrafficSample{{At: at(1), RPS: 3, Concurrent: 1}},
+	}, v.Tunnels[1])
+	n := e.traffic.notice()
+	require.Len(t, n.Tunnels, 2)
+	require.Equal(t, TunnelNotice{TunnelID: tunnelB, At: at(1), RPS: 3, Concurrent: 1, HAConnections: 2, Sampled: true}, n.Tunnels[1])
+	again := e.traffic.notice()
+	require.False(t, again.Tunnels[1].Sampled, "the same reported sample is not a new one in the next round's notice")
+	require.Equal(t, at(1), again.Tunnels[1].At)
+	reported.Samples = append(reported.Samples, agentproto.TrafficSample{At: at(2), RPS: 4})
+	e.RecordRemoteTraffic(map[string][]agentproto.TunnelTraffic{"pve2": {reported}}, map[string]string{tunnelB: "pve2"})
+	require.True(t, e.traffic.notice().Tunnels[1].Sampled, "a newer reported sample is")
+
+	e.RecordRemoteTraffic(nil, nil)
+	require.Len(t, e.Traffic().Tunnels, 1, "a node that no longer reports loses its entries")
 }

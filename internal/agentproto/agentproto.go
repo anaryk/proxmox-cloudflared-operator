@@ -33,7 +33,13 @@ const (
 	// the events of the last 24 hours an agent sends again to a new epoch.
 	MaxStatusBytes = 1 << 20
 	MaxEventBatch  = 500
-	MaxResend      = 10000
+	// MaxTrafficTunnels is how many tunnels the traffic of a status may hold,
+	// MaxTrafficSamples how many samples each, 15 minutes of rounds of 5
+	// seconds, and MaxTrafficConnections how many edges and RTTs.
+	MaxTrafficTunnels     = 64
+	MaxTrafficSamples     = 180
+	MaxTrafficConnections = 64
+	MaxResend             = 10000
 	// MaxServiceAddrs is the most service addresses a status may say its
 	// node's gateway maps: more than a pool of them leaves room for.
 	MaxServiceAddrs = 4096

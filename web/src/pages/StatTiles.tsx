@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode } from 'react'
 
-import type { State, TrafficView } from '../api/types.gen'
+import type { State, TrafficSample, TrafficView } from '../api/types.gen'
 import { Link } from '../app/Link'
 import { StateBadge } from '../components/StateBadge'
 import { Time } from '../components/Time'
@@ -26,16 +26,31 @@ function Tile({ title, big, unit, children }: { title: string; big: ReactNode; u
   )
 }
 
-// The requests and errors of every tunnel, summed per round of scrapes:
-// the daemon stamps each round's samples with the same time.
-function sums(traffic: TrafficView): { requests: Sample[]; errors: Sample[] } {
+// The requests and errors of every tunnel, summed per round of scrapes.
+// This node stamps each round's samples with the time it began; those
+// another node reports of its pinned tunnel carry its own times, so a
+// sample goes with the round of the interval its time falls in, and of one
+// tunnel the newest sample of a round counts, as two rounds of this node
+// may begin within one interval after a slow one.
+export function sums(traffic: TrafficView): { requests: Sample[]; errors: Sample[] } {
+  const ms = intervalMs(traffic.interval)
+  const round = (at: string) => {
+    const t = Date.parse(at)
+    return Number.isFinite(t) && ms > 0 ? new Date(Math.floor(t / ms) * ms).toISOString() : at
+  }
   const at = new Map<string, { rps: number; errors: number }>()
   for (const t of traffic.tunnels) {
+    const newest = new Map<string, TrafficSample>()
     for (const s of t.samples) {
-      const sum = at.get(s.at) ?? { rps: 0, errors: 0 }
+      const key = round(s.at)
+      const have = newest.get(key)
+      if (!have || Date.parse(s.at) > Date.parse(have.at)) newest.set(key, s)
+    }
+    for (const [key, s] of newest) {
+      const sum = at.get(key) ?? { rps: 0, errors: 0 }
       sum.rps += s.rps
       sum.errors += s.errorsPerSec
-      at.set(s.at, sum)
+      at.set(key, sum)
     }
   }
   const times = [...at.keys()].sort()
@@ -200,4 +215,13 @@ export function StatTiles({ state, traffic, nodeZone }: { state: State; traffic?
       <NeedsTile state={state} />
     </div>
   )
+}
+
+// intervalMs is the interval of the rounds in milliseconds, from how the
+// daemon writes it ("5s"); 0 when it does not read as one.
+export function intervalMs(interval: string): number {
+  const m = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(interval)
+  if (!m) return 0
+  const n = Number(m[1])
+  return m[2] === 'ms' ? n : m[2] === 's' ? n * 1000 : n * 60_000
 }

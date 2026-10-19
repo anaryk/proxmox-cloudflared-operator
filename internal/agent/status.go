@@ -169,6 +169,14 @@ func (p *pass) judge() {
 
 // Status is what the agent reports to the controller: what the last pass
 // found and what the agent follows, as of now.
+// Connectors are the statuses of the node's connectors as the last pass
+// read them, for the scrapes of their metrics.
+func (a *Agent) Connectors() []connector.Status {
+	a.repMu.Lock()
+	defer a.repMu.Unlock()
+	return slices.Clone(a.rep.conns)
+}
+
 func (a *Agent) Status(context.Context) agentproto.Status {
 	now := a.d.Now()
 	a.repMu.Lock()
@@ -195,6 +203,9 @@ func (a *Agent) Status(context.Context) agentproto.Status {
 	}
 	for i, t := range st.Targets {
 		st.Targets[i].InEgressSet = in[r.setOf[t.Key]]
+	}
+	if a.d.Traffic != nil {
+		st.Traffic = a.d.Traffic()
 	}
 	a.facts(&st)
 	return st

@@ -100,6 +100,22 @@ describe('the model of a cluster', () => {
     expect(ids).toContain('replica:acc1:pve2:pinned')
   })
 
+  // What the agent of pve2 reports of its pinned tunnel's connector is on
+  // the edge card and its trunk, as this node's own figures are on its own.
+  test('a tunnel pinned to another node shows the figures its agent reports', () => {
+    const pinnedID = '00000000-0000-4000-8000-000000000020'
+    const reported: TrafficView = {
+      ...tv,
+      tunnels: [
+        ...tv.tunnels,
+        { tunnelId: pinnedID, node: 'pve2', cloudflared: '2026.10.0', configVersion: 5, haConnections: 2, edges: [{ connection: 0, location: 'prg01' }], rttMs: [5], stale: false, samples: [{ at: tv.at, rps: 3, errorsPerSec: 0, concurrent: 1 }] },
+      ],
+    }
+    const m = buildModel(st, reported)
+    expect(m.nodes.find((n) => n.id === 'edge:acc1:pve2')).toMatchObject({ lines: ['connector on pve2', '2 connections', 'prg01', 'RTT 5 ms'] })
+    expect(m.edges.find((e) => e.id === 'edge:acc1:pve2>replica:acc1:pve2:pinned')).toMatchObject({ lanes: 2, rate: 3 })
+  })
+
   test("the trunk of this node carries its figures; the others' have one lane and none", () => {
     const own = edge('edge:acc1>replica:acc1:pve1')
     expect(own).toMatchObject({ style: 'trunk', lanes: 4 })

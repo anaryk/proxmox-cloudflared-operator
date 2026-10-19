@@ -727,3 +727,20 @@ func TestTheClientFollowsNoRedirect(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, http.StatusFound, resp.StatusCode)
 }
+
+// A status that would be too large with the traffic of the connectors goes
+// without it: the controller can do without that part, and a status refused
+// whole would make the node silent.
+func TestTheTrafficIsTheFirstToGoFromAStatusTooLarge(t *testing.T) {
+	st := agentproto.Status{Node: "pve2", Traffic: []agentproto.TunnelTraffic{{TunnelID: "t1", HAConnections: 4}}}
+	raw, err := encodeStatus(&st)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"traffic"`)
+
+	big := agentproto.Status{Node: "pve2", Traffic: []agentproto.TunnelTraffic{{TunnelID: "t1"}}}
+	big.Problems = []string{strings.Repeat("x", agentproto.MaxStatusBytes)}
+	raw, err = encodeStatus(&big)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), `"traffic"`)
+	require.Empty(t, big.Traffic)
+}

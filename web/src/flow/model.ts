@@ -411,23 +411,27 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
   }
   // The tunnels pinned to a node, each with its node as its one replica.
   // The connector of one pinned to this node is read here, with its
-  // figures; one pinned to another node runs there.
+  // figures; one pinned to another node runs there, and its figures are
+  // what that node's agent reports of it.
   for (const t of [...ix.pinned.values()].sort((a, b) => byName(a.name, b.name))) {
     if (!t.node) continue
     const edgeId = pinnedEdgeId(t.accountId, t.node)
     const label = ix.tunnelLabel(t)
-    let lines: string[]
-    if (t.node === st.node) {
-      const c = t.id ? st.connectors.find((c) => c.tunnelId === t.id) : undefined
-      lines = edgeLines(t, c, t.id ? ix.traffic.get(t.id) : undefined)
-    } else {
-      lines = [`connector on ${t.node}`]
-      if (t.held) lines.push(t.held)
-    }
+    const tt = t.id ? ix.traffic.get(t.id) : undefined
+    const c = t.node === st.node && t.id ? st.connectors.find((c) => c.tunnelId === t.id) : undefined
+    const lines = t.node === st.node ? edgeLines(t, c, tt) : [`connector on ${t.node}`, ...edgeLines(t, undefined, tt)]
     nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label, state: verifiedText(t), ref: t.accountId, ...(lines.length > 0 ? { lines } : {}) })
     const id = replicaNodeId(t.accountId, t.node, true)
     nodes.set(id, replicaNode(id, ix.nodes.get(t.node), label, t.node, ix.pinnedState(t)))
-    link({ id: `${edgeId}>${id}`, from: edgeId, to: id, style: 'trunk', lanes: 1 })
+    const trunk: FlowEdge = { id: `${edgeId}>${id}`, from: edgeId, to: id, style: 'trunk', lanes: Math.min(4, Math.max(1, tt?.haConnections ?? c?.connections ?? 1)) }
+    const now = ix.latest(t.id)
+    if (now) {
+      trunk.rate = now.rps
+      trunk.errors = now.errors
+      if (now.stale) trunk.stale = true
+    }
+    if (t.unchecked || now?.stale) trunk.muted = true
+    link(trunk)
   }
   for (const r of [...st.rogueConnectors].sort((a, b) => byName(a.id, b.id))) {
     const id = `rogue:${r.id}`

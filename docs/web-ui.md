@@ -291,7 +291,8 @@ On a cluster the connector column holds a card for each node that runs a connect
 tunnel, a replica, with a chip in the colour of its readiness, and a tunnel pinned to a node has
 an edge card of its own, `pinned to pve2 · Main`, with a line to that node alone, whose chip is
 the readiness of its connector of that tunnel, and a line saying where that connector runs when
-it is another node. A shared tunnel that serves no route while the tunnels pinned to the nodes
+it is another node, with its connections, edges and RTT as that node's agent reports them. A
+shared tunnel that serves no route while the tunnels pinned to the nodes
 serve the routes of its account is not drawn, nor are its replicas: it keeps the sentinel of the
 writer, and its connectors wait for a route every node reaches; the tunnels page lists it with
 no routes. Above six replicas of one tunnel they fold into one card, `replicas 7/7 ready`, which

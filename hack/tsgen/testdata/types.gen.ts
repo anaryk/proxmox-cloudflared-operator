@@ -871,6 +871,7 @@ export interface TrafficView {
 // engine.TunnelNotice
 export interface TunnelNotice {
   tunnelId: string
+  at?: string
   rps: number
   errorsPerSec: number
   concurrent: number

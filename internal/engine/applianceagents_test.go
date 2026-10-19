@@ -12,6 +12,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -421,4 +422,35 @@ func (w *world) sharedRule(t *testing.T, host string) planner.IngressRule {
 		}
 	}
 	return planner.IngressRule{}
+}
+
+// The traffic an agent reports of the connector of the tunnel pinned to
+// its node is in the controller's traffic view, by that node.
+func TestTheCycleTakesTheTrafficAnAgentReportsOfItsPinnedTunnel(t *testing.T) {
+	w := applianceTwoNodes(t)
+	pinned2, err := planner.PinnedTunnelName(testInstall, "pve2")
+	require.NoError(t, err)
+	for range 40 {
+		w.tick(5 * time.Second)
+	}
+	s, ok := w.r.lastOf("pve2")
+	require.True(t, ok)
+	i := slices.IndexFunc(s.Tunnels, func(tun agentproto.Tunnel) bool { return tun.Name == pinned2 })
+	require.GreaterOrEqual(t, i, 0)
+	id := s.Tunnels[i].TunnelID
+	w.acts["pve2"].edit = func(st *agentproto.Status) {
+		st.Traffic = []agentproto.TunnelTraffic{{TunnelID: id, Cloudflared: "2026.10.0", HAConnections: 4,
+			Edges: []connector.Edge{{Connection: 0, Location: "prg01"}}, RTTMillis: []float64{5},
+			Samples: []agentproto.TrafficSample{{At: w.clock.now(), RPS: 2}}}}
+	}
+
+	w.tick(5 * time.Second)
+
+	v := w.eng.Traffic()
+	j := slices.IndexFunc(v.Tunnels, func(tt TunnelTraffic) bool { return tt.TunnelID == id })
+	require.GreaterOrEqual(t, j, 0, "the pinned tunnel's traffic is in the view: %+v", v.Tunnels)
+	require.Equal(t, "pve2", v.Tunnels[j].Node)
+	require.Equal(t, []connector.Edge{{Connection: 0, Location: "prg01"}}, v.Tunnels[j].Edges)
+	require.Equal(t, 4, v.Tunnels[j].HAConnections)
+	require.Len(t, v.Tunnels[j].Samples, 1)
 }

@@ -59,6 +59,11 @@ func TestDecodeStatusBounds(t *testing.T) {
 		{"a resend of 10 001 events", bytes.NewReader(statusBody(t, Status{Node: "node2", Resend: MaxResend + 1})), true},
 		{"4096 service addresses", bytes.NewReader(statusBody(t, Status{Node: "node2", ServiceAddrs: addrs(MaxServiceAddrs)})), false},
 		{"4097 service addresses", bytes.NewReader(statusBody(t, Status{Node: "node2", ServiceAddrs: addrs(MaxServiceAddrs + 1)})), true},
+		{"the traffic of 64 tunnels", bytes.NewReader(statusBody(t, Status{Node: "node2", Traffic: make([]TunnelTraffic, MaxTrafficTunnels)})), false},
+		{"the traffic of 65 tunnels", bytes.NewReader(statusBody(t, Status{Node: "node2", Traffic: make([]TunnelTraffic, MaxTrafficTunnels+1)})), true},
+		{"180 samples of a tunnel", bytes.NewReader(statusBody(t, Status{Node: "node2", Traffic: []TunnelTraffic{{Samples: make([]TrafficSample, MaxTrafficSamples)}}})), false},
+		{"181 samples of a tunnel", bytes.NewReader(statusBody(t, Status{Node: "node2", Traffic: []TunnelTraffic{{Samples: make([]TrafficSample, MaxTrafficSamples+1)}}})), true},
+		{"65 RTTs of a tunnel", bytes.NewReader(statusBody(t, Status{Node: "node2", Traffic: []TunnelTraffic{{RTTMillis: make([]float64, MaxTrafficConnections+1)}}})), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

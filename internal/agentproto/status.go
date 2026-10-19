@@ -49,6 +49,32 @@ type Status struct {
 	// Legs are the legs of the networks as the node's gateway last found
 	// them, at most MaxLegReports.
 	Legs []LegReport `json:"legs,omitempty"`
+	// Traffic is the traffic of the node's connectors as their last scrapes
+	// left it, one entry per tunnel; an agent of a release before it sends
+	// none.
+	Traffic []TunnelTraffic `json:"traffic,omitempty"`
+}
+
+// TrafficSample is the traffic of a connector over one interval of scrapes.
+type TrafficSample struct {
+	At           time.Time `json:"at"`
+	RPS          float64   `json:"rps"`
+	ErrorsPerSec float64   `json:"errorsPerSec"`
+	Concurrent   float64   `json:"concurrent"`
+}
+
+// TunnelTraffic is the traffic of the connector of one tunnel on the agent's
+// node: what its last scrape said of its connections, and the samples of
+// its rates, oldest first.
+type TunnelTraffic struct {
+	TunnelID      string           `json:"tunnelId"`
+	Cloudflared   string           `json:"cloudflared,omitempty"`
+	ConfigVersion int              `json:"configVersion"`
+	HAConnections int              `json:"haConnections"`
+	Edges         []connector.Edge `json:"edges"`
+	RTTMillis     []float64        `json:"rttMs"`
+	Stale         bool             `json:"stale"`
+	Samples       []TrafficSample  `json:"samples"`
 }
 
 // TargetReport is how a target of the snapshot fares on the agent's node.

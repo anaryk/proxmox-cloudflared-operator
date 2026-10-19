@@ -117,7 +117,7 @@ has the rest.
 | `GET /v1/state` | the state of the last cycle | `pco status --json`, `pco routes`, `pco plan` | reader, filtered |
 | `GET /v1/events` | events | `pco events` | reader, filtered |
 | `GET /v1/stream` | the stream | none | reader, filtered |
-| `GET /v1/traffic` | the traffic of the connectors and of the targets | none | reader, filtered |
+| `GET /v1/traffic` | the traffic of the connectors on this node, of those of the tunnels pinned to other nodes as their agents report it, and of the targets | none | reader, filtered |
 | `GET /v1/traffic/route` | the connections to the target of one route | none | reader, filtered |
 | `POST /v1/sync` | 202 | `pco sync` | admin |
 | `POST /v1/apply` | what was accepted | `pco apply`, `pco apply --confirm-deletes` | admin |

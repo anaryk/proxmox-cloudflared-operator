@@ -144,9 +144,10 @@ export function shareRoutes(before: readonly RouteView[] | undefined, after: Rou
 }
 
 // mergeTraffic takes a notice of a round of scrapes into the traffic held: a
-// sample more for each tunnel that has a rate, the figures of the routes it
-// names. A tunnel without "sampled" has no rate yet; one the round left out
-// is gone.
+// sample more for each tunnel that has a rate, at the time of the sample,
+// which for a tunnel another node reports is that node's, and only when it
+// is newer than the last held; the figures of the routes it names. A tunnel
+// without "sampled" has no rate yet; one the round left out is gone.
 export function mergeTraffic(view: TrafficView | undefined, n: TrafficNotice): TrafficView {
   const tunnels = new Map((view?.tunnels ?? []).map((t) => [t.tunnelId, t]))
   const merged: TunnelTraffic[] = n.tunnels.map((t) => {
@@ -160,7 +161,10 @@ export function mergeTraffic(view: TrafficView | undefined, n: TrafficNotice): T
       stale: false,
       samples: [],
     }
-    const samples = t.sampled ? [...was.samples, { at: n.at, rps: t.rps, errorsPerSec: t.errorsPerSec, concurrent: t.concurrent }].slice(-maxSamples) : was.samples
+    const at = t.at ?? n.at
+    const last = was.samples.at(-1)?.at
+    const newer = t.sampled && (last === undefined || Date.parse(at) > Date.parse(last))
+    const samples = newer ? [...was.samples, { at, rps: t.rps, errorsPerSec: t.errorsPerSec, concurrent: t.concurrent }].slice(-maxSamples) : was.samples
     return { ...was, haConnections: t.haConnections, stale: t.stale, samples }
   })
   let routes: RouteTraffic[] = []

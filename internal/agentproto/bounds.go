@@ -61,8 +61,20 @@ func DecodeStatus(r io.Reader) (Status, error) {
 // CheckStatusBounds refuses a decoded status over the bounds of the protocol
 // with ErrTooLarge: more than MaxEventBatch events, a resend of more than
 // MaxResend, more than MaxServiceAddrs service addresses, more than
-// MaxLegReports legs.
+// MaxLegReports legs, and traffic of more than MaxTrafficTunnels tunnels,
+// MaxTrafficSamples samples or MaxTrafficConnections edges or RTTs of one.
 func CheckStatusBounds(st Status) error {
+	if len(st.Traffic) > MaxTrafficTunnels {
+		return fmt.Errorf("the status is %w: the traffic of %d tunnels, at most %d", ErrTooLarge, len(st.Traffic), MaxTrafficTunnels)
+	}
+	for _, t := range st.Traffic {
+		switch {
+		case len(t.Samples) > MaxTrafficSamples:
+			return fmt.Errorf("the status is %w: %d traffic samples of tunnel %s, at most %d", ErrTooLarge, len(t.Samples), t.TunnelID, MaxTrafficSamples)
+		case len(t.Edges) > MaxTrafficConnections, len(t.RTTMillis) > MaxTrafficConnections:
+			return fmt.Errorf("the status is %w: %d edges and %d RTTs of tunnel %s, at most %d", ErrTooLarge, len(t.Edges), len(t.RTTMillis), t.TunnelID, MaxTrafficConnections)
+		}
+	}
 	switch {
 	case len(st.ServiceAddrs) > MaxServiceAddrs:
 		return fmt.Errorf("the status is %w: %d service addresses, at most %d", ErrTooLarge, len(st.ServiceAddrs), MaxServiceAddrs)

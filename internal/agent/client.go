@@ -468,9 +468,9 @@ func (s *session) send(ctx context.Context) error {
 		st.VMID = id.VMID // the container an appliance agent speaks for, as its certificate names it
 	}
 	st.Events, st.EventCursor, st.Resend = s.c.d.Events.Batch()
-	raw, err := json.Marshal(st)
+	raw, err := encodeStatus(&st)
 	if err != nil {
-		return fmt.Errorf("encoding the status: %w", err)
+		return err
 	}
 	var body bytes.Buffer
 	zw := gzip.NewWriter(&body)
@@ -698,4 +698,22 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+// encodeStatus encodes a status for its post. The traffic of the connectors
+// is the one part of it the controller can do without: a status that would
+// be too large with it goes without, so that it is not refused whole and
+// the node is not taken for silent.
+func encodeStatus(st *agentproto.Status) ([]byte, error) {
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return nil, fmt.Errorf("encoding the status: %w", err)
+	}
+	if len(raw) > agentproto.MaxStatusBytes && len(st.Traffic) > 0 {
+		st.Traffic = nil
+		if raw, err = json.Marshal(st); err != nil {
+			return nil, fmt.Errorf("encoding the status: %w", err)
+		}
+	}
+	return raw, nil
 }

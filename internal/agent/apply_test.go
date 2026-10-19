@@ -290,3 +290,17 @@ func modTimes(t *testing.T, dir string) map[string]time.Time {
 	}))
 	return out
 }
+
+// The status carries the traffic of the node's connectors as the book of
+// their scrapes reports it, when one does.
+func TestTheStatusCarriesTheTrafficOfTheConnectors(t *testing.T) {
+	e := newEnv(t)
+	require.Empty(t, e.agent.Status(t.Context()).Traffic, "nothing scrapes them")
+	e.agent.d.Traffic = func() []agentproto.TunnelTraffic {
+		return []agentproto.TunnelTraffic{{TunnelID: "t1", HAConnections: 4}}
+	}
+
+	st := e.agent.Status(t.Context())
+
+	require.Equal(t, []agentproto.TunnelTraffic{{TunnelID: "t1", HAConnections: 4}}, st.Traffic)
+}

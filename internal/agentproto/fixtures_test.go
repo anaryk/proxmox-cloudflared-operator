@@ -191,6 +191,13 @@ func fullStatus() Status {
 		},
 		Problems: []string{"the forwarding-table watch is not running"},
 		Legs:     []LegReport{{ID: "vmbr1", Up: true}, {ID: "vmbr2.20", Problem: "10.20.0.250 is answered by bc:24:11:00:00:09"}},
+		Traffic: []TunnelTraffic{{
+			TunnelID: "11111111-1111-4111-8111-111111111111", Cloudflared: "2026.10.0", ConfigVersion: 3, HAConnections: 4,
+			Edges:     []connector.Edge{{Connection: 0, Location: "prg01"}, {Connection: 1, Location: "vie06"}},
+			RTTMillis: []float64{4.5, 11},
+			Stale:     true,
+			Samples:   []TrafficSample{{At: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), RPS: 1.5, ErrorsPerSec: 0.25, Concurrent: 2}},
+		}},
 	}
 }
 

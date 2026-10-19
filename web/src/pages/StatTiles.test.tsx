@@ -7,7 +7,7 @@ import populated from '../fixtures/populated.json'
 import trafficFixture from '../fixtures/traffic.json'
 import chains from '../flow/testdata/chains.json'
 import traffic from '../flow/testdata/traffic.json'
-import { StatTiles } from './StatTiles'
+import { intervalMs, StatTiles, sums } from './StatTiles'
 
 beforeEach(() => {
   vi.stubEnv('TZ', 'UTC')
@@ -95,4 +95,34 @@ test('before the first cycle the tiles wait for it', () => {
   render(<StatTiles state={first as unknown as State} />)
   for (const name of ['Routes', 'Edge traffic', 'Connectors']) expect(text(name)).toContain('waiting for the first cycle')
   expect(text('Needs you')).toContain('1 problem')
+})
+
+// The samples of a tunnel another node reports carry that node's times:
+// the sum per round takes every sample of the interval a round spans.
+test('the sum per round takes the samples of two nodes together', () => {
+  const tunnel = (id: string, node: string, at: string, rps: number): TunnelTraffic => ({
+    tunnelId: id,
+    node,
+    configVersion: 1,
+    haConnections: 4,
+    edges: [],
+    rttMs: [],
+    stale: false,
+    samples: [{ at, rps, errorsPerSec: 0, concurrent: 1 }],
+  })
+  const tv: TrafficView = {
+    at: '2026-10-01T12:00:10Z',
+    interval: '5s',
+    tunnels: [tunnel('a', 'pve1', '2026-10-01T12:00:05Z', 10), tunnel('b', 'pve2', '2026-10-01T12:00:07.400Z', 3)],
+    routes: [],
+    routesTotal: 0,
+  }
+  expect(sums(tv).requests).toEqual([{ at: '2026-10-01T12:00:05.000Z', value: 13 }])
+  // two rounds of this node within one interval, after a slow one: the newer counts
+  const a = tunnel('a', 'pve1', '2026-10-01T12:00:11Z', 10)
+  const twice: TrafficView = { ...tv, tunnels: [{ ...a, samples: [...a.samples, { at: '2026-10-01T12:00:12Z', rps: 12, errorsPerSec: 0, concurrent: 1 }] }] }
+  expect(sums(twice).requests).toEqual([{ at: '2026-10-01T12:00:10.000Z', value: 12 }])
+  expect(intervalMs('5s')).toBe(5000)
+  expect(intervalMs('250ms')).toBe(250)
+  expect(intervalMs('x')).toBe(0)
 })

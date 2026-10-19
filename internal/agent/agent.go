@@ -154,6 +154,9 @@ type Deps struct {
 	// as when an address whose MAC moved failed its verification, so that it
 	// is reported soon. It may be nil.
 	Changed func()
+	// Traffic is the traffic of the node's connectors as their last scrapes
+	// left it, for the status; nil where nothing scrapes them.
+	Traffic func() []agentproto.TunnelTraffic
 	// Interfaces are the interfaces of the node as the prober sees them, and
 	// ProbeAddr asks who answers for an address on a bridge and VLAN: what
 	// a probe action of the controller is answered from, on a host. Nil

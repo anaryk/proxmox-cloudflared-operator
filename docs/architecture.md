@@ -628,7 +628,8 @@ and their run tokens, the targets to verify with the MACs they must answer from,
 service addresses, the leases of the managed network and the addresses blocked on every node. It
 holds the request open for up to 30 seconds, until the snapshot changes. It reports its status
 every 10 seconds and within a second of a change: what it verified, its connectors and their
-readiness, its egress filter, what its forwarding-table watch saw, its clock and its events. The
+readiness, the traffic of their last scrapes, its egress filter, what its forwarding-table watch
+saw, its clock and its events. The
 answer to a status is the controller's heartbeat. On a host every agent reads `leader.json` every
 two seconds and dials the node it names, so the agents follow a new controller within seconds of
 its first listen.

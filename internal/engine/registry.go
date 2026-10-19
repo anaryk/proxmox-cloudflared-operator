@@ -618,6 +618,27 @@ func (c *cycleRun) sharedTunnelIDs() []string {
 	return out
 }
 
+// recordRemoteTraffic keeps what the agents reported of the connectors of
+// the tunnels pinned to their nodes, from the reports this cycle took.
+func (c *cycleRun) recordRemoteTraffic() {
+	if c.reports == nil {
+		return
+	}
+	pinned := map[string]string{}
+	for _, t := range c.st.Tunnels {
+		if t.Kind == TunnelPinned && t.Node != "" && t.ID != "" {
+			pinned[t.ID] = t.Node
+		}
+	}
+	reports := make(map[string][]agentproto.TunnelTraffic, len(c.reports))
+	for name, rep := range c.reports {
+		if name != c.e.d.Node && rep.Fresh && len(rep.Status.Traffic) > 0 {
+			reports[name] = rep.Status.Traffic
+		}
+	}
+	c.e.RecordRemoteTraffic(reports, pinned)
+}
+
 // pinnedTunnelIDs are the ids of the tunnels pinned to node, one per
 // account, as the state shows them.
 func (c *cycleRun) pinnedTunnelIDs(node string) []string {

@@ -297,6 +297,24 @@ describe('events, gaps, traffic, reset', () => {
     expect(why.routesWhy).toBe('the egress filter was not checked yet')
     expect(why.tunnels).toEqual([])
   })
+
+  // A tunnel another node reports comes with the time of its own sample,
+  // which every local round repeats until the node reports again: it is
+  // taken once, at its time, and again only when newer.
+  test('a sample another node reports goes in at its own time, once', () => {
+    const notice = (at: string, rps: number) => ({
+      at: `2026-10-01T12:00:${at}Z`,
+      tunnels: [{ tunnelId: 'pin', at: '2026-10-01T12:00:07Z', rps, errorsPerSec: 0, concurrent: 1, haConnections: 2, stale: false, sampled: true }],
+      routesTotal: 0,
+    })
+    const once = mergeTraffic(undefined, notice('10', 3))
+    expect(once.tunnels[0]?.samples).toEqual([{ at: '2026-10-01T12:00:07Z', rps: 3, errorsPerSec: 0, concurrent: 1 }])
+    const again = mergeTraffic(once, notice('15', 3))
+    expect(again.tunnels[0]?.samples).toHaveLength(1)
+    const newer = notice('20', 4)
+    newer.tunnels = newer.tunnels.map((t) => ({ ...t, at: '2026-10-01T12:00:17Z' }))
+    expect(mergeTraffic(again, newer).tunnels[0]?.samples).toHaveLength(2)
+  })
 })
 
 describe('the connection', () => {
