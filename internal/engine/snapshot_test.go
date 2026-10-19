@@ -209,3 +209,26 @@ func TestInObserveModeTheAgentRunsNoConnector(t *testing.T) {
 	}
 	require.False(t, e.kept().Prune)
 }
+
+// An agent that reports what it applied only after this process stamped its
+// first snapshot, as one does after the controller's daemon started again,
+// is served seqs above it from then on: it asks for nothing below.
+func TestTheSeqGoesOnAboveWhatAnAgentAppliedWhenItReportsAfterTheFirstSnapshot(t *testing.T) {
+	q := &seqs{}
+	ep := agentproto.Epoch{InstallID: testInstall, Generation: 1, Nonce: "n1"}
+	first := agentproto.Snapshot{Node: "pve2", Epoch: ep}
+	q.stamp(&first, agentproto.Epoch{}, 0)
+	require.Equal(t, uint64(1), first.Seq, "before the node reported")
+
+	second := agentproto.Snapshot{Node: "pve2", Epoch: ep}
+	q.stamp(&second, ep, 5355)
+	require.Equal(t, uint64(5356), second.Seq, "above what the node applied, though nothing changed")
+
+	third := agentproto.Snapshot{Node: "pve2", Epoch: ep}
+	q.stamp(&third, ep, 5356)
+	require.Equal(t, uint64(5356), third.Seq, "the same content keeps its seq")
+
+	changed := agentproto.Snapshot{Node: "pve2", Epoch: ep, Prune: true}
+	q.stamp(&changed, ep, 5356)
+	require.Equal(t, uint64(5357), changed.Seq)
+}

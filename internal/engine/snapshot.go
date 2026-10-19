@@ -425,7 +425,9 @@ func (q *seqs) floor(s agentproto.Snapshot, applied agentproto.Epoch, appliedSeq
 
 // stamp gives s its seq. applied is what the node's agent applied last,
 // epoch and seq: after a start of the engine within one epoch, the seqs go on
-// above it.
+// above it, also when the agent's first report comes after the first
+// snapshot of this process: the agent asks for nothing below what it
+// applied, so a seq that started over would never reach it.
 func (q *seqs) stamp(s *agentproto.Snapshot, applied agentproto.Epoch, appliedSeq uint64) {
 	if q.byNode == nil {
 		q.byNode = map[string]*seqOf{}
@@ -433,10 +435,10 @@ func (q *seqs) stamp(s *agentproto.Snapshot, applied agentproto.Epoch, appliedSe
 	cur := q.byNode[s.Node]
 	if cur == nil || cur.epoch != s.Epoch {
 		cur = &seqOf{epoch: s.Epoch}
-		if applied == s.Epoch {
-			cur.seq = appliedSeq
-		}
 		q.byNode[s.Node] = cur
+	}
+	if applied == s.Epoch && appliedSeq > cur.seq {
+		cur.seq, cur.sum = appliedSeq, [sha256.Size]byte{}
 	}
 	s.Seq = 0
 	var buf bytes.Buffer
