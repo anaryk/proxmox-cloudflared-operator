@@ -72,8 +72,9 @@ func TestAPinnedTunnelsTokenGoesToItsNodeAlone(t *testing.T) {
 	}
 }
 
-// A node that is not active gets no shared token, and an appliance agent no
-// pinned one: only a host agent runs a tunnel pinned to its node.
+// A node that is not active gets no shared token; an appliance agent gets
+// its pinned one as a host agent does, as the routes of its node's guests
+// are served through the tunnel pinned to its node.
 func TestNoTokenGoesToANodeThatMayNotRunTheTunnel(t *testing.T) {
 	t.Run("joining", func(t *testing.T) {
 		w, _ := pinnedDB(t)
@@ -96,8 +97,8 @@ func TestNoTokenGoesToANodeThatMayNotRunTheTunnel(t *testing.T) {
 		addGuest(w.env, model.Guest{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 9302}, Name: "pco", Node: "pve2", Running: true, Pool: "pco"})
 		w.tick(time.Second)
 		tun, ok := w.tunnelIn(t, "pve2", pinned2)
-		require.False(t, ok && tun.Run)
-		require.Empty(t, tun.Token.Reveal())
+		require.True(t, ok && tun.Run, "an appliance agent runs the tunnel pinned to its node")
+		require.NotEmpty(t, tun.Token.Reveal())
 	})
 }
 

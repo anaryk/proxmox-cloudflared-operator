@@ -10,7 +10,6 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -86,9 +85,11 @@ func (c *cycleRun) handsTokens() bool {
 
 // remoteTunnels are the tunnels whose connectors the agent of node runs,
 // each with its run token: the shared tunnel of every account as role
-// says, and the tunnel pinned to the node, to a host agent alone. A node of
-// a state the cycle does not know, one that is not served, and an appliance
-// agent get no pinned tunnel. A joining node does get its own pinned
+// says, and the tunnel pinned to the node, to a host agent and to an
+// appliance agent alike, as the routes of an appliance install's guests
+// are served through the tunnels pinned to their nodes. A node of a state
+// the cycle does not know, and one that is not served, get no pinned
+// tunnel. A joining node does get its own pinned
 // tunnel while the plan has routes there: after a reboot the node comes
 // back joining with its guests, and their pinned routes are served through
 // that tunnel alone, so holding its token until admission would keep them
@@ -102,7 +103,6 @@ func (c *cycleRun) remoteTunnels(node string, role sharedRole) []agentproto.Tunn
 		return nil
 	}
 	own, err := planner.PinnedTunnelName(c.install.ID, node)
-	host := entryKind(n.Node) == string(pki.KindHost)
 	var out []agentproto.Tunnel
 	for _, t := range c.tunnels {
 		if !t.Exists || t.ID == "" {
@@ -113,7 +113,7 @@ func (c *cycleRun) remoteTunnels(node string, role sharedRole) []agentproto.Tunn
 			out = append(out, c.snapshotTunnel(t.AccountID, t.ID, t.Name, ""))
 			continue
 		case t.Name == planner.TunnelName(c.install.ID) && role == sharedRun:
-		case err == nil && t.Name == own && host && c.planned(tunnelRef{t.AccountID, own}):
+		case err == nil && t.Name == own && c.planned(tunnelRef{t.AccountID, own}):
 		case err == nil && t.Name == own && c.retiring(t):
 			stop := c.snapshotTunnel(t.AccountID, t.ID, t.Name, "")
 			stop.Stop = true
@@ -129,7 +129,7 @@ func (c *cycleRun) remoteTunnels(node string, role sharedRole) []agentproto.Tunn
 	// account, are kept as they are on the node too: listed without a
 	// token, so that a prune keeps their connectors.
 	for _, t := range c.shown {
-		mayRun := t.Name == planner.TunnelName(c.install.ID) && role != sharedNone || err == nil && t.Name == own && host
+		mayRun := t.Name == planner.TunnelName(c.install.ID) && role != sharedNone || err == nil && t.Name == own
 		if t.ID == "" || !mayRun || slices.ContainsFunc(out, func(o agentproto.Tunnel) bool { return o.TunnelID == t.ID }) {
 			continue
 		}

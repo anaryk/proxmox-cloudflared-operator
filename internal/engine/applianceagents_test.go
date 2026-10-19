@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -10,8 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -285,4 +288,132 @@ func TestTheOwnNodeOfAHostIsLeftToItsFirstStart(t *testing.T) {
 	e.cycle()
 
 	require.Empty(t, entryOf(t, e, testNode).State)
+}
+
+// applianceTwoNodes is an appliance install of two nodes: the controller on
+// pve1, registered by its init without a state, and an agent container on
+// pve2, with the guest db on pve2.
+func applianceTwoNodes(t *testing.T) *world {
+	t.Helper()
+	e, r, listed := clusterOf(t, applianceNode("pve2", 1))
+	require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: testNode, Since: t0}))
+	require.NoError(t, e.store.SaveInstall(applianceInstall()))
+	*listed = nil
+	e.quorate = func(context.Context) (bool, error) { return true, nil }
+	l := holding(testWriter)
+	e.lease = l
+	e.res.addrs["db.example.com"] = dbAddr
+	e.inv.set(inventory.Snapshot{
+		Guests: []model.Guest{
+			carded(guest(102, "db", "db.example.com -> :8080"), "pve2", dbCard),
+			{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 9200}, Name: "pco", Node: testNode, Running: true, Pool: "pco"},
+			{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 9301}, Name: "pco", Node: "pve2", Running: true, Pool: "pco"},
+		},
+		Nodes: []inventory.Node{
+			{Name: testNode, Addr: nodeAddr, Online: true, Local: true},
+			{Name: "pve2", Addr: netip.MustParseAddr("10.0.0.3"), Online: true},
+		},
+		Complete: true,
+	})
+	e.eng = e.newEngine()
+	e.enforce()
+	return &world{env: e, r: r, lease: l, listed: listed, acts: map[string]*agentAct{
+		"pve2": {kind: pki.KindAppliance, started: t0.Add(-time.Hour)},
+	}}
+}
+
+// In an appliance install the route of a guest is served through the
+// tunnel pinned to the guest's node, whose connector the node's agent runs
+// with a token of its own: the controller's connector of the shared tunnel
+// has no egress target for a guest of another node, and must not take a
+// share of its requests. The agent of an appliance was handed no pinned
+// tunnel, so a route pinned there pointed at a tunnel nobody ran.
+func TestAnApplianceAgentRunsTheTunnelPinnedToItsNode(t *testing.T) {
+	w := applianceTwoNodes(t)
+	pinned2, err := planner.PinnedTunnelName(testInstall, "pve2")
+	require.NoError(t, err)
+
+	var st State
+	for range 40 {
+		st = w.tick(5 * time.Second)
+	}
+
+	require.Equal(t, store.NodeActive, entryOf(t, w.env, testNode).State)
+	rt := route(st, "db.example.com")
+	require.NotNil(t, rt.Placement)
+	require.Equal(t, TunnelPinned, rt.Placement.Kind)
+	require.Equal(t, "pve2", rt.Placement.Node)
+	require.Equal(t, pinned2, w.recordTunnel(t, "db.example.com"))
+	s, ok := w.r.lastOf("pve2")
+	require.True(t, ok)
+	i := slices.IndexFunc(s.Tunnels, func(tun agentproto.Tunnel) bool { return tun.Name == pinned2 })
+	require.GreaterOrEqual(t, i, 0, "the agent of pve2 is handed its pinned tunnel: %v", s.Tunnels)
+	require.True(t, s.Tunnels[i].Run)
+	require.NotEmpty(t, s.Tunnels[i].Token.Reveal())
+	require.Equal(t, planner.StateActive, rt.State)
+}
+
+// An appliance cluster upgraded from a release that left the route of
+// another node's guest in the shared tunnel, served by that node's shared
+// connector alone, moves it to the tunnel pinned to the guest's node by
+// the steps of a move: the pinned tunnel gets its rule and its connector
+// runs on the node first, the record points at the shared tunnel until
+// then, and the shared tunnel keeps its rule at the target's address until
+// the old rules' time after the switch passed. Nothing is withdrawn.
+func TestARouteOfAnApplianceAgentsGuestMovesFromTheSharedTunnelToItsNode(t *testing.T) {
+	w := applianceTwoNodes(t)
+	// As before the fix: the controller's node is no replica, and the
+	// route is shared, reached by pve2 alone.
+	w.settings(func(s *store.Settings) { s.Cluster.Replicas = []string{"pve2"} })
+	for range 6 {
+		w.tick(5 * time.Second)
+	}
+	require.Equal(t, tunnelName, w.recordTunnel(t, "db.example.com"))
+	require.Equal(t, []string{tunnelName}, w.servedIn(t, "db.example.com"))
+	require.Equal(t, "http://"+dbAddr.String()+":8080", w.sharedRule(t, "db.example.com").Service)
+	pinned2, err := planner.PinnedTunnelName(testInstall, "pve2")
+	require.NoError(t, err)
+
+	w.settings(func(s *store.Settings) { s.Cluster.Replicas = nil })
+	var steps []string
+	ran := false
+	for range 120 {
+		w.tick(5 * time.Second)
+		w.requireNothingWithdrawn(t, "db.example.com")
+		if s, ok := w.r.lastOf("pve2"); ok && slices.ContainsFunc(s.Tunnels, func(tun agentproto.Tunnel) bool { return tun.Name == pinned2 && tun.Run }) {
+			ran = true
+		}
+		m, moving := w.moveOf(t, "qemu/102")
+		if moving && (len(steps) == 0 || steps[len(steps)-1] != m.Step) {
+			steps = append(steps, m.Step)
+		}
+		rec := w.recordTunnel(t, "db.example.com")
+		switch {
+		case moving && m.Step != store.MoveCNAMEsSwitched:
+			require.Equal(t, tunnelName, rec, "the record stays until the pinned connector rolled out")
+		case rec == pinned2:
+			require.True(t, ran, "the agent of pve2 ran the pinned connector before the record switched")
+		}
+		if moving {
+			require.Equal(t, "http://"+dbAddr.String()+":8080", w.sharedRule(t, "db.example.com").Service, "the shared rule serves the target while the move lasts, step %s", m.Step)
+		}
+	}
+
+	require.Equal(t, []string{store.MoveRulesAdded, store.MoveRolledOut, store.MoveCNAMEsSwitched}, steps)
+	require.Equal(t, pinned2, w.recordTunnel(t, "db.example.com"))
+	require.Equal(t, []string{pinned2}, w.servedIn(t, "db.example.com"), "the shared rule is gone once the old rules' time passed")
+	_, ok := w.moveOf(t, "qemu/102")
+	require.False(t, ok, "the move is done")
+}
+
+// sharedRule is the rule of host in the shared tunnel; an empty one when
+// there is none.
+func (w *world) sharedRule(t *testing.T, host string) planner.IngressRule {
+	t.Helper()
+	for _, r := range w.rulesByTunnel(t)[tunnelName] {
+		if r.Hostname == host {
+			return r
+		}
+	}
+	return planner.IngressRule{}
 }
