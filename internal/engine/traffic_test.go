@@ -277,7 +277,7 @@ func TestATunnelHasNoRateBeforeItsSecondScrape(t *testing.T) {
 	require.JSONEq(t, `{"tunnelId": "`+tunnelA+`", "rps": 0, "errorsPerSec": 0, "concurrent": 0, "haConnections": 4, "stale": false}`, string(first))
 	second, err := json.Marshal(got[1].Traffic.Tunnels[0])
 	require.NoError(t, err)
-	require.JSONEq(t, `{"tunnelId": "`+tunnelA+`", "rps": 10, "errorsPerSec": 0, "concurrent": 2, "haConnections": 4, "stale": false, "sampled": true}`, string(second))
+	require.JSONEq(t, `{"tunnelId": "`+tunnelA+`", "at": "2026-10-01T12:00:05Z", "rps": 10, "errorsPerSec": 0, "concurrent": 2, "haConnections": 4, "stale": false, "sampled": true}`, string(second))
 }
 
 func TestATrafficViewHandedOutIsACopy(t *testing.T) {
