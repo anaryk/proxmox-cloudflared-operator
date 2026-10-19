@@ -77,6 +77,29 @@ describe('the model of a cluster', () => {
     expect(buildModel(down, tv).nodes.find((n) => n.id === 'replica:acc1:pve2:pinned')).toMatchObject({ state: 'not ready' })
   })
 
+  // With every route of an account pinned to a node, the shared tunnel
+  // serves nothing and is not drawn, nor are its replicas; the tunnel
+  // pinned to pve2 and its node are the chain.
+  test('a shared tunnel that serves nothing while pinned tunnels serve is not drawn', () => {
+    const allPinned: State = {
+      ...st,
+      rogueConnectors: [],
+      routes: st.routes
+        .filter((r) => r.accountId !== 'acc1' || r.placement)
+        .map((r) =>
+          r.placement?.kind === 'shared'
+            ? { ...r, placement: { tunnel: 'pco-abc123-pve2', kind: 'pinned', node: 'pve2' }, replicas: r.replicas.filter((rv) => rv.node === 'pve2') }
+            : r,
+        ),
+    }
+    const ids = buildModel(allPinned, tv).nodes.map((n) => n.id)
+    expect(ids).not.toContain('edge:acc1')
+    expect(ids).not.toContain('replica:acc1:pve1')
+    expect(ids).not.toContain('replica:acc1:pve2')
+    expect(ids).toContain('edge:acc1:pve2')
+    expect(ids).toContain('replica:acc1:pve2:pinned')
+  })
+
   test("the trunk of this node carries its figures; the others' have one lane and none", () => {
     const own = edge('edge:acc1>replica:acc1:pve1')
     expect(own).toMatchObject({ style: 'trunk', lanes: 4 })

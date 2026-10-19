@@ -289,10 +289,14 @@ The map draws every hostname's way from Cloudflare to its guest, in five columns
 
 On a cluster the connector column holds a card for each node that runs a connector of the
 tunnel, a replica, with a chip in the colour of its readiness, and a tunnel pinned to a node has
-an edge card of its own, `Main · pinned to pve2`, with a line to that node alone. Above six
-replicas of one tunnel they fold into one card, `replicas 7/7 ready`, which opens on a click. A
-replica opens its node in the drawer. In the list view a route of a cluster has two more steps:
-its placement, and how each replica reaches its target.
+an edge card of its own, `pinned to pve2 · Main`, with a line to that node alone, whose chip is
+the readiness of its connector of that tunnel, and a line saying where that connector runs when
+it is another node. A shared tunnel that serves no route while the tunnels pinned to the nodes
+serve the routes of its account is not drawn, nor are its replicas: it keeps the sentinel of the
+writer, and its connectors wait for a route every node reaches; the tunnels page lists it with
+no routes. Above six replicas of one tunnel they fold into one card, `replicas 7/7 ready`, which
+opens on a click. A replica opens its node in the drawer. In the list view a route of a cluster
+has two more steps: its placement, and how each replica reaches its target.
 
 Hovering or focusing a card shows its chain and dims the rest; a click, or Enter, opens its
 details in a drawer. The search box focuses the map on one hostname, guest, zone or tunnel: it
@@ -569,8 +573,9 @@ credentials' checks found of it.
 
 The tunnel of the install in each account, told apart by the name of the account and the first
 eight characters of its id, since every tunnel of an install has the same name: whether its
-configuration is verified, which version runs on how many connectors, its connector on this node
-and how many connectors pco does not run. Tunnels no credential sees any more are listed first,
+configuration is verified, how many routes it serves, which version runs on how many connectors,
+its connector on this node, or the node it runs on for a tunnel pinned to another node, and how
+many connectors pco does not run. Tunnels no credential sees any more are listed first,
 with a link to their entry in the plan. On a cluster a tunnel pinned to a node shares the
 account of the shared one and is told apart by the node, `Main · pinned to pve2`; its page is
 `/edge/tunnels/<account>?tunnel=<name>`.

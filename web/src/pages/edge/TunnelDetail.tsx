@@ -77,6 +77,19 @@ export const connectorOf = (st: Pick<State, 'connectors'>, t: Pick<TunnelView, '
 // connector.Status says with the flags of its token and its metrics port.
 export const connectorLine = (c: ConnectorStatus | undefined) => (c ? connectorText(c) : 'none')
 
+// routesIn counts the routes a tunnel serves: those placed in it, and, on a
+// node alone, those of its account.
+export function routesIn(st: Pick<State, 'routes' | 'nodes'>, t: Pick<TunnelView, 'accountId' | 'name' | 'kind'>): number {
+  let n = 0
+  for (const r of st.routes) {
+    if (r.accountId !== t.accountId || !r.rule) continue
+    if (r.placement) {
+      if (r.placement.tunnel === t.name) n++
+    } else if (t.kind !== 'pinned') n++
+  }
+  return n
+}
+
 // The connector line of a tunnel of the state: the connector of a tunnel
 // pinned to another node runs there, and the cluster page says what its
 // agent reports of it.

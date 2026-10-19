@@ -9,7 +9,7 @@ import { Skeleton } from '../../components/Skeleton'
 import { type Column, Table } from '../../components/Table'
 import { Untrusted } from '../../components/Untrusted'
 import { Card, planEntry, unset } from '../kit'
-import { connectorLineOf, rolloutText, tunnelLabel, tunnelPathOf, verifiedLine } from './TunnelDetail'
+import { connectorLineOf, rolloutText, routesIn, tunnelLabel, tunnelPathOf, verifiedLine } from './TunnelDetail'
 
 // Tunnels is /edge/tunnels: the tunnel of the install in each account, told
 // apart by the account, with what the last cycle found of each and the
@@ -35,6 +35,7 @@ export function Tunnels(): JSX.Element {
     },
     { key: 'name', header: 'Name', cell: (t) => <Untrusted text={t.name} className="mono" /> },
     { key: 'verified', header: 'Verified', cell: (t) => <Untrusted text={verifiedLine(t, st.hold)} /> },
+    { key: 'routes', header: 'Routes', cell: (t) => String(routesIn(st, t)) },
     { key: 'rollout', header: 'Rollout', cell: (t) => rolloutText(t.rollout) },
     { key: 'connector', header: 'Connector', cell: (t) => connectorLineOf(st, t) },
     {

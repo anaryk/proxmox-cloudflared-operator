@@ -36,17 +36,18 @@ describe('the list', () => {
     const { store } = await fakeStore({ state: populated })
     renderPage(store, <Tunnels />)
     expect(rows()).toEqual([
-      { Tunnel: 'Main · 00000000', Name: 'pco-abc123', Verified: 'yes', Rollout: 'version 3 runs on 1 connector', Connector: 'active, ready, 4 connections', 'Not run by pco': '1' },
-      { Tunnel: 'acc2 · -', Name: 'pco-abc123', Verified: 'unknown', Rollout: '-', Connector: 'none', 'Not run by pco': '0' },
+      { Tunnel: 'Main · 00000000', Name: 'pco-abc123', Verified: 'yes', Routes: '2', Rollout: 'version 3 runs on 1 connector', Connector: 'active, ready, 4 connections', 'Not run by pco': '1' },
+      { Tunnel: 'acc2 · -', Name: 'pco-abc123', Verified: 'unknown', Routes: '0', Rollout: '-', Connector: 'none', 'Not run by pco': '0' },
       {
         Tunnel: 'acc3 · 00000000',
         Name: 'pco-abc123',
         Verified: 'held: account frozen: zone example.info is no longer listed by credential cred1',
+        Routes: '0',
         Rollout: '-',
         Connector: 'none',
         'Not run by pco': '0',
       },
-      { Tunnel: 'acc4 · 00000000', Name: 'pco-abc123', Verified: 'unchecked: no writer identity; run pco setup', Rollout: '-', Connector: 'none', 'Not run by pco': '0' },
+      { Tunnel: 'acc4 · 00000000', Name: 'pco-abc123', Verified: 'unchecked: no writer identity; run pco setup', Routes: '0', Rollout: '-', Connector: 'none', 'Not run by pco': '0' },
     ])
     const links = screen.getAllByRole('link').filter((a) => a.getAttribute('href')?.startsWith('/edge/tunnels/'))
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/edge/tunnels/acc1', '/edge/tunnels/acc2', '/edge/tunnels/acc3', '/edge/tunnels/acc4'])

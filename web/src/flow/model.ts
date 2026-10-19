@@ -571,6 +571,28 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     nodes.set(t.node.id, t.node)
   }
 
+  // A shared tunnel that serves no route while the tunnels pinned to the
+  // nodes serve the routes of its account is not drawn, nor are its
+  // replicas: it is there for the sentinel of the writer, and its
+  // connectors wait for a route every node reaches, which the tunnels page
+  // says. One a connector pco does not run hangs off stays in sight, and so
+  // does the only tunnel of an account.
+  const pinnedServing = new Set<string>()
+  for (const [id, n] of nodes) {
+    if (n.kind === 'edge' && n.ref && id !== tunnelNodeId(n.ref) && (n.routes?.length ?? 0) > 0) pinnedServing.add(n.ref)
+  }
+  for (const [id, n] of [...nodes]) {
+    if (n.kind !== 'edge' || !n.ref || id !== tunnelNodeId(n.ref) || (n.routes?.length ?? 0) > 0 || !pinnedServing.has(n.ref)) continue
+    const from = [...edges].filter(([, e]) => e.edge.from === id)
+    if (from.some(([, e]) => e.edge.style === 'rogue' || e.routes.size > 0)) continue
+    nodes.delete(id)
+    for (const [eid, e] of from) {
+      edges.delete(eid)
+      const to = e.edge.to
+      if (replicaOf(to) && ![...edges.values()].some((x) => x.edge.to === to)) nodes.delete(to)
+    }
+  }
+
   const out: FlowEdge[] = []
   for (const { edge, routes: keys, figures, muted } of edges.values()) {
     const e: FlowEdge = { ...edge }
