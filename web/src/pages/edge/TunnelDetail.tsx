@@ -78,11 +78,12 @@ export const connectorOf = (st: Pick<State, 'connectors'>, t: Pick<TunnelView, '
 export const connectorLine = (c: ConnectorStatus | undefined) => (c ? connectorText(c) : 'none')
 
 // routesIn counts the routes a tunnel serves: those placed in it, and, on a
-// node alone, those of its account.
+// node alone, those of its account, the routes of a frozen account among
+// them, as the map counts them.
 export function routesIn(st: Pick<State, 'routes' | 'nodes'>, t: Pick<TunnelView, 'accountId' | 'name' | 'kind'>): number {
   let n = 0
   for (const r of st.routes) {
-    if (r.accountId !== t.accountId || !r.rule) continue
+    if (r.accountId !== t.accountId || (!r.rule && r.state !== 'frozen')) continue
     if (r.placement) {
       if (r.placement.tunnel === t.name) n++
     } else if (t.kind !== 'pinned') n++
