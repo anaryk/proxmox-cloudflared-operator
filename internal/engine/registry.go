@@ -156,7 +156,16 @@ func (c *cycleRun) observeNode(n *store.NodeEntry, rep NodeReport, heard bool, m
 	c.followMaintenance(n, maint)
 	if n.State == "" {
 		// An entry made before states, which the first start of this
-		// release numbers and activates.
+		// release numbers and activates on a host. The appliance has no
+		// first start: its init registers the controller's own node
+		// without a state, and the registry numbers and activates it
+		// here, so that the node is a replica of the shared tunnel, whose
+		// connector it runs, and no route of another node's guest is left
+		// there for it to fail.
+		if !self || c.install.Appliance == nil || !c.giveIndex(n, entries) {
+			return
+		}
+		n.State, n.StateSince = store.NodeActive, c.now
 		return
 	}
 	var evs []registry.Event

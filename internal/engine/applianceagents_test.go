@@ -249,3 +249,40 @@ func TestTheClusterViewOfAnApplianceHasTheQuorumOfTheAPI(t *testing.T) {
 	require.True(t, st.Cluster.Quorate)
 	require.Equal(t, []string{"pve1", "pve2"}, st.Cluster.Members)
 }
+
+// The init of an appliance registers the controller's own node without a
+// state, and no first start numbers it as on a host: the registry does, so
+// that the node is a replica of the shared tunnel, whose connector it runs.
+// Without that, a route of another node's guest stayed in the shared tunnel
+// as reached by its only replica, while the controller's connector, which
+// has no egress target for it, took a share of its requests.
+func TestTheOwnNodeOfAnApplianceControllerIsNumberedAndActive(t *testing.T) {
+	e, r, _ := clusterOf(t, applianceNode("pve2", 1))
+	require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: testNode, Since: t0}))
+	require.NoError(t, e.store.SaveInstall(applianceInstall()))
+	e.enforce()
+	r.report("pve2", e.clock.now(), t0.Add(-time.Hour))
+
+	st := e.cycle()
+
+	n := entryOf(t, e, testNode)
+	require.Equal(t, store.NodeActive, n.State)
+	require.NotNil(t, n.Index)
+	require.Equal(t, 0, *n.Index)
+	i := slices.IndexFunc(st.Nodes, func(v NodeView) bool { return v.Name == testNode })
+	require.GreaterOrEqual(t, i, 0)
+	require.Equal(t, store.NodeActive, st.Nodes[i].State)
+}
+
+// A host registers its own node the same way, and its first start numbers
+// it before any cycle writes: the registry leaves such an entry alone.
+func TestTheOwnNodeOfAHostIsLeftToItsFirstStart(t *testing.T) {
+	e, r, _ := clusterOf(t, applianceNode("pve2", 1))
+	require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: testNode, Since: t0}))
+	e.enforce()
+	r.report("pve2", e.clock.now(), t0.Add(-time.Hour))
+
+	e.cycle()
+
+	require.Empty(t, entryOf(t, e, testNode).State)
+}
