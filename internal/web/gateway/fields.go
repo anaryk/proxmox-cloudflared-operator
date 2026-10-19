@@ -139,7 +139,7 @@ var leaseFields = map[string]decision{
 var nodeFields = map[string]decision{
 	"name": kept, "state": kept, "stateSince": kept, "drained": kept, "kind": kept, "vmid": kept, "index": kept,
 	"controller": kept, "build": kept, "protocol": kept, "statusAge": kept, "watchRunning": kept, "covered": kept,
-	"replicaReady": kept, "verified": kept, "failing": kept, "belowMinimum": kept, "pinned": kept,
+	"replicaReady": kept, "pinnedReady": kept, "verified": kept, "failing": kept, "belowMinimum": kept, "pinned": kept,
 	"certExpires": kept, "clockSkew": kept,
 	"agentAddress": filteredBy("nodes"), // a host's stays; an appliance agent's is a container's
 	"joinUses":     removedBy("nodes"),

@@ -714,7 +714,7 @@ cluster (`controller`, `generation`, `members`, `quorate`, `quorumDevice`, `over
 `coverage`, `upgrade`, `caRotation`, `blocks`, and `judgedAt`, `heldSince` and `leaseExpired`
 for a controller whose cycles hold) and the nodes of the registry, each with its
 state and since when, its kind, index and agent address, what its agent last reported (`build`,
-`protocol`, `statusAge`, `watchRunning`, `covered`, `replicaReady`, the targets `verified`,
+`protocol`, `statusAge`, `watchRunning`, `covered`, `replicaReady`, `pinnedReady`, the targets `verified`,
 `failing` and `belowMinimum`, `clockSkew`), the routes `pinned` to it, when its certificate
 ends, and the uses of its join token (`joinUses`, `contested`). `GET /v1/nodes` answers the
 nodes alone. On a node alone the list is empty.

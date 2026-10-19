@@ -453,7 +453,7 @@ func clusterScenario(populated files) files {
 			Controller: true, Build: "1.4.0", Protocol: "1", StatusAge: time.Second, WatchRunning: true, Covered: true, ReplicaReady: true,
 			Verified: 9, Failing: 1, CertExpires: at.Add(80 * 24 * time.Hour)},
 		{Name: "pve2", State: string(agentproto.Active), StateSince: at.Add(-50 * time.Minute), Kind: string(pki.KindHost), Index: index(1), AgentAddress: netip.MustParseAddr("10.10.0.2"),
-			Build: "1.4.0", Protocol: "1", StatusAge: 4 * time.Second, WatchRunning: true, Covered: true, ReplicaReady: true,
+			Build: "1.4.0", Protocol: "1", StatusAge: 4 * time.Second, WatchRunning: true, Covered: true, ReplicaReady: true, PinnedReady: true,
 			Verified: 10, Failing: 1, Pinned: 1, CertExpires: at.Add(61 * 24 * time.Hour), ClockSkew: 300 * time.Millisecond},
 		{Name: "pve3", State: string(agentproto.Joining), StateSince: at.Add(-2 * time.Minute), Kind: string(pki.KindAppliance), VMID: 9301, AgentAddress: netip.MustParseAddr("10.0.0.93"),
 			Build: "1.4.0", Protocol: "1", StatusAge: 4 * time.Second, Covered: true, ClockSkew: 300 * time.Millisecond,

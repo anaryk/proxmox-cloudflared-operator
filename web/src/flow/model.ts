@@ -205,20 +205,19 @@ class Index {
     return t.id ? `${this.accountName(t.accountId)} · ${t.id.slice(0, 8)}` : this.accountName(t.accountId)
   }
 
-  // pinnedState is the state of the node of a tunnel pinned to it, by what
-  // its agent reports of the routes placed there: the readiness of the
-  // shared tunnel's connector says nothing of this one.
+  // pinnedState is the state of the node of a tunnel pinned to it: whether
+  // its connector of that tunnel is ready, as this node found its own, or
+  // as the node's agent reports it. The readiness of the shared tunnel's
+  // connector says nothing of this one.
   pinnedState(t: TunnelView): string {
-    let any = false
-    for (const r of this.st.routes) {
-      if (r.placement?.tunnel !== t.name) continue
-      for (const rv of r.replicas) {
-        if (rv.node !== t.node) continue
-        if (rv.ok) return 'ready'
-        any = true
-      }
+    const n = t.node ? this.nodes.get(t.node) : undefined
+    if (!n) return 'unknown'
+    if (t.node === this.st.node) {
+      const c = t.id ? this.st.connectors.find((c) => c.tunnelId === t.id) : undefined
+      return c?.active && c.ready ? 'ready' : 'not ready'
     }
-    return any ? 'not ready' : 'no route'
+    if (n.pinnedReady) return 'ready'
+    return n.state === 'active' ? 'not ready' : n.state || 'unknown'
   }
 
   // The edge of a route: the shared tunnel of its account, or the tunnel

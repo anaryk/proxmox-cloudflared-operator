@@ -57,6 +57,26 @@ describe('the model of a cluster', () => {
     expect(model.nodes.some((n) => n.kind === 'connector')).toBe(false)
   })
 
+  // The node card of a pinned tunnel goes by the connector of that tunnel,
+  // as the node's agent reports it, and not by the routes it reaches: an
+  // agent that verifies the targets but runs no connector is not ready.
+  test('the node of a tunnel pinned to another node is ready only when its agent reports that connector', () => {
+    const silent: State = { ...st, nodes: st.nodes.map((n) => (n.name === 'pve2' ? { ...n, pinnedReady: false } : n)) }
+    const m = buildModel(silent, tv)
+    expect(m.nodes.find((n) => n.id === 'replica:acc1:pve2:pinned')).toMatchObject({ state: 'not ready' })
+    expect(m.nodes.find((n) => n.id === 'replica:acc1:pve2')).toMatchObject({ state: 'ready' })
+  })
+
+  test('a tunnel pinned to this node shows its own connector on its edge, and its node goes by it', () => {
+    const pinnedID = '00000000-0000-4000-8000-000000000020'
+    const here: State = { ...st, node: 'pve2', connectors: [...st.connectors, { tunnelId: pinnedID, active: true, ready: true, connections: 2 }] }
+    const m = buildModel(here, tv)
+    expect(m.nodes.find((n) => n.id === 'edge:acc1:pve2')).toMatchObject({ lines: ['2 connections'] })
+    expect(m.nodes.find((n) => n.id === 'replica:acc1:pve2:pinned')).toMatchObject({ state: 'ready' })
+    const down: State = { ...here, connectors: st.connectors }
+    expect(buildModel(down, tv).nodes.find((n) => n.id === 'replica:acc1:pve2:pinned')).toMatchObject({ state: 'not ready' })
+  })
+
   test("the trunk of this node carries its figures; the others' have one lane and none", () => {
     const own = edge('edge:acc1>replica:acc1:pve1')
     expect(own).toMatchObject({ style: 'trunk', lanes: 4 })
@@ -169,6 +189,7 @@ function wideCluster(n: number): State {
     watchRunning: true,
     covered: true,
     replicaReady: i !== n - 1,
+    pinnedReady: false,
     verified: 4,
     failing: 0,
     belowMinimum: 0,

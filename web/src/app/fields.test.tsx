@@ -47,7 +47,7 @@ const probes: Record<string, { state: Partial<State>; shows: string }> = {
   nodes: {
     state: {
       nodes: [
-        { name: 'pve-probe-node', state: 'active', kind: 'host', controller: false, statusAge: 1e9, watchRunning: true, covered: true, replicaReady: true, verified: 1, failing: 0, belowMinimum: 0, pinned: 0, clockSkew: 0 },
+        { name: 'pve-probe-node', state: 'active', kind: 'host', controller: false, statusAge: 1e9, watchRunning: true, covered: true, replicaReady: true, pinnedReady: false, verified: 1, failing: 0, belowMinimum: 0, pinned: 0, clockSkew: 0 },
       ],
     },
     shows: 'pve-probe-node',

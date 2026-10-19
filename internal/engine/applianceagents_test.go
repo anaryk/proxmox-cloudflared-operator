@@ -351,6 +351,11 @@ func TestAnApplianceAgentRunsTheTunnelPinnedToItsNode(t *testing.T) {
 	require.True(t, s.Tunnels[i].Run)
 	require.NotEmpty(t, s.Tunnels[i].Token.Reveal())
 	require.Equal(t, planner.StateActive, rt.State)
+	j := slices.IndexFunc(st.Nodes, func(v NodeView) bool { return v.Name == "pve2" })
+	require.GreaterOrEqual(t, j, 0)
+	require.True(t, st.Nodes[j].PinnedReady, "the node view says that pve2's agent reports a ready connector of its pinned tunnel")
+	k := slices.IndexFunc(st.Nodes, func(v NodeView) bool { return v.Name == testNode })
+	require.False(t, st.Nodes[k].PinnedReady, "pve1 has no pinned tunnel")
 }
 
 // An appliance cluster upgraded from a release that left the route of

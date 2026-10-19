@@ -55,7 +55,10 @@ type NodeView struct {
 	StatusAge    time.Duration `json:"statusAge"`
 	WatchRunning bool          `json:"watchRunning"`
 	Covered      bool          `json:"covered"`
-	ReplicaReady bool          `json:"replicaReady"`
+	// ReplicaReady says that the node's agent reports a ready connector of
+	// a shared tunnel; PinnedReady one of the tunnel pinned to the node.
+	ReplicaReady bool `json:"replicaReady"`
+	PinnedReady  bool `json:"pinnedReady"`
 	// Verified, Failing and BelowMinimum count the targets of the node's
 	// snapshot by how they fare there; Pinned the routes pinned to it.
 	Verified     int           `json:"verified"`
