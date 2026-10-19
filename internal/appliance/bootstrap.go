@@ -221,7 +221,9 @@ func checkKind(b *Bootstrap, f bootstrapFile) error {
 		return nil
 	case b.Mode == ModeRecover:
 		return errors.New("an agent is installed or repaired, never recovered: it holds nothing of the install to recover")
-	case b.InstallID == "":
+	case b.InstallID == "" && b.Mode != ModeRepair:
+		// A repair keeps the install the volume holds; an install joins
+		// the one the join token named.
 		return errors.New("an agent joins an install: installId names it")
 	case f.CloudflareToken != "":
 		return errors.New("an agent holds no Cloudflare token: the controller hands it what it runs")

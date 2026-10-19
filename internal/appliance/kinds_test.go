@@ -138,3 +138,17 @@ func with(f map[string]any, change func(map[string]any)) map[string]any {
 	change(f)
 	return f
 }
+
+// A repair of an agent names no install: the one on the volume is kept, with
+// the kind, and the daemon runs the agent as before.
+func TestARepairOfAnAgentKeepsTheInstallOfItsVolume(t *testing.T) {
+	e := newInitEnv(t)
+	require.NoError(t, e.init(e.bootstrap("install", asAgent)))
+	before := e.install()
+
+	require.NoError(t, e.init(e.bootstrap("repair", asAgent, func(f map[string]any) { f["installId"] = "" })))
+
+	inst := e.install()
+	require.Equal(t, before.ID, inst.ID)
+	require.Equal(t, store.ApplianceAgent, inst.Appliance.Kind)
+}

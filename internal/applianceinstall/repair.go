@@ -98,7 +98,14 @@ func (r *run) repair(ctx context.Context) error {
 		return err
 	}
 	r.fromConfig(cfg)
+	// The bootstrap of the repair says the kind the container has, so that
+	// a controller or an agent stays one.
 	r.kind = kindOf(cfg["tags"])
+	r.o.Kind = r.kind
+	if r.kind == KindAgent && r.o.Recover {
+		return refusal{fmt.Errorf("lxc/%d is an agent, and an agent holds nothing of the install to recover: "+
+			"pco appliance uninstall --vmid %d, then install it again with a new join token", vmid, vmid)}
+	}
 	running, err := ctRunning(ctx, r.r, vmid)
 	if err != nil {
 		return err

@@ -205,4 +205,42 @@ func TestRepairOfAnAgentTakesItsWebInterfaceOff(t *testing.T) {
 	require.NotContains(t, e.node.ran, "pct exec 100 --keep-env 0 -- pco web cert")
 	require.NotContains(t, ct.files, webcert.Net0File)
 	require.NotContains(t, ct.files, webcert.EnvFile)
+	b := e.bootstrap(1)
+	require.Equal(t, "repair", b["mode"])
+	require.Equal(t, "agent", b["kind"], "the repaired container stays an agent")
+	require.Empty(t, b["installId"], "a repair keeps the install the volume holds")
+	require.Empty(t, b["cloudflareToken"])
+}
+
+// An agent holds nothing of the install: --recover is refused before
+// anything is written, as the daemon in the container would refuse it.
+func TestRecoverOfAnAgentIsRefused(t *testing.T) {
+	e := newEnv(t)
+	e.withController()
+	e.install(e.agentOptions(joinToken(t, testNode)))
+	e.node.ran, e.node.inits = nil, nil
+
+	err := e.in.Repair(t.Context(), 100, Options{Yes: true, Recover: true, CloudflareToken: cfToken})
+
+	require.ErrorContains(t, err, "lxc/100 is an agent, and an agent holds nothing of the install to recover")
+	require.Empty(t, e.node.inits)
+}
+
+// A repair of a controller keeps it one: the bootstrap names the kind and
+// the storage, as the install did.
+func TestRepairOfAControllerKeepsItsKindAndStorage(t *testing.T) {
+	e := newEnv(t)
+	e.node.sharedStorage = true
+	o := e.options()
+	o.Kind, o.Storage = KindController, "local-zfs"
+	e.install(o)
+	e.node.ran, e.node.inits = nil, nil
+
+	require.NoError(t, e.in.Repair(t.Context(), 100, Options{Yes: true}), e.ask.text())
+
+	b := e.bootstrap(0)
+	require.Equal(t, "repair", b["mode"])
+	require.Equal(t, "controller", b["kind"])
+	require.Equal(t, map[string]any{"id": "local-zfs", "shared": true}, b["storage"])
+	require.True(t, e.node.cts[100].web)
 }

@@ -238,7 +238,7 @@ func (r *initRun) prepareStore(context.Context) error {
 		return fmt.Errorf("reading the install: %w", err)
 	}
 	switch {
-	case r.b.Kind == store.ApplianceAgent && found && inst.ID != r.b.InstallID:
+	case r.b.Kind == store.ApplianceAgent && found && r.b.InstallID != "" && inst.ID != r.b.InstallID:
 		return fmt.Errorf("the volume holds install %s, and this agent joins install %s: "+
 			"pco appliance uninstall --vmid %d on the node removes the container", inst.ID, r.b.InstallID, r.b.VMID)
 	case r.b.Kind == store.ApplianceAgent && found:
