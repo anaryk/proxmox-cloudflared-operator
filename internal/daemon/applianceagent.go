@@ -149,9 +149,9 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	if app.Doctor != nil {
 		app.Doctor(env.App.(*doctor.ApplianceHost))
 	}
-	agentState := func() engine.State {
-		return engine.State{Profile: store.ProfileAppliance, Node: a.Node, At: deps.Now()}
-	}
+	notes := &agentNotes{}
+	r.notes = notes
+	agentState := func() engine.State { return notes.state(a.Node, deps.Now()) }
 	doc := doctor.NewRunner(agentState, env, nil, deps.Now, log)
 	checks.set(doc)
 	gid, uids, webUID := socketAccess(deps.Accounts, log)
@@ -160,7 +160,7 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	srv.SetWebUID(webUID)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	k := &keeper{
-		table: filter, off: filter.ov.Off, note: func(engine.EgressCheck) {}, now: deps.Now, log: log,
+		table: filter, off: filter.ov.Off, note: notes.noteEgress, now: deps.Now, log: log,
 		net: serviceNet{nl: app.Netlink, nft: app.NetNft}, noteNet: func(engine.NetCheck) {},
 		gw: gw, noteGw: func(engine.GatewayCheck) {}, watchNet: deps.WatchGateway,
 		idle: func(_ context.Context, fn func()) error { fn(); return nil },
@@ -213,6 +213,43 @@ func (e *agentOnlyEngine) RunsAs() (profile, node string) { return store.Profile
 
 func (e *agentOnlyEngine) AgentView() (agentproto.AgentView, error) { return e.view(), nil }
 
+// agentNotes is what the checks of an agent container found, for its
+// doctor and status: the egress filter as the keeper last found it, and
+// the identity of the container as the guard last judged it.
+type agentNotes struct {
+	mu       sync.Mutex
+	egress   engine.EgressView
+	identity *engine.IdentityView
+}
+
+// noteEgress keeps the filter as a check found it; a check that could not
+// tell keeps what the last one found.
+func (n *agentNotes) noteEgress(c engine.EgressCheck) {
+	if c.View.State == "" {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.egress = c.View
+}
+
+func (n *agentNotes) noteIdentity(v *engine.IdentityView) {
+	if v == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.identity = v
+}
+
+// state is the state of the agent container as its API answers it: no
+// engine, with what the checks of the container found.
+func (n *agentNotes) state(node string, at time.Time) engine.State {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return engine.State{Profile: store.ProfileAppliance, Node: node, At: at, Egress: n.egress, Identity: n.identity}
+}
+
 // agentStopper is what hold does to the agent: empties its egress filter
 // and stops its connectors.
 type agentStopper interface {
@@ -225,6 +262,7 @@ type agentStopper interface {
 type agentRun struct {
 	agent    *agent.Agent
 	stopper  agentStopper // the agent, as hold uses it
+	notes    *agentNotes
 	files    agent.TLSFiles
 	events   *agent.EventLog
 	joiner   agent.Joiner
@@ -325,6 +363,9 @@ func (r *agentRun) step(ctx context.Context) {
 		}
 	}
 	serve, why := r.guard.judge(checks)
+	if r.notes != nil {
+		r.notes.noteIdentity(r.guard.identityView())
+	}
 	if !serve {
 		r.hold(ctx, why)
 		return
@@ -461,6 +502,18 @@ type agentGuard struct {
 	// and why the last one could not; zero while each was judged.
 	undecided    time.Time
 	undecidedWhy string
+	// last is the verdict that last decided the identity, and when.
+	last   appliance.Verdict
+	lastAt time.Time
+}
+
+// identityView is the identity of the container as the verdict that last
+// decided it says, for the doctor; nil before one did.
+func (g *agentGuard) identityView() *engine.IdentityView {
+	if !g.identity.decided {
+		return nil
+	}
+	return &engine.IdentityView{VMID: g.vmid, Node: g.node, OK: g.last.OK, Why: g.last.Why, Copy: g.last.Copy, CheckedAt: g.lastAt}
 }
 
 // undecidedFor is how long the verdicts of the checks before may stand in
@@ -492,12 +545,15 @@ func (g *agentGuard) judge(ctx context.Context) (bool, string) {
 	switch v := g.verdict(ctx); {
 	case v.Copy:
 		g.identity.set(false, v.Why)
+		g.last, g.lastAt = v, g.now()
 	case !v.OK && (v.Why == appliance.WhyIncomplete || v.Why == appliance.WhyPendingNIC):
 		why = v.Why
 	case !v.OK:
 		g.identity.set(false, v.Why)
+		g.last, g.lastAt = v, g.now()
 	default:
 		g.identity.set(true, "")
+		g.last, g.lastAt = v, g.now()
 	}
 	if res, ha, err := g.placement(ctx); err != nil {
 		why = "where the container runs cannot be read: " + err.Error()

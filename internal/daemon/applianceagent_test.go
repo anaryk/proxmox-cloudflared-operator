@@ -15,6 +15,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -304,4 +305,30 @@ func TestTheHoldOfAnAgentContainerHasItsOwnTime(t *testing.T) {
 	require.True(t, stop.live, "on a context that is not over yet")
 	require.True(t, stop.stopped, "and the connectors are stopped")
 	require.True(t, r.stopped)
+}
+
+// The doctor of an agent container sees what its checks found: the identity
+// as the guard last judged it, and the egress filter as the keeper last found
+// it, instead of saying that neither has run.
+func TestTheStateOfAnAgentContainerHasItsIdentityAndEgress(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	files := agentFiles(t, now)
+	w := goodGuardWorld()
+	w.at = now
+	w.verdict = appliance.Verdict{Why: "no uptime"}
+	notes := &agentNotes{}
+	r := &agentRun{now: time.Now, files: files, guard: w.guard(), notes: notes, flag: func(bool) error { return nil }, stopped: true}
+	require.Nil(t, notes.state("pve2", now).Identity, "nothing judged yet")
+
+	r.step(t.Context())
+	notes.noteEgress(engine.EgressCheck{Failed: "cannot list"})
+	notes.noteEgress(engine.EgressCheck{View: engine.EgressView{State: engine.EgressOn}})
+	notes.noteEgress(engine.EgressCheck{Failed: "cannot list"})
+
+	st := notes.state("pve2", now)
+	require.Equal(t, &engine.IdentityView{VMID: 9301, Node: "pve2", Why: "no uptime", CheckedAt: now}, st.Identity)
+	require.Equal(t, engine.EgressOn, st.Egress.State, "a check that could not tell keeps what the last one found")
+	w.verdict = appliance.Verdict{Copy: true, Why: "this container is a copy"}
+	r.step(t.Context())
+	require.Equal(t, &engine.IdentityView{VMID: 9301, Node: "pve2", Why: "this container is a copy", Copy: true, CheckedAt: now}, notes.state("pve2", now).Identity)
 }
