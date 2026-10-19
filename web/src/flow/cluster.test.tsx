@@ -48,11 +48,11 @@ describe('the model of a cluster', () => {
     const ids = (band: string) => model.nodes.filter((n) => n.band === band).map((n) => n.id)
     expect(ids('edge')).toEqual(['edge:acc1', 'edge:acc1:pve2', 'edge:acc2', 'edge:acc3', 'edge:acc4'])
     expect(ids('connector')).toEqual(['replica:acc1:pve1', 'replica:acc1:pve2', 'replica:acc1:pve2:pinned', 'replica:acc1:pve3', 'rogue:0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807'])
-    expect(node('edge:acc1:pve2')).toMatchObject({ kind: 'edge', label: 'Main · pinned to pve2', state: 'yes', ref: 'acc1' })
+    expect(node('edge:acc1:pve2')).toMatchObject({ kind: 'edge', label: 'pinned to pve2 · Main', state: 'yes', ref: 'acc1', lines: ['connector on pve2'] })
     expect(node('replica:acc1:pve1')).toMatchObject({ kind: 'replica', label: 'pve1', state: 'ready', ref: 'pve1', lines: ['Main · 00000000', '9 verified · 1 failing'] })
     expect(node('replica:acc1:pve2')).toMatchObject({ state: 'ready', lines: ['Main · 00000000', '10 verified · 1 failing · 1 pinned'] })
     expect(node('replica:acc1:pve3')).toMatchObject({ state: 'joining', lines: ['Main · 00000000', '0 verified'] })
-    expect(node('replica:acc1:pve2:pinned')).toMatchObject({ kind: 'replica', label: 'pve2', state: 'ready', lines: ['Main · pinned to pve2', '10 verified · 1 failing · 1 pinned'] })
+    expect(node('replica:acc1:pve2:pinned')).toMatchObject({ kind: 'replica', label: 'pve2', state: 'ready', lines: ['pinned to pve2 · Main', '10 verified · 1 failing · 1 pinned'] })
     // no card of this node alone
     expect(model.nodes.some((n) => n.kind === 'connector')).toBe(false)
   })
@@ -121,7 +121,7 @@ describe('the model of a cluster', () => {
   test('the names of the cards', () => {
     expect(nodeLabel(node('replica:acc1:pve2'))).toBe('Replica pve2 of tunnel Main · 00000000: ready, 10 verified · 1 failing · 1 pinned')
     expect(nodeLabel(node('replica:acc1:pve3'))).toBe('Replica pve3 of tunnel Main · 00000000: joining, 0 verified')
-    expect(nodeLabel(node('edge:acc1:pve2'))).toBe('Edge of tunnel Main · pinned to pve2, verified: yes')
+    expect(nodeLabel(node('edge:acc1:pve2'))).toBe('Edge of tunnel pinned to pve2 · Main, verified: yes, connector on pve2')
   })
 })
 
@@ -146,7 +146,7 @@ describe('the chains of a cluster', () => {
 
   test('a pinned route, one moving back, and one that fails everywhere', () => {
     expect(steps('git.example.com', 'qemu/110').slice(1, 4)).toEqual([
-      'Edge ok: Main · pinned to pve2 · verified: yes',
+      'Edge ok: pinned to pve2 · Main · verified: yes',
       'Placement warn: pinned to pve2 (tunnel pco-abc123-pve2): pve1 does not reach it while pve2 does',
       'Replicas ok: pve2: port',
     ])
@@ -256,11 +256,13 @@ describe('the map, the drawer and the extras of a cluster', () => {
     store.stop()
   })
 
+  // The card of a pinned tunnel on the map leads with the node; the tunnel's
+  // own card, and the pages, lead with the account.
   test.each([
-    ['edge:acc1:pve2', 'Main · pinned to pve2'],
-    ['edge:acc1:pve2>replica:acc1:pve2:pinned', 'Main · pinned to pve2'],
-    ['edge:acc1', 'Main · 00000000'],
-  ])('%s opens its own tunnel, never the shared one of the account', async (selected, heading) => {
+    ['edge:acc1:pve2', 'pinned to pve2 · Main', 'Main · pinned to pve2'],
+    ['edge:acc1:pve2>replica:acc1:pve2:pinned', 'Main · pinned to pve2', 'Main · pinned to pve2'],
+    ['edge:acc1', 'Main · 00000000', 'Main · 00000000'],
+  ])('%s opens its own tunnel, never the shared one of the account', async (selected, heading, card) => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ error: 'no target', code: 'not_found' }), { status: 404 })),
@@ -280,7 +282,7 @@ describe('the map, the drawer and the extras of a cluster', () => {
       const pinned = heading.includes('pinned')
       expect(within(drawer).getByRole('link', { name: 'The tunnel' }).getAttribute('href')).toBe(pinned ? '/edge/tunnels/acc1?tunnel=pco-abc123-pve2' : '/edge/tunnels/acc1')
     } else {
-      expect(within(drawer).getByRole('region', { name: heading })).toBeTruthy()
+      expect(within(drawer).getByRole('region', { name: card })).toBeTruthy()
     }
     store.stop()
   })

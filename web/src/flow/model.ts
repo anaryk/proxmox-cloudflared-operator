@@ -171,7 +171,9 @@ class Index {
       if (t.kind === 'pinned') this.pinned.set(t.name, t)
       else this.tunnels.set(t.accountId, t)
     }
-    const accountOf = new Map(st.tunnels.filter((t) => t.id).map((t) => [t.id, t.accountId]))
+    // The connector of an account is that of its shared tunnel: a tunnel
+    // pinned to this node has a connector of its own, shown on its edge.
+    const accountOf = new Map(st.tunnels.filter((t) => t.id && t.kind !== 'pinned').map((t) => [t.id, t.accountId]))
     for (const c of st.connectors) {
       const account = accountOf.get(c.tunnelId)
       if (account !== undefined && !this.connectors.has(account)) this.connectors.set(account, c)
@@ -197,10 +199,26 @@ class Index {
 
   // A tunnel is labelled by its account and the start of its id: every
   // tunnel of an install has the same name; one pinned to a node by the
-  // node.
+  // node first, as a long account name is cut where the card ends.
   tunnelLabel(t: TunnelView): string {
-    if (t.kind === 'pinned') return `${this.accountName(t.accountId)} · pinned to ${t.node ?? ''}`
+    if (t.kind === 'pinned') return `pinned to ${t.node ?? ''} · ${this.accountName(t.accountId)}`
     return t.id ? `${this.accountName(t.accountId)} · ${t.id.slice(0, 8)}` : this.accountName(t.accountId)
+  }
+
+  // pinnedState is the state of the node of a tunnel pinned to it, by what
+  // its agent reports of the routes placed there: the readiness of the
+  // shared tunnel's connector says nothing of this one.
+  pinnedState(t: TunnelView): string {
+    let any = false
+    for (const r of this.st.routes) {
+      if (r.placement?.tunnel !== t.name) continue
+      for (const rv of r.replicas) {
+        if (rv.node !== t.node) continue
+        if (rv.ok) return 'ready'
+        any = true
+      }
+    }
+    return any ? 'not ready' : 'no route'
   }
 
   // The edge of a route: the shared tunnel of its account, or the tunnel
@@ -209,7 +227,7 @@ class Index {
     const p = r.placement
     if (this.cluster && p?.kind === 'pinned' && p.node) {
       const t = this.pinned.get(p.tunnel)
-      return { id: pinnedEdgeId(account, p.node), label: t ? this.tunnelLabel(t) : `${this.accountName(account)} · pinned to ${p.node}`, tunnel: t }
+      return { id: pinnedEdgeId(account, p.node), label: t ? this.tunnelLabel(t) : `pinned to ${p.node} · ${this.accountName(account)}`, tunnel: t }
     }
     return { id: tunnelNodeId(account), label: this.accountName(account), tunnel: this.tunnels.get(account) }
   }
@@ -393,13 +411,23 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     link(trunk)
   }
   // The tunnels pinned to a node, each with its node as its one replica.
+  // The connector of one pinned to this node is read here, with its
+  // figures; one pinned to another node runs there.
   for (const t of [...ix.pinned.values()].sort((a, b) => byName(a.name, b.name))) {
     if (!t.node) continue
     const edgeId = pinnedEdgeId(t.accountId, t.node)
     const label = ix.tunnelLabel(t)
-    nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label, state: verifiedText(t), ref: t.accountId, ...(t.held ? { lines: [t.held] } : {}) })
+    let lines: string[]
+    if (t.node === st.node) {
+      const c = t.id ? st.connectors.find((c) => c.tunnelId === t.id) : undefined
+      lines = edgeLines(t, c, t.id ? ix.traffic.get(t.id) : undefined)
+    } else {
+      lines = [`connector on ${t.node}`]
+      if (t.held) lines.push(t.held)
+    }
+    nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label, state: verifiedText(t), ref: t.accountId, ...(lines.length > 0 ? { lines } : {}) })
     const id = replicaNodeId(t.accountId, t.node, true)
-    nodes.set(id, replicaNode(id, ix.nodes.get(t.node), label, t.node))
+    nodes.set(id, replicaNode(id, ix.nodes.get(t.node), label, t.node, ix.pinnedState(t)))
     link({ id: `${edgeId}>${id}`, from: edgeId, to: id, style: 'trunk', lanes: 1 })
   }
   for (const r of [...st.rogueConnectors].sort((a, b) => byName(a.id, b.id))) {
@@ -573,10 +601,10 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
 // replicaNode is the card of a node in the connector band: the node by its
 // name, whether its connector of the tunnel is ready, and what it reports
 // of its targets.
-function replicaNode(id: string, n: NodeView | undefined, tunnel: string, name = n?.name ?? ''): FlowNode {
+function replicaNode(id: string, n: NodeView | undefined, tunnel: string, name = n?.name ?? '', state = replicaState(n)): FlowNode {
   const lines = [tunnel]
   if (n) lines.push(targetsText(n))
-  return { id, band: 'connector', kind: 'replica', label: n?.name ?? name, state: replicaState(n), ref: n?.name ?? name, lines }
+  return { id, band: 'connector', kind: 'replica', label: n?.name ?? name, state, ref: n?.name ?? name, lines }
 }
 
 // The chain list: a route as the steps of its chain, in words.
