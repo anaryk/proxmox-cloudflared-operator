@@ -52,6 +52,7 @@ type fakeCT struct {
 	meta    bool     // /var/lib/pco/cluster/meta is there
 	lease   string   // the address DHCP gives eth0, as a CIDR; empty: none
 	web     bool     // pco-web.service is enabled
+	booted  bool     // the container started once: the presets of systemd have run
 	// daemonStopped says that pco.service in it was stopped.
 	daemonStopped bool
 }
@@ -1067,6 +1068,11 @@ func (f *fakeNode) pct(args []string) (string, error) {
 		if ct.running {
 			return "", fmt.Errorf("CT %d already running", id)
 		}
+		// The presets of systemd enable pco-web at the first boot of the
+		// template; the agent installer takes it off again.
+		if !ct.booted {
+			ct.booted, ct.web = true, true
+		}
 		ct.running = true
 		return "", nil
 	case "stop":
@@ -1261,6 +1267,9 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 			"SHA-256      " + fakeFingerprint + "\n", nil
 	case line == "systemctl enable --now pco-web.service":
 		ct.web = true
+		return "", nil
+	case line == "systemctl disable --now pco-web.service":
+		ct.web = false
 		return "", nil
 	case line == "pco appliance convert":
 		f.converted = append(f.converted, id)

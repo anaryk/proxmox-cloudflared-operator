@@ -319,6 +319,7 @@ type run struct {
 	data    access.Data // the access control, read in the preflight
 	dns     []string    // the name servers of the container, decided in the preflight
 	chosen  bool        // the VMID is the cluster's next free one, and another is taken when it is gone
+	kind    string      // of the container a repair found, by its tags
 	secret  store.Secret
 	tmp     string // the directory of the bootstrap under /run
 	unlock  func()
@@ -375,6 +376,7 @@ func (r *run) installSteps() []step {
 			{stepProxmox, r.ensureProxmox},
 			{stepGrant, r.grantAgent},
 			{stepStart, r.start},
+			{stepWeb, r.stopWeb},
 			{stepEnlist, r.enlist},
 			{stepJoin, r.pushJoin},
 			{stepPush, r.push},

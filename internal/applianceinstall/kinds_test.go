@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
 const joinInstall = "0123456789ab"
@@ -62,7 +63,8 @@ func TestAnAgentIsInstalledWithItsTokenOnItsVolumeAndNowhereElse(t *testing.T) {
 	require.True(t, e.node.has("/", "token", "pco@pve!vm100", "PCO"), "the agent's token audits, nothing more")
 	require.False(t, e.node.has("/", "token", "pco@pve!vm100", "PCOManaged"))
 	require.Equal(t, []map[string]string{{"cidr": "192.0.2.150", "comment": "pco appliance vm100"}}, e.node.guestFirewalls[200].entries[agentsIPSet])
-	require.False(t, ct.web, "an agent has no web interface")
+	require.False(t, ct.web, "an agent has no web interface: the one the presets of systemd enabled at the first boot is taken off")
+	require.Contains(t, e.node.ran, "pct exec 100 --keep-env 0 -- systemctl disable --now pco-web.service")
 	require.Equal(t, []string{"admin-only"}, e.node.tags, "the gate tags are the controller's")
 	require.Contains(t, e.ask.text(), "pco node admit pve1 --fingerprint")
 	require.Empty(t, entries(t, e.runDir), "the token is gone from /run")
@@ -183,4 +185,24 @@ func TestUninstallingAnHAControllerRemovesItsRule(t *testing.T) {
 			require.Len(t, e.node.haRules, tt.left)
 		})
 	}
+}
+
+// A repair of an agent writes nothing for a web interface and takes off the
+// pco-web an agent installed before 0.1.0-rc.11 kept enabled, where a
+// repair of a combined appliance gives it one.
+func TestRepairOfAnAgentTakesItsWebInterfaceOff(t *testing.T) {
+	e := newEnv(t)
+	e.withController()
+	e.install(e.agentOptions(joinToken(t, testNode)))
+	ct := e.node.cts[100]
+	ct.web = true
+	e.node.ran = nil
+
+	require.NoError(t, e.in.Repair(t.Context(), 100, Options{Yes: true}), e.ask.text())
+
+	require.False(t, ct.web)
+	require.Contains(t, e.node.ran, "pct exec 100 --keep-env 0 -- systemctl disable --now pco-web.service")
+	require.NotContains(t, e.node.ran, "pct exec 100 --keep-env 0 -- pco web cert")
+	require.NotContains(t, ct.files, webcert.Net0File)
+	require.NotContains(t, ct.files, webcert.EnvFile)
 }

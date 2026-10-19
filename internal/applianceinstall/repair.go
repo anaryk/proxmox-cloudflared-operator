@@ -98,6 +98,7 @@ func (r *run) repair(ctx context.Context) error {
 		return err
 	}
 	r.fromConfig(cfg)
+	r.kind = kindOf(cfg["tags"])
 	running, err := ctRunning(ctx, r.r, vmid)
 	if err != nil {
 		return err
@@ -289,6 +290,19 @@ func (r *run) repairState(ctx context.Context) error {
 // withWeb runs push between the two halves of repairWeb: the address of net0
 // is in place before the daemon starts again, pco-web after it.
 func (r *run) withWeb(ctx context.Context, push func() error) error {
+	if r.kind == KindAgent {
+		// An agent has no web interface: nothing is written for one, and
+		// a pco-web the presets of systemd enabled is taken off, as the
+		// installer does now.
+		if err := push(); err != nil {
+			return err
+		}
+		disabled, err := r.missing(ctx, r.j.VMID, "systemctl", "is-enabled", "--quiet", "pco-web.service")
+		if err != nil || disabled {
+			return err
+		}
+		return r.stopWeb(ctx)
+	}
 	if err := r.repairWeb(ctx, true); err != nil {
 		return err
 	}

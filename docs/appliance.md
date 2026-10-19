@@ -742,7 +742,10 @@ container serves its node alone: it is bound to the node it was installed on.
    Proxmox VE 8.4 include `VM.Monitor`, as the guest agent is read under it there. `pco@pve` and
    the controller's token may put cards on the agent's container (role
    `PCOManaged` on `/vms/<vmid>`), for the legs of the networks the controller attaches there;
-   the agent's address goes into the controller's ipset `pco-agents`.
+   the agent's address goes into the controller's ipset `pco-agents`. An agent has no web
+   interface: the installer takes `pco-web.service` off, which the presets of systemd enabled
+   at the first boot of the template, and `pco appliance repair --vmid <vmid>` does the same for
+   an agent installed before 0.1.0-rc.11, whose `pco-web` failed at every boot.
 4. The agent joins: it makes a key on its volume and sends the controller the token's secret, a
    request for its certificate, its VMID and its MACs, over TLS to the server name and the CA the
    token names. The controller checks the token (unused, unexpired, for that node) and records
@@ -767,7 +770,9 @@ runs on the node it was installed on and is no HA resource. When anything of tha
 following the controller, takes the identity flag away, empties its egress filter and stops its
 connectors, until it holds again: `agent <vmid> runs on <node>, enrolled for <node>; move it back
 or enrol it again`. The controller serves an agent nothing while Proxmox shows its container on
-another node, moving or gone, judged anew in every cycle and by every controller.
+another node, moving or gone, judged anew in every cycle and by every controller. The daemon
+pings the watchdog of systemd while these checks run on time, as the controller's does while
+its cycles do ([Operations](operations.md#the-lease)); a check that hangs restarts it.
 
 `pco agent status` in the container shows whom it follows and its certificate. It renews that
 certificate over the channel 60 days after it was issued. A certificate that ended cannot be

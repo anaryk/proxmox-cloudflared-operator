@@ -44,7 +44,7 @@ func (e *testEnv) restored(vmid int, withVolume bool) {
 		}
 	}
 	e.node.cts[vmid] = &fakeCT{cfg: cfg, files: files, state: "degraded", failed: []string{"pco.service"}, version: testVersion,
-		lease: "192.0.2.151/24", web: e.node.cts[100].web}
+		lease: "192.0.2.151/24", web: e.node.cts[100].web, booted: true}
 	e.node.pools["pco"].Members = append(e.node.pools["pco"].Members, vmid)
 }
 

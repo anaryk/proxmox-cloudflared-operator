@@ -171,6 +171,19 @@ func (r *run) startWeb(ctx context.Context) error {
 	return nil
 }
 
+// stopWeb takes the web interface off an agent container. The presets of
+// systemd enable pco-web at the first boot of the template, as they enable
+// every unit of the package, and an agent has no certificate for it to
+// serve with: it would fail at every boot.
+func (r *run) stopWeb(ctx context.Context) error {
+	vmid := r.j.VMID
+	if _, err := r.exec(ctx, vmid, "systemctl", "disable", "--now", "pco-web.service"); err != nil {
+		return fmt.Errorf("taking the web interface off lxc/%d: %w", vmid, err)
+	}
+	r.ask.Info("web interface: none, an agent container has no web interface")
+	return nil
+}
+
 // repairWeb gives an appliance installed before its web interface what the
 // installer gives one now: net0's address and the environment of pco-web
 // before the daemon starts again, and pco-web started once it has its
