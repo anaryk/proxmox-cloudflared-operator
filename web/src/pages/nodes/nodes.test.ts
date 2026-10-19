@@ -35,7 +35,6 @@ const node = (patch: Partial<NodeView>): NodeView => ({
   watchRunning: true,
   covered: true,
   replicaReady: true,
-  pinnedReady: false,
   verified: 0,
   failing: 0,
   belowMinimum: 0,

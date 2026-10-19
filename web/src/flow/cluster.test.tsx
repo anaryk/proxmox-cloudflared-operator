@@ -61,7 +61,7 @@ describe('the model of a cluster', () => {
   // as the node's agent reports it, and not by the routes it reaches: an
   // agent that verifies the targets but runs no connector is not ready.
   test('the node of a tunnel pinned to another node is ready only when its agent reports that connector', () => {
-    const silent: State = { ...st, nodes: st.nodes.map((n) => (n.name === 'pve2' ? { ...n, pinnedReady: false } : n)) }
+    const silent: State = { ...st, nodes: st.nodes.map((n) => (n.name === 'pve2' ? { ...n, pinnedReady: [] } : n)) }
     const m = buildModel(silent, tv)
     expect(m.nodes.find((n) => n.id === 'replica:acc1:pve2:pinned')).toMatchObject({ state: 'not ready' })
     expect(m.nodes.find((n) => n.id === 'replica:acc1:pve2')).toMatchObject({ state: 'ready' })
@@ -189,7 +189,6 @@ function wideCluster(n: number): State {
     watchRunning: true,
     covered: true,
     replicaReady: i !== n - 1,
-    pinnedReady: false,
     verified: 4,
     failing: 0,
     belowMinimum: 0,

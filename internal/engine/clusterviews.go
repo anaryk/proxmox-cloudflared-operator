@@ -56,9 +56,10 @@ type NodeView struct {
 	WatchRunning bool          `json:"watchRunning"`
 	Covered      bool          `json:"covered"`
 	// ReplicaReady says that the node's agent reports a ready connector of
-	// a shared tunnel; PinnedReady one of the tunnel pinned to the node.
-	ReplicaReady bool `json:"replicaReady"`
-	PinnedReady  bool `json:"pinnedReady"`
+	// a shared tunnel; PinnedReady are the ids of the tunnels pinned to the
+	// node, one per account, whose connector it reports ready.
+	ReplicaReady bool     `json:"replicaReady"`
+	PinnedReady  []string `json:"pinnedReady,omitempty"`
 	// Verified, Failing and BelowMinimum count the targets of the node's
 	// snapshot by how they fare there; Pinned the routes pinned to it.
 	Verified     int           `json:"verified"`

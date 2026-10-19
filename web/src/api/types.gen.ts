@@ -588,7 +588,7 @@ export interface NodeView {
   watchRunning: boolean
   covered: boolean
   replicaReady: boolean
-  pinnedReady: boolean
+  pinnedReady?: string[]
   verified: number
   failing: number
   belowMinimum: number

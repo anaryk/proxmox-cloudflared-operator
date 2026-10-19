@@ -578,10 +578,11 @@ func (c *cycleRun) nodeViews() []NodeView {
 			v.ReplicaReady = slices.ContainsFunc(rep.Status.Connectors, func(s connector.Status) bool {
 				return s.Ready && slices.Contains(shared, s.TunnelID)
 			})
-			own := c.pinnedTunnelID(name)
-			v.PinnedReady = own != "" && slices.ContainsFunc(rep.Status.Connectors, func(s connector.Status) bool {
-				return s.Ready && s.TunnelID == own
-			})
+			for _, own := range c.pinnedTunnelIDs(name) {
+				if slices.ContainsFunc(rep.Status.Connectors, func(s connector.Status) bool { return s.Ready && s.TunnelID == own }) {
+					v.PinnedReady = append(v.PinnedReady, own)
+				}
+			}
 		}
 		out = append(out, v)
 	}
@@ -617,15 +618,16 @@ func (c *cycleRun) sharedTunnelIDs() []string {
 	return out
 }
 
-// pinnedTunnelID is the id of the tunnel pinned to node, as the state shows
-// it; empty while there is none.
-func (c *cycleRun) pinnedTunnelID(node string) string {
+// pinnedTunnelIDs are the ids of the tunnels pinned to node, one per
+// account, as the state shows them.
+func (c *cycleRun) pinnedTunnelIDs(node string) []string {
+	var out []string
 	for _, t := range c.st.Tunnels {
 		if t.Kind == TunnelPinned && t.Node == node && t.ID != "" {
-			return t.ID
+			out = append(out, t.ID)
 		}
 	}
-	return ""
+	return out
 }
 
 // certExpiry is when the certificate enrolled for a host node ends; zero

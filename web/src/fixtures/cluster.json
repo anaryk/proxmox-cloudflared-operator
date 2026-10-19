@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "8fe86acc1ddaa875",
+  "digest": "61fefcaece93d9a4",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -1295,7 +1295,6 @@
       "watchRunning": true,
       "covered": true,
       "replicaReady": true,
-      "pinnedReady": false,
       "verified": 9,
       "failing": 1,
       "belowMinimum": 0,
@@ -1317,7 +1316,9 @@
       "watchRunning": true,
       "covered": true,
       "replicaReady": true,
-      "pinnedReady": true,
+      "pinnedReady": [
+        "00000000-0000-4000-8000-000000000020"
+      ],
       "verified": 10,
       "failing": 1,
       "belowMinimum": 0,
@@ -1339,7 +1340,6 @@
       "watchRunning": false,
       "covered": true,
       "replicaReady": false,
-      "pinnedReady": false,
       "verified": 0,
       "failing": 0,
       "belowMinimum": 0,

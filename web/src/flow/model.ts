@@ -216,7 +216,7 @@ class Index {
       const c = t.id ? this.st.connectors.find((c) => c.tunnelId === t.id) : undefined
       return c?.active && c.ready ? 'ready' : 'not ready'
     }
-    if (n.pinnedReady) return 'ready'
+    if (t.id && n.pinnedReady?.includes(t.id)) return 'ready'
     return n.state === 'active' ? 'not ready' : n.state || 'unknown'
   }
 
