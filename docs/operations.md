@@ -12,7 +12,7 @@ The package installs six systemd units, in `/usr/lib/systemd/system`.
 
 | Unit | What it does |
 |---|---|
-| `pco.service` | The daemon, [`pco daemon`](cli/pco-daemon.md). It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. Its watchdog is 90 seconds: the daemon pings it while its cycles make progress, and a daemon whose cycle hangs is restarted (see [the lease](#the-lease)). It starts after `network-online.target`, `pve-cluster.service`, `corosync.service`, `pveproxy.service` and `pco-netns.service`, so that it stops, and gives the lease back, before them, and the only unit ordered after it is `pco-web.service`: no connector waits for it. It does not wait for the guests, and they do not wait for it, those managed by HA included. |
+| `pco.service` | The daemon, [`pco daemon`](cli/pco-daemon.md). It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. Its watchdog is 90 seconds: the daemon pings it while its cycles make progress, in an agent container while the checks of its agent run on time, and a daemon whose cycle or check hangs is restarted (see [the lease](#the-lease)). It starts after `network-online.target`, `pve-cluster.service`, `corosync.service`, `pveproxy.service` and `pco-netns.service`, so that it stops, and gives the lease back, before them, and the only unit ordered after it is `pco-web.service`: no connector waits for it. It does not wait for the guests, and they do not wait for it, those managed by HA included. |
 | `pco-egress.service` | Loads the egress filter by running `pco egress load`, a hidden command that puts the table in place with the resolvers of the node and no targets, and exits. It is a one-shot unit that stays active, and it is ordered before `pco.service`. Setup enables and starts it, so the table is loaded at every boot, also before a connector exists, and uninstall disables it. The connector units require it, so starting a connector starts it too. Do not restart it to load the table again: every connector restarts with it. `pco egress load` does that. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel, `cloudflared` with the files of the tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 | `pco-web.service` | The web interface, [`pco web`](cli/pco-web.md). It runs as the user `pco-web`, starts after `network-online.target`, `pve-cluster.service` and `pco.service`, restarts after 2 seconds when it stops, and reads its address from `/etc/default/pco-web`. `pco setup` enables it, unless it is given `--no-web`. An upgrade of the package restarts it if it ran. |
@@ -896,7 +896,11 @@ seconds only while a cycle runs that began less than 75 seconds ago, or while it
 next one. The reads before a cycle, the first checks of new credentials and of the access
 control, have deadlines of their own and count as part of it. A daemon whose engine hangs is
 restarted 90 seconds after its last ping: between 90 and 165 seconds after the cycle that hung
-began, and it keeps its epoch. The
+began, and it keeps its epoch. An agent container has no engine; the loop of its agent, which
+proves the container every 30 seconds, pings the watchdog by the same rules, with a deadline of
+50 seconds on the checks of each step and 15 more for the stop of the connectors when the checks
+go against the container: a slow Proxmox API cuts the checks short and keeps the last verdict,
+and a check that hangs restarts the daemon the same way. The
 Cloudflare credentials are read into memory only while the node holds a valid lease, and
 dropped when it loses it or is fenced.
 

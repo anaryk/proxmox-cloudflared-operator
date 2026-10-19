@@ -64,8 +64,12 @@ func (e *Engine) Progress() Progress { return e.progress.get() }
 // for the cycle lock, behind an admin action, is not; an admin action holds
 // the lock for at most a little over half a minute, well inside what the
 // watchdog allows after the last ping.
-func (e *Engine) Healthy(now time.Time) bool {
-	p := e.Progress()
+func (e *Engine) Healthy(now time.Time) bool { return e.Progress().Healthy(now) }
+
+// Healthy says whether a loop in this state makes progress at now, by the
+// rules of the engine's loop: the agent of an agent container, which proves
+// the container every half minute, is judged by the same ones.
+func (p Progress) Healthy(now time.Time) bool {
 	if p.Running {
 		return now.Sub(p.StartedAt) < cycleDeadline
 	}

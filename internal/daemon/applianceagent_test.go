@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -170,4 +174,134 @@ func TestAnAgentHoldsOnceNothingCouldBeJudgedForFiveMinutes(t *testing.T) {
 	w.verdict = appliance.Verdict{Pending: true, Why: appliance.WhyPendingNIC}
 	serve, _ = g.judge(t.Context())
 	require.True(t, serve, "a pending NIC keeps the verdict before")
+}
+
+// The loop of an agent container pings the watchdog of systemd as the
+// engine's loop does: while a check runs that began less than the cycle
+// deadline ago, or while the next one is due or was due less than the grace
+// ago. pco.service has the same WatchdogSec in every kind of appliance.
+func TestAnAgentContainerMakesProgressWhileItsChecksRunOnTime(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	r := &agentRun{now: func() time.Time { return now }}
+	require.False(t, r.healthy(now), "before the loop begins, no check is due")
+
+	r.progress.due(now)
+	require.True(t, r.healthy(now))
+	require.True(t, r.healthy(now.Add(14*time.Second)))
+	require.False(t, r.healthy(now.Add(15*time.Second)), "a check that is 15 s late is no progress")
+
+	r.progress.started(now)
+	require.True(t, r.healthy(now.Add(74*time.Second)))
+	require.False(t, r.healthy(now.Add(75*time.Second)), "a check that runs for 75 s hangs")
+
+	r.progress.due(now.Add(agentCheckEvery))
+	require.True(t, r.healthy(now.Add(agentCheckEvery+14*time.Second)))
+	require.False(t, r.healthy(now.Add(agentCheckEvery+15*time.Second)))
+}
+
+// An agent container pings the watchdog of systemd from its start: a daemon
+// that never pinged would be restarted by pco.service every WatchdogSec,
+// and the connectors with it.
+func TestAnAgentContainerPingsTheWatchdog(t *testing.T) {
+	a := newApplianceWorld(t)
+	inst, _, err := a.store.Install()
+	require.NoError(t, err)
+	inst.ID = "0123456789ab"
+	inst.Appliance.Kind = store.ApplianceAgent
+	require.NoError(t, a.store.SaveInstall(inst))
+
+	d := a.start()
+	require.Eventually(t, func() bool { return a.notify.pinged() > 0 }, 10*time.Second, 5*time.Millisecond,
+		"the watchdog is pinged as the agent's loop begins")
+	require.NoError(t, d.stop())
+}
+
+// agentFiles are the TLS files of an agent with a client certificate, so
+// that a step reaches its checks.
+func agentFiles(t *testing.T, now time.Time) agent.TLSFiles {
+	t.Helper()
+	ca, err := pki.NewCA("0123456789ab", now, rand.Reader)
+	require.NoError(t, err)
+	id := pki.Identity{Kind: pki.KindAppliance, InstallID: "0123456789ab", Node: "pve2", VMID: 9301}
+	key, err := pki.NewKey(rand.Reader)
+	require.NoError(t, err)
+	csr, err := pki.NewCSR(key, id, rand.Reader)
+	require.NoError(t, err)
+	cert, err := ca.IssueClient(csr, id, now, rand.Reader)
+	require.NoError(t, err)
+	files := agent.TLSFiles{Dir: filepath.Join(t.TempDir(), "tls")}
+	require.NoError(t, files.SaveClient(agent.Creds{Key: key, Cert: cert, CA: ca.Cert}))
+	return files
+}
+
+// stopRecorder stands in for the agent in hold: it records what was left of
+// the context the stop ran on.
+type stopRecorder struct {
+	halted, stopped bool
+	live            bool
+}
+
+func (s *stopRecorder) Halt(ctx context.Context) error {
+	s.halted, s.live = true, ctx.Err() == nil
+	return nil
+}
+
+func (s *stopRecorder) StopConnectors(ctx context.Context) error {
+	s.stopped = true
+	return nil
+}
+
+// The checks of a step end at agentChecksDeadline, well inside what the
+// watchdog allows a step: a slow Proxmox API cuts them short and keeps the
+// last verdict, where checks that outlasted the watchdog would have the
+// daemon, and its connectors, restarted.
+func TestTheChecksOfAnAgentContainerEndAtTheirDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	files := agentFiles(t, now)
+
+	w := goodGuardWorld()
+	var deadline time.Time
+	var bounded bool
+	w.verdict = appliance.Verdict{Why: "no uptime"}
+	g := w.guard()
+	inner := g.verdict
+	g.verdict = func(ctx context.Context) appliance.Verdict {
+		deadline, bounded = ctx.Deadline()
+		return inner(ctx)
+	}
+	r := &agentRun{now: time.Now, files: files, guard: g, flag: func(bool) error { return nil }, stopped: true}
+
+	before := time.Now()
+	r.step(t.Context())
+
+	require.True(t, bounded, "the checks run on a context with a deadline")
+	require.WithinDuration(t, before.Add(agentChecksDeadline), deadline, 5*time.Second)
+	require.Less(t, agentChecksDeadline+agentHoldDeadline, 75*time.Second, "checks and hold end inside the time the watchdog allows a step")
+}
+
+// Checks that used all of their time, on a slow Proxmox API, do not starve
+// the hold that follows them: the egress filter is emptied and the
+// connectors are stopped on a context of their own, so the agent fails
+// closed when nothing proves it.
+func TestTheHoldOfAnAgentContainerHasItsOwnTime(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	files := agentFiles(t, now)
+	w := goodGuardWorld()
+	w.verdict = appliance.Verdict{Why: "no uptime"}
+	g := w.guard()
+	inner := g.verdict
+	g.verdict = func(ctx context.Context) appliance.Verdict {
+		<-ctx.Done()
+		return inner(ctx)
+	}
+	stop := &stopRecorder{}
+	r := &agentRun{now: time.Now, files: files, guard: g, stopper: stop, flag: func(bool) error { return nil },
+		checksFor: 20 * time.Millisecond, holdFor: time.Second}
+
+	r.step(t.Context())
+
+	require.True(t, stop.halted, "the egress filter is emptied")
+	require.True(t, stop.live, "on a context that is not over yet")
+	require.True(t, stop.stopped, "and the connectors are stopped")
+	require.True(t, r.stopped)
 }

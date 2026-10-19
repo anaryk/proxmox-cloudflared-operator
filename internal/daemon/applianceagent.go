@@ -34,6 +34,20 @@ import (
 // tries again to join while it has no certificate.
 const agentCheckEvery = 30 * time.Second
 
+// agentChecksDeadline is the longest the checks of a step run, as the
+// engine's cycle deadline is for a cycle: the reads behind them have
+// deadlines of their own, but one after the other, on a slow Proxmox API,
+// they would outlast the time the watchdog allows a step, and cut checks
+// keep the last verdict where a daemon restarted by systemd would stop the
+// connectors. agentHoldDeadline is the time of the stop that follows checks
+// that went against the container; it runs on the node alone, and gets its
+// own time after checks that used all of theirs. Both together stay inside
+// the engine's cycle deadline, by which the watchdog judges a step.
+const (
+	agentChecksDeadline = 50 * time.Second
+	agentHoldDeadline   = 15 * time.Second
+)
+
 // runApplianceAgent runs an agent container: the agent of its node, which
 // follows the controller of its install over the network once it joined
 // with the token root pushed onto its volume, and serves only while the
@@ -87,7 +101,7 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	dir := filepath.Dir(agent.TLSDir(cfg.Paths))
 	files := agent.TLSFiles{Dir: agent.TLSDir(cfg.Paths)}
 	macs, _ := app.System.Facts(cfg.Paths.Local)
-	r.agent, r.files, r.events = ag, files, events
+	r.agent, r.stopper, r.files, r.events = ag, ag, files, events
 	r.joiner = agent.Joiner{
 		TokenFile: agent.JoinFile(cfg.Paths), Files: files, Dir: dir,
 		InstallID: state.install.ID, Node: a.Node, VMID: a.VMID, MACs: linkMACs(macs.Links), Build: version.Version,
@@ -153,7 +167,12 @@ func runApplianceAgent(ctx context.Context, cfg Config, deps Deps, app Appliance
 	}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
 	main := func(ctx context.Context) { r.run(ctx, deps.Sleep) }
-	return serve(ctx, srv, main, cfg.SocketPath, gid, deps.Notifier, nil, log, keep)
+	// pco.service has the same watchdog in every kind of appliance: the
+	// agent pings it while its checks run on time, as the engine does
+	// while its cycles do. The first check is due as the daemon starts.
+	r.progress.due(deps.Now())
+	wd := newWatchdog(deps.Notifier, r.healthy, deps.Now, log)
+	return serve(ctx, srv, main, cfg.SocketPath, gid, deps.Notifier, nil, log, keep, wd.run)
 }
 
 // tokenUser is the user of a token id.
@@ -194,10 +213,18 @@ func (e *agentOnlyEngine) RunsAs() (profile, node string) { return store.Profile
 
 func (e *agentOnlyEngine) AgentView() (agentproto.AgentView, error) { return e.view(), nil }
 
+// agentStopper is what hold does to the agent: empties its egress filter
+// and stops its connectors.
+type agentStopper interface {
+	Halt(ctx context.Context) error
+	StopConnectors(ctx context.Context) error
+}
+
 // agentRun joins, proves the container and has the client follow the
 // controller while it serves.
 type agentRun struct {
 	agent    *agent.Agent
+	stopper  agentStopper // the agent, as hold uses it
 	files    agent.TLSFiles
 	events   *agent.EventLog
 	joiner   agent.Joiner
@@ -213,13 +240,64 @@ type agentRun struct {
 	done    chan struct{}
 	problem string
 	stopped bool // the connectors were stopped since the agent last served
+
+	// progress is what run is doing, for the watchdog: a check that runs,
+	// or the wait for the next one.
+	progress agentProgress
+	// checksFor and holdFor bound the checks and the hold of a step; zero
+	// is agentChecksDeadline and agentHoldDeadline.
+	checksFor, holdFor time.Duration
 }
+
+// bounds are the deadlines of the checks and of the hold of a step.
+func (r *agentRun) bounds() (checks, hold time.Duration) {
+	checks, hold = r.checksFor, r.holdFor
+	if checks == 0 {
+		checks = agentChecksDeadline
+	}
+	if hold == 0 {
+		hold = agentHoldDeadline
+	}
+	return checks, hold
+}
+
+// agentProgress is the progress of the loop of an agent container, kept as
+// the engine keeps that of its cycles.
+type agentProgress struct {
+	mu sync.Mutex
+	p  engine.Progress
+}
+
+func (b *agentProgress) started(at time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.p.Running, b.p.StartedAt = true, at
+}
+
+func (b *agentProgress) due(at time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.p.Running, b.p.DueAt = false, at
+}
+
+func (b *agentProgress) get() engine.Progress {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.p
+}
+
+// healthy says whether the loop makes progress at now, for the watchdog: a
+// check runs that began less than the engine's cycle deadline ago, or the
+// next one is due, or was due less than its grace ago.
+func (r *agentRun) healthy(now time.Time) bool { return r.progress.get().Healthy(now) }
 
 // run checks every agentCheckEvery until ctx ends.
 func (r *agentRun) run(ctx context.Context, sleep func(context.Context, time.Duration) error) {
 	defer r.stopClient()
 	for {
+		r.progress.started(r.now())
 		r.step(ctx)
+		r.progress.due(r.now().Add(agentCheckEvery))
 		if sleep(ctx, agentCheckEvery) != nil {
 			return
 		}
@@ -227,10 +305,15 @@ func (r *agentRun) run(ctx context.Context, sleep func(context.Context, time.Dur
 }
 
 // step joins where the agent has no certificate, judges the container and
-// starts or stops the client and the connectors by the verdict.
+// starts or stops the client and the connectors by the verdict. The checks
+// have their deadline, and the hold its own after them; the client that
+// follows the controller is started on ctx itself, as it outlives the step.
 func (r *agentRun) step(ctx context.Context) {
+	checksFor, _ := r.bounds()
+	checks, cut := context.WithTimeout(ctx, checksFor)
+	defer cut()
 	if _, err := r.files.Client(); errors.Is(err, agent.ErrNoCredentials) {
-		_, jerr := r.joiner.Join(ctx)
+		_, jerr := r.joiner.Join(checks)
 		switch {
 		case errors.Is(jerr, agent.ErrNoJoinToken):
 			r.say("this agent has no certificate and no join token: pco cluster join-token --node " + r.joiner.Node +
@@ -241,7 +324,7 @@ func (r *agentRun) step(ctx context.Context) {
 			return
 		}
 	}
-	serve, why := r.guard.judge(ctx)
+	serve, why := r.guard.judge(checks)
 	if !serve {
 		r.hold(ctx, why)
 		return
@@ -259,8 +342,12 @@ func (r *agentRun) step(ctx context.Context) {
 }
 
 // hold stops the client, takes the flag away, empties the egress filter and
-// stops the connectors, once for each time the agent stops serving.
+// stops the connectors, once for each time the agent stops serving. It has
+// its own time, as the checks before it may have used all of theirs.
 func (r *agentRun) hold(ctx context.Context, why string) {
+	_, holdFor := r.bounds()
+	ctx, cut := context.WithTimeout(ctx, holdFor)
+	defer cut()
 	r.say(why + "; the connectors are stopped and the egress filter is empty")
 	r.stopClient()
 	if err := r.flag(false); err != nil {
@@ -272,11 +359,11 @@ func (r *agentRun) hold(ctx context.Context, why string) {
 	if done {
 		return
 	}
-	if err := r.agent.Halt(ctx); err != nil {
+	if err := r.stopper.Halt(ctx); err != nil {
 		r.log.Error().Err(err).Msg("emptying the egress filter")
 		return
 	}
-	if err := r.agent.StopConnectors(ctx); err != nil {
+	if err := r.stopper.StopConnectors(ctx); err != nil {
 		r.log.Error().Err(err).Msg("stopping the connectors")
 		return
 	}

@@ -16,6 +16,9 @@ const pingEvery = 15 * time.Second
 // watchdog pings systemd while the engine makes progress, and only then. The
 // keeper of the lease and the API run in goroutines of their own, so a hung
 // engine would otherwise keep its lease, and every other node out, for good.
+// An agent container has no engine: its agent's loop, which proves the
+// container and keeps it following the controller, is what makes progress
+// there, and pco.service has the same watchdog in it.
 type watchdog struct {
 	notify  Notifier
 	healthy func(now time.Time) bool
