@@ -505,3 +505,20 @@ func TestTheRunnerKeepsTheRunOfTheClusterApart(t *testing.T) {
 	agent := r.AgentChecks(t.Context())
 	require.NotContains(t, clusterFindings(agent), "lease")
 }
+
+// In an agent container the identity check sends to pco agent status, as
+// pco status answers for the controller alone there.
+func TestTheIdentityOfAnAgentContainerIsExplainedByAgentStatus(t *testing.T) {
+	_, cl := healthyCluster()
+	cl.agent.Remote, cl.agent.Kind = true, pki.KindAppliance
+	env := struct {
+		*applianceEnv
+		*fakeCluster
+	}{healthyApplianceEnv(), cl.fakeCluster}
+	st := healthyApplianceState()
+	st.Identity = nil
+
+	f := clusterFindings(AgentChecks(t.Context(), st, env))["identity"]
+
+	require.Equal(t, Finding{Check: "identity", Level: LevelWarn, Detail: "no self-identification has run yet", Fix: "pco agent status says why"}, f)
+}

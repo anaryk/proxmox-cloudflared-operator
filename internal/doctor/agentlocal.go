@@ -60,7 +60,7 @@ func agentLocal(ctx context.Context, st engine.State, env Env, view agentproto.A
 		checkLock(ctx, env), checkEgress(st.Egress, fixTable), checkNftables(ctx, env, app),
 	}
 	if app != nil {
-		out = append(out, newApplianceRun(ctx, st, env, app).findings()...)
+		out = append(out, newApplianceRun(ctx, st, env, app, true).findings()...)
 	}
 	if view.Node != "" {
 		out = append(out, agentChecks(ctx, st, env, view)...)

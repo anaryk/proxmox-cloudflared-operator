@@ -132,7 +132,7 @@ func runNode(ctx context.Context, st engine.State, env Env) []Finding {
 		}
 	}
 	if app != nil {
-		out = append(out, newApplianceRun(ctx, st, env, app).findings()...)
+		out = append(out, newApplianceRun(ctx, st, env, app, false).findings()...)
 	}
 	return append(out, checkNetworks(ctx, st, env, app)...)
 }

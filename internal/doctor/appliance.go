@@ -204,6 +204,9 @@ type applianceRun struct {
 	app  ApplianceEnv
 	self Self
 	now  time.Time
+	// agent says that the container is an agent, whose problems pco agent
+	// status says, where pco status answers for the controller alone.
+	agent bool
 
 	config  func() (pve.GuestConfig, error)
 	pending func() (map[string]string, error)
@@ -213,9 +216,9 @@ type applianceRun struct {
 	major   func() (int, error)
 }
 
-func newApplianceRun(ctx context.Context, st engine.State, env Env, app ApplianceEnv) *applianceRun {
+func newApplianceRun(ctx context.Context, st engine.State, env Env, app ApplianceEnv, agent bool) *applianceRun {
 	r := &applianceRun{
-		ctx: ctx, st: st, env: env, app: app, self: app.Self(), now: env.Now(),
+		ctx: ctx, st: st, env: env, app: app, self: app.Self(), now: env.Now(), agent: agent,
 		config:  sync.OnceValues(func() (pve.GuestConfig, error) { return app.OwnConfig(ctx) }),
 		pending: sync.OnceValues(func() (map[string]string, error) { return app.OwnPending(ctx) }),
 		data:    sync.OnceValues(func() (access.Data, error) { return app.AccessData(ctx) }),
@@ -656,16 +659,20 @@ func preUpgradeDate(name string) (time.Time, bool) {
 func (r *applianceRun) checkIdentity() Finding {
 	const check = "identity"
 	id := r.st.Identity
+	fix := fixProblems
+	if r.agent {
+		fix = "pco agent status says why"
+	}
 	switch {
 	case r.st.At.IsZero():
 		return warn(check, "not known until the first cycle", "wait for the first cycle")
 	case id == nil:
-		return warn(check, "no self-identification has run yet", fixProblems)
+		return warn(check, "no self-identification has run yet", fix)
 	case id.Copy:
 		return fail(check, id.Why+"; the connectors are stopped and the egress filter is empty",
 			"stop this container if it is a copy; a restored container becomes the appliance with pco appliance repair --vmid <its vmid> on the node, once the original is gone")
 	case !id.OK:
-		return fail(check, cmp.Or(id.Why, "the self-identification did not pass"), fixProblems)
+		return fail(check, cmp.Or(id.Why, "the self-identification did not pass"), fix)
 	}
 	detail := fmt.Sprintf("this container is lxc/%d on %s", id.VMID, id.Node)
 	if !id.CheckedAt.IsZero() {
