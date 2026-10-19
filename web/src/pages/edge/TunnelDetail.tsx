@@ -77,11 +77,19 @@ export const connectorOf = (st: Pick<State, 'connectors'>, t: Pick<TunnelView, '
 // connector.Status says with the flags of its token and its metrics port.
 export const connectorLine = (c: ConnectorStatus | undefined) => (c ? connectorText(c) : 'none')
 
-function Connector({ status, traffic }: { status?: ConnectorStatus; traffic?: TunnelTraffic }) {
+// The connector line of a tunnel of the state: the connector of a tunnel
+// pinned to another node runs there, and the cluster page says what its
+// agent reports of it.
+export function connectorLineOf(st: Pick<State, 'connectors' | 'node'>, t: Pick<TunnelView, 'id' | 'kind' | 'node'>): string {
+  if (t.kind === 'pinned' && t.node && t.node !== st.node) return `on ${t.node}`
+  return connectorLine(connectorOf(st, t))
+}
+
+function Connector({ st, t, status, traffic }: { st: State; t: TunnelView; status?: ConnectorStatus; traffic?: TunnelTraffic }) {
   return (
     <dl className="details">
       <dt>Connector</dt>
-      <dd>{connectorLine(status)}</dd>
+      <dd>{connectorLineOf(st, t)}</dd>
       {status?.connectorId && (
         <>
           <dt>Connector id</dt>
@@ -219,7 +227,7 @@ export function TunnelDetail({ accountId, tunnel, variant }: { accountId: string
         <Rogues st={st} t={t} observeOnly={observeOnly} />
       </Card>
       <Card id={`tunnel-connector-${t.accountId}`} title="Connector">
-        <Connector status={status} traffic={tt} />
+        <Connector st={st} t={t} status={status} traffic={tt} />
         {tt && traffic && (
           <TrafficChart
             label="Requests and errors"

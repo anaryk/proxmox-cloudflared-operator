@@ -343,7 +343,7 @@ func (a *app) tunnelSection(s *screen, st engine.State) {
 	t := s.table()
 	t.row("  NAME", "ID", "VERIFIED", "CONNECTOR")
 	for _, tun := range st.Tunnels {
-		t.row("  "+dash(tun.Name), shortID(tun.ID), present.VerifiedText(tun), connectorText(st.Connectors, tun.ID))
+		t.row("  "+dash(tun.Name), shortID(tun.ID), present.VerifiedText(tun), connectorText(st.Connectors, tun, st.Node))
 	}
 	t.flush()
 }
@@ -356,10 +356,15 @@ func shortID(id string) string {
 }
 
 // connectorText describes the connector of a tunnel: active, ready and with
-// how many connections to Cloudflare, or none.
-func connectorText(conns []connector.Status, tunnelID string) string {
-	i := slices.IndexFunc(conns, func(c connector.Status) bool { return c.TunnelID == tunnelID })
-	if tunnelID == "" || i < 0 {
+// how many connections to Cloudflare, or none. The connector of a tunnel
+// pinned to another node runs there, and pco cluster status says what its
+// agent reports.
+func connectorText(conns []connector.Status, tun engine.TunnelView, node string) string {
+	if tun.Kind == engine.TunnelPinned && tun.Node != "" && tun.Node != node {
+		return "on " + tun.Node + " (pco cluster status)"
+	}
+	i := slices.IndexFunc(conns, func(c connector.Status) bool { return c.TunnelID == tun.ID })
+	if tun.ID == "" || i < 0 {
 		return "none"
 	}
 	return conns[i].Text()

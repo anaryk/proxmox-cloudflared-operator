@@ -942,3 +942,30 @@ func TestOnlyAVerifiedRouteHasATarget(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, target{scheme: "https", addr: ap, host: "intranet.local", sni: "origin.example.com", verify: true}, got)
 }
+
+// A route placed in a tunnel pinned to another node is diagnosed through
+// that tunnel, whose connector runs there: the steps after it ask the
+// target from here as before.
+func TestARoutePinnedToAnotherNodeIsDiagnosedThroughItsTunnel(t *testing.T) {
+	o := newOrigin(t, false, nil)
+	st := servedBy(t, o.Server, "http")
+	st.Node = "pve1"
+	st.Tunnels = append(st.Tunnels, engine.TunnelView{TunnelState: reconcile.TunnelState{
+		AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123-pve2", Kind: engine.TunnelPinned, Node: "pve2",
+		ID: "00000000-0000-4000-8000-0000000000f2", Version: 5, Exists: true, Verified: true,
+	}})
+	st.Routes[0].Placement = &engine.PlacementView{Tunnel: "pco-abc123-pve2", Kind: engine.TunnelPinned, Node: "pve2"}
+	service := st.Routes[0].Service
+
+	steps, err := DiagnoseRoute(t.Context(), st, "www.example.com", o.Client())
+
+	require.NoError(t, err)
+	require.Equal(t, Step{Name: "ingress", Level: LevelOK, Detail: "tunnel pco-abc123-pve2 sends it to " + service + " (configuration version 5)"}, steps[3])
+	require.Equal(t, Step{Name: "connector", Level: LevelOK, Detail: "runs on pve2; pco cluster status says what its agent reports"}, steps[4])
+	require.Equal(t, LevelOK, steps[8].Level, "the origin is asked from here: %s", steps[8].Detail)
+
+	st.Routes[0].Placement = nil
+	steps, err = DiagnoseRoute(t.Context(), st, "www.example.com", o.Client())
+	require.NoError(t, err)
+	require.Equal(t, Step{Name: "connector", Level: LevelOK, Detail: "active, ready, 4 connections"}, steps[4], "without a placement, the shared tunnel")
+}

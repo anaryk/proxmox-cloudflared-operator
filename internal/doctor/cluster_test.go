@@ -18,6 +18,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -521,4 +522,33 @@ func TestTheIdentityOfAnAgentContainerIsExplainedByAgentStatus(t *testing.T) {
 	f := clusterFindings(AgentChecks(t.Context(), st, env))["identity"]
 
 	require.Equal(t, Finding{Check: "identity", Level: LevelWarn, Detail: "no self-identification has run yet", Fix: "pco agent status says why"}, f)
+}
+
+// The connector of a tunnel pinned to another node runs there: the check
+// says what that node's agent reports of it, and asks systemd here nothing.
+func TestTheConnectorOfATunnelPinnedToAnotherNodeIsItsAgentsReport(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		ready int
+		want  Finding
+	}{
+		{"reported ready", 1, Finding{Check: "connector pco-abc123-pve2 in account acc1", Level: LevelOK,
+			Detail: "pinned to pve2, whose agent reports a ready connector"}},
+		{"not reported", 0, Finding{Check: "connector pco-abc123-pve2 in account acc1", Level: LevelWarn,
+			Detail: "pinned to pve2, whose agent reports no ready connector", Fix: "pco doctor --cluster; journalctl -u pco on pve2"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, cl := healthyCluster()
+			st.Tunnels = append(st.Tunnels, engine.TunnelView{TunnelState: reconcile.TunnelState{
+				AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123-pve2", Kind: engine.TunnelPinned, Node: "pve2",
+				ID: "pin2", Exists: true, Verified: true, Version: 3,
+			}})
+			cl.facts.ReadyReplicas["pin2"] = tt.ready
+			cl.inactive = map[string]bool{"pco-cloudflared@pin2.service": true}
+
+			got := clusterFindings(RunWith(t.Context(), st, cl, Options{}))
+
+			require.Equal(t, tt.want, got["connector pco-abc123-pve2 in account acc1"])
+		})
+	}
 }

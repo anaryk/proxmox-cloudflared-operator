@@ -52,6 +52,21 @@ describe('the list', () => {
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/edge/tunnels/acc1', '/edge/tunnels/acc2', '/edge/tunnels/acc3', '/edge/tunnels/acc4'])
   })
 
+  test('the connector of a tunnel pinned to another node runs there', async () => {
+    const pinned = {
+      ...populated.tunnels[0],
+      name: 'pco-abc123-pve2',
+      id: '00000000-0000-4000-8000-00000000f2f2',
+      kind: 'pinned',
+      node: 'pve2',
+      rollout: { version: 1, connectors: 1, confirmedAt: '2026-10-01T12:00:01Z' },
+    }
+    const { store } = await fakeStore({ state: { ...populated, tunnels: [populated.tunnels[0], pinned] } })
+    renderPage(store, <Tunnels />)
+    const connectors = Object.fromEntries(rows().map((r) => [r.Name, r.Connector]))
+    expect(connectors).toEqual({ 'pco-abc123': 'active, ready, 4 connections', 'pco-abc123-pve2': 'on pve2' })
+  })
+
   test('a tunnel no credential sees waits for the confirmation of the plan', async () => {
     const { store } = await fakeStore({ state: populated })
     renderPage(store, <Tunnels />)

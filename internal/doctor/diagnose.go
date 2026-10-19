@@ -84,9 +84,7 @@ func diagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 		return nil, fmt.Errorf("%w: the last cycle has no route for %s", engine.ErrNotFound, host)
 	}
 	d := &diagnosis{st: st, rt: rt, host: host, pins: pins}
-	if i := slices.IndexFunc(st.Tunnels, func(t engine.TunnelView) bool { return rt.Account != "" && t.AccountID == rt.Account }); i >= 0 {
-		d.tunnel = &st.Tunnels[i]
-	}
+	d.tunnel = tunnelOf(st, rt)
 	// A connector that fails skips nothing: the steps after it ask the
 	// target from the node, which needs no connector.
 	links := []struct {
@@ -238,6 +236,34 @@ func (d *diagnosis) targetIsTheCause() bool {
 	return d.rt.State == planner.StateUnreachable || d.rt.State == planner.StateWithdrawn
 }
 
+// tunnelOf is the tunnel that serves a route: the one its placement names,
+// or without a placement the shared tunnel of its account, as on a node
+// alone; nil for a route of an account without a tunnel.
+func tunnelOf(st engine.State, rt engine.RouteView) *engine.TunnelView {
+	if rt.Account == "" {
+		return nil
+	}
+	var fallback *engine.TunnelView
+	for i := range st.Tunnels {
+		t := &st.Tunnels[i]
+		if t.AccountID != rt.Account {
+			continue
+		}
+		switch {
+		case rt.Placement != nil && rt.Placement.Tunnel != "":
+			if t.Name == rt.Placement.Tunnel {
+				return t
+			}
+		case t.Kind != engine.TunnelPinned:
+			return t
+		}
+		if fallback == nil {
+			fallback = t
+		}
+	}
+	return fallback
+}
+
 func (d *diagnosis) connector() Step {
 	if why := d.unchecked(); why != "" {
 		return warned(why)
@@ -245,6 +271,11 @@ func (d *diagnosis) connector() Step {
 	t := d.tunnel
 	if t == nil || t.ID == "" {
 		return failed("the tunnel has no id yet")
+	}
+	if t.Kind == engine.TunnelPinned && t.Node != "" && t.Node != d.st.Node {
+		// The connector of a tunnel pinned to another node runs there, and
+		// the steps after this one ask the target from here anyway.
+		return passed(fmt.Sprintf("runs on %s; pco cluster status says what its agent reports", t.Node))
 	}
 	i := slices.IndexFunc(d.st.Connectors, func(c connector.Status) bool { return c.TunnelID == t.ID })
 	switch {

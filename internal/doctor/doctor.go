@@ -439,6 +439,10 @@ func cloudflaredOld(version string, now time.Time) bool {
 // connector of every one that has an id.
 func checkTunnels(ctx context.Context, st engine.State, env Env) []Finding {
 	var out []Finding
+	var ready map[string]int
+	if src := clusterOf(env); src != nil {
+		ready = src.Facts().ReadyReplicas
+	}
 	for _, t := range st.Tunnels {
 		name := fmt.Sprintf("%s in account %s", t.Name, t.AccountID)
 		check := "tunnel " + name
@@ -457,7 +461,7 @@ func checkTunnels(ctx context.Context, st engine.State, env Env) []Finding {
 			out = append(out, ok(check, fmt.Sprintf("configuration version %d is verified", t.Version)))
 		}
 		if t.ID != "" {
-			out = append(out, checkConnector(ctx, st, env, name, t))
+			out = append(out, checkConnector(ctx, st, env, name, t, ready))
 		}
 	}
 	return out
@@ -466,9 +470,17 @@ func checkTunnels(ctx context.Context, st engine.State, env Env) []Finding {
 // checkConnector asks systemd whether the connector of a tunnel runs, and
 // takes from the state whether it is connected. For a tunnel the last cycle
 // did not check, the state has only what an earlier cycle found, so
-// systemd's answer is all there is.
-func checkConnector(ctx context.Context, st engine.State, env Env, name string, t engine.TunnelView) Finding {
+// systemd's answer is all there is. The connector of a tunnel pinned to
+// another node runs there, and its agent reports it: ready are, by tunnel
+// id, the nodes that report a ready connector.
+func checkConnector(ctx context.Context, st engine.State, env Env, name string, t engine.TunnelView, ready map[string]int) Finding {
 	check := "connector " + name
+	if t.Kind == engine.TunnelPinned && t.Node != "" && t.Node != st.Node {
+		if ready[t.ID] > 0 {
+			return ok(check, "pinned to "+t.Node+", whose agent reports a ready connector")
+		}
+		return warn(check, "pinned to "+t.Node+", whose agent reports no ready connector", "pco doctor --cluster; journalctl -u pco on "+t.Node)
+	}
 	unit := connector.UnitName(t.ID)
 	active, err := env.UnitActive(ctx, unit)
 	switch {
