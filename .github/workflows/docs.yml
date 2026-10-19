@@ -21,7 +21,7 @@ jobs:
   # npm runs here, with no secret and nothing but read access.
   site:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -38,7 +38,7 @@ jobs:
 
   pages:
     needs: site
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     permissions:
       pages: write
       id-token: write
@@ -54,7 +54,7 @@ jobs:
 
   links:
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

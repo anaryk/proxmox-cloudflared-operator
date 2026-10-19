@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   when:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     outputs:
       run: ${{ steps.day.outputs.run }}
     steps:
@@ -42,7 +42,7 @@ jobs:
   rebuild:
     needs: when
     if: needs.when.outputs.run == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, proxmox]
     permissions:
       contents: read
     outputs:
@@ -182,7 +182,7 @@ jobs:
   cut:
     needs: rebuild
     if: needs.rebuild.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     permissions:
       contents: read
       issues: write
@@ -240,7 +240,7 @@ jobs:
   report:
     needs: [rebuild, cut]
     if: failure()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     permissions:
       issues: write
     steps:

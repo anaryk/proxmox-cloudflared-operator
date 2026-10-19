@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -22,7 +22,7 @@ jobs:
       - run: bash scripts/check-refs.sh
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -31,7 +31,7 @@ jobs:
       - run: go test -tags nomsgpack -race -timeout 30m ./...
 
   scripts:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     env:
       # A runner without gpg, gpgv or sqv must fail the job, not skip the real signature checks.
       PCO_REQUIRE_CRYPTO_TESTS: "1"
@@ -51,7 +51,7 @@ jobs:
       - run: make test-scripts
 
   linux-probe:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     env:
       PCO_REQUIRE_LINUX_TESTS: "1"
     steps:
@@ -75,7 +75,7 @@ jobs:
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/gateway/
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -87,7 +87,7 @@ jobs:
   # its size. npm runs here and in no job that holds a secret; the jobs that
   # need the result download it.
   ui:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -116,7 +116,7 @@ jobs:
   # site reads, every link of the built site down to its fragment, the images
   # and their budget, the tests of the site, and the licences of its packages.
   docs:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -130,7 +130,7 @@ jobs:
 
   build-ui:
     needs: ui
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -151,7 +151,7 @@ jobs:
   # its budgets. A browser that hangs is cut short.
   ui-e2e:
     needs: ui
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -204,7 +204,7 @@ jobs:
   # byte for byte, and this finds what breaks that before a release does.
   package:
     needs: ui
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -260,7 +260,7 @@ jobs:
   # without a network, and once more with the network of the runner.
   template:
     needs: ui
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, proxmox]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

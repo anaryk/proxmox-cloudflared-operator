@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   watch:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     permissions:
       contents: write
       pull-requests: write

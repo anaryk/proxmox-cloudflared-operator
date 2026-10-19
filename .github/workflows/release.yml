@@ -23,7 +23,7 @@ jobs:
   # and every package it installs run without a secret, without the
   # environment, and may only read the repository.
   ui:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     permissions:
       contents: read
     steps:
@@ -55,7 +55,7 @@ jobs:
   # whose templates do not carry them.
   build:
     needs: ui
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, proxmox]
     permissions:
       contents: read
     defaults:
@@ -187,7 +187,7 @@ jobs:
 
   sign:
     needs: [ui, build]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     # The secret lives in this environment, which only the tags of a release can
     # deploy to, and its approval by the maintainer is the one a release waits
     # for. See packaging/RELEASING.md.
@@ -366,7 +366,7 @@ jobs:
   # site and pages run for the latest release only, on what this job found.
   publish:
     needs: sign
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     outputs:
       latest: ${{ steps.latest.outputs.latest }}
     permissions:
@@ -424,7 +424,7 @@ jobs:
   site:
     needs: publish
     if: needs.publish.outputs.latest == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     permissions:
       contents: read
     steps:
@@ -449,7 +449,7 @@ jobs:
   pages:
     needs: [publish, site]
     if: needs.publish.outputs.latest == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, proxmox]
     permissions:
       pages: write
       id-token: write
