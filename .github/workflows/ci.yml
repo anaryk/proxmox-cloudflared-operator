@@ -54,7 +54,10 @@ jobs:
       - run: make test-scripts
 
   linux-probe:
-    runs-on: [self-hosted, proxmox]
+    # Root-level network tests: they load kernel modules, build bridges and namespaces in the host
+    # and the gateway pin needs the host mount namespace (a systemd service with BindPaths has its
+    # own). That wants a throwaway VM, so this job stays on GitHub's runners.
+    runs-on: [ubuntu-latest]
     env:
       PCO_REQUIRE_LINUX_TESTS: "1"
     steps:
