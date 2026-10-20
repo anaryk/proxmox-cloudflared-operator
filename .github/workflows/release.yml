@@ -40,6 +40,7 @@ jobs:
       # committed; they must be what the Go code makes now.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
+          cache: ${{ runner.environment == 'github-hosted' }}
           go-version-file: go.mod
       - run: make ui-types ui-words && git diff --exit-code
       - run: make ui-test ui-budget
