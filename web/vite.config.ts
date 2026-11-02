@@ -44,6 +44,10 @@ export default defineConfig({
   },
   // The tests of the scripts run in Node, those of the interface in a DOM.
   test: {
+    // The first lint of eslint.config.test.mjs loads the whole eslint config and the type
+    // information, and the page tests render a lot: on a busy runner that is more than the
+    // default 5 s.
+    testTimeout: 30_000,
     projects: [
       { extends: true, test: { name: 'scripts', include: ['*.test.mjs', 'scripts/**/*.test.mjs'], environment: 'node' } },
       {

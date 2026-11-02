@@ -95,8 +95,8 @@ jobs:
       - name: Install the tools of the template
         if: steps.release.outputs.templates == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap arch-test qemu-user-static binfmt-support
+          sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 update
+          sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 install -y mmdebstrap zstd systemd-container uidmap arch-test qemu-user-static binfmt-support
           # arm64 runs through qemu only once binfmt has it: register it where the
           # packages did not, and stop here if it still does not run.
           if [[ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then
