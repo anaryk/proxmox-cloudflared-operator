@@ -26,7 +26,10 @@ const withoutBrowser = ['csrf.spec.ts']
 // try, and one that passes on it is reported as flaky, not hidden. Such a
 // navigation is given up after 30 s rather than the test's 90, which any
 // page of pco loads well within.
-const retries: Record<string, number> = { firefox: 1 }
+// Chromium gets one on the self-hosted runners too: another job of the VM that builds a bridge or a
+// veth makes it drop the requests in flight with net::ERR_NETWORK_CHANGED, which the guard of the
+// fixtures reports as a console error. A pass on the second try is reported as flaky as well.
+const retries: Record<string, number> = { firefox: 1, chromium: process.env.CI ? 1 : 0 }
 const navigationTimeout: Record<string, number> = { firefox: 30_000 }
 
 function suite(name: string, device: (typeof devices)[string], colorScheme?: 'light' | 'dark'): Project[] {
