@@ -46,7 +46,9 @@ export default defineConfig({
   outputDir: 'test-results/playwright',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  timeout: 90_000,
+  // The slowest page audits (the cluster scenario visits seven pages with axe) take 80 s and more on
+  // the 2013 Xeons of the self-hosted runners.
+  timeout: 180_000,
   reporter: 'list',
   use: {
     // pco web's certificate is made for the test and trusted by nothing.
