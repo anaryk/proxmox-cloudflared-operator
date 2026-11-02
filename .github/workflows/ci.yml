@@ -50,7 +50,7 @@ jobs:
           go-version-file: go.mod
       # Proxmox VE 9 verifies with sqv, which the runner image does not carry;
       # check-artifacts_test.sh makes and reads templates with zstd.
-      - run: sudo apt-get update && sudo apt-get install -y gpgv sqv zstd
+      - run: sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 update && sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 install -y gpgv sqv zstd
       - run: make test-scripts
 
   linux-probe:
@@ -71,7 +71,7 @@ jobs:
       # The tests of the socket directory that only root can run: who owns it, and its group.
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -count=1 -run 'SomeoneElse|ToTheGroup' ./internal/api/
       # The egress filter, loaded in network namespaces of the test's own.
-      - run: sudo apt-get update && sudo apt-get install -y nftables
+      - run: sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 update && sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 install -y nftables
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/egress/
       # The service prefix of the appliance: its device, route, rules and table.
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/appnet/
@@ -292,8 +292,8 @@ jobs:
           args: release --snapshot --clean --skip=sign
       - name: Install the tools of the template
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap
+          sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 update
+          sudo flock /run/lock/gh-runner-apt.lock apt-get -o DPkg::Lock::Timeout=600 install -y mmdebstrap zstd systemd-container uidmap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build the template twice
         run: |
