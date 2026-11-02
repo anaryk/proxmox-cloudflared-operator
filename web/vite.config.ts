@@ -49,15 +49,7 @@ export default defineConfig({
     // default 5 s.
     testTimeout: 30_000,
     projects: [
-      { extends: true, test: {
-        name: 'scripts',
-        include: ['*.test.mjs', 'scripts/**/*.test.mjs'],
-        environment: 'node',
-        // The first lint of eslint.config.test.mjs loads the whole config and the type
-        // information; on a loaded runner that is more than the default 5 s.
-        testTimeout: 30_000,
-      },
-    },
+      { extends: true, test: { name: 'scripts', include: ['*.test.mjs', 'scripts/**/*.test.mjs'], environment: 'node' } },
       {
         extends: true,
         test: {
