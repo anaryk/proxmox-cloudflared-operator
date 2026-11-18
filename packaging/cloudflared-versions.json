@@ -1,7 +1,18 @@
 {
   "schemaVersion": 1,
-  "updated": "2026-10-28",
+  "updated": "2026-11-18",
   "versions": [
+    {
+      "version": "2026.11.1",
+      "amd64": {
+        "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.11.1/cloudflared-linux-amd64.deb",
+        "sha256": "744ce90be92adb361103d51c85f78646314c47e4a68bbaadfe12ab5acc16c9b6"
+      },
+      "arm64": {
+        "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.11.1/cloudflared-linux-arm64.deb",
+        "sha256": "225d7ef16e5c98dc9595329f4450ad9f2efe736dca79fc70fade22d20de5a72c"
+      }
+    },
     {
       "version": "2026.10.5",
       "amd64": {
